@@ -1856,10 +1856,13 @@ __metadata:
   peerDependencies:
     "@tanstack/query-core": ">=4"
     react: ">=17"
-    react-native-nitro-sqlite: ">=1.1.0"
+    react-native: ">=0.70"
+    react-native-nitro-modules: ">=0.35"
     use-sync-external-store: ">=1.2.0"
   peerDependenciesMeta:
-    react-native-nitro-sqlite:
+    react-native:
+      optional: true
+    react-native-nitro-modules:
       optional: true
   languageName: unknown
   linkType: soft

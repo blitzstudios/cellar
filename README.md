@@ -25,7 +25,9 @@ Three entry points:
 | `…/nitro` | `openNitroConnection` and `bindSqliteStore`, over `react-native-nitro-sqlite` | the app's startup, on device |
 | `…/testing` | a real SQLite engine off-device, a test version atom, the host services as spies, the dev/prod `it` wrappers | a store's own tests |
 
-The core entry runs anywhere React does; only `./nitro` touches native code.
+The core entry runs anywhere React does; only `./nitro` touches native code. Each subpath is declared twice — in
+`exports`, and as a stub `package.json` beside `lib/` — because the app's TypeScript and Metro still resolve the
+way Node did before `exports` existed.
 
 **The host installs two services before it binds any backend**, and until it does the kernel stays inert — a
 store reads the rows it already holds, and nothing fetches:

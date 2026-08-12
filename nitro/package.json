@@ -1,0 +1,7 @@
+{
+  "name": "@sleeperhq-private/react-data-kernel/nitro",
+  "private": true,
+  "main": "../lib/commonjs/nitro/index.js",
+  "module": "../lib/module/nitro/index.js",
+  "types": "../lib/typescript/commonjs/nitro/index.d.ts"
+}
