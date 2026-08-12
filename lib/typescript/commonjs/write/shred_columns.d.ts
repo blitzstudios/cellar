@@ -23,8 +23,8 @@ export type RowOf<Columns extends readonly ShredColumn<never, never>[]> = {
 type ColumnDefsOf<Columns extends readonly ShredColumn<never, never>[]> = {
     [Column in Columns[number] as Column['name']]: ColumnDef;
 };
-/** Everything a column table generates, so a store declares its columns once and derives nothing by hand. */
-export interface ShredColumns<Columns extends readonly ShredColumn<never, never>[], Src, Ctx> {
+/** What a column table generates whether or not it shreds natively. Every member is derived, so none is a call. */
+interface ShredColumnsBase<Columns extends readonly ShredColumn<never, never>[], Src, Ctx> {
     /** The declarations themselves, for a store composing one spec out of these columns and more. */
     columns: Columns;
     /**
@@ -35,23 +35,32 @@ export interface ShredColumns<Columns extends readonly ShredColumn<never, never>
     /** The `RowTableSchema['columns']` map, keyed by the literal names so a schema can assign or spread it. */
     columnDefs: ColumnDefsOf<Columns>;
     /**
-     * `{ name, op }` per column, in order, for a spec concatenating these columns with others. Throws on a column that
-     * declares no `op`, so it is a method rather than a field: a store that never shreds natively never calls it and
-     * never has to declare one.
-     */
-    namedOps: () => {
-        name: string;
-        op: ShredOp;
-    }[];
-    /** Just the ops, in the same order, for a spec built from these columns alone. */
-    ops: () => ShredOp[];
-    /**
      * One row, built by running every column's `js` extractor over one element of a payload — the JS ingest a store
      * writes its `parse` in, and the path every store takes on web and in tests, where nothing shreds natively. Typed
      * as the row the columns describe, so no ingest has to assert its own row type.
      */
     row: (src: Src, ctx: Ctx) => RowOf<Columns>;
 }
+/** The two a native shred is bound from, which a table only offers once every column can supply one. */
+interface NativeShredColumns {
+    /** `{ name, op }` per column, in order, for a spec concatenating these columns with others. */
+    namedOps: {
+        name: string;
+        op: ShredOp;
+    }[];
+    /** Just the ops, in the same order, for a spec built from these columns alone. */
+    ops: ShredOp[];
+}
+/**
+ * Whether every column carries an `op`. A table one column short of a native shred cannot produce a bind order that
+ * matches its columns, so it offers neither member rather than throwing when something reaches for one — which means
+ * a store like `schedule`, whose payload is small enough to shred in JS, never declares an `op` it has no use for.
+ */
+type EveryColumnShreds<Columns extends readonly ShredColumn<never, never>[]> = Columns[number] extends {
+    op: ShredOp;
+} ? true : false;
+/** Everything a column table generates, so a store declares its columns once and derives nothing by hand. */
+export type ShredColumns<Columns extends readonly ShredColumn<never, never>[], Src, Ctx> = ShredColumnsBase<Columns, Src, Ctx> & (EveryColumnShreds<Columns> extends true ? NativeShredColumns : unknown);
 /**
  * Binds a column table to everything derived from it. Called with the payload and context types first and the columns
  * second, matching how a read is declared:
