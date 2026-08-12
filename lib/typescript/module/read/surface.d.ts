@@ -60,6 +60,11 @@ interface CommonDef<Args, T, V extends VarySpec<Args>> {
     requires?: readonly string[];
     /** Must be a stable reference — it is returned while loading and while disabled. */
     empty: T;
+    /**
+     * How this read's value is compared, both to hold its prior reference and to bail its readers out. Defaults to
+     * {@link shallowEqualValue}, which covers a list or a record of reference-stable values; name one only where a
+     * level deeper decides it, which is what {@link shallowEqualStruct} builds.
+     */
     isEqual?: (left: T, right: T) => boolean;
     /** Sizes this read's value cache, keyed by partition and args together. Default 256, shared by every subscriber. */
     getCacheMax?: number;

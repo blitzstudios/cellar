@@ -1,12 +1,14 @@
 /** Fire-once dedup. Every guard registers itself here, so {@link resetOnceGuards} re-arms all of them at once. */
 
+import { cacheKey } from '../key';
+
 const resets: Array<() => void> = [];
 
 interface OnceGuard {
-  /** Whether `key` was already marked, marking it if not. */
-  seen(key: string): boolean;
-  /** A read-only test of `key`'s mark. */
-  has(key: string): boolean;
+  /** Whether these parts were already marked, marking them if not. Several parts name one key together. */
+  seen(...parts: readonly string[]): boolean;
+  /** A read-only test of their mark. */
+  has(...parts: readonly string[]): boolean;
 }
 
 /**
@@ -17,12 +19,13 @@ export function createOnceGuard(): OnceGuard {
   const marked = new Set<string>();
   resets.push(() => marked.clear());
   return {
-    seen(key) {
+    seen(...parts) {
+      const key = cacheKey(...parts);
       if (marked.has(key)) return true;
       marked.add(key);
       return false;
     },
-    has: (key) => marked.has(key),
+    has: (...parts) => marked.has(cacheKey(...parts)),
   };
 }
 

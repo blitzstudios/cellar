@@ -29,38 +29,63 @@ type ColumnDefsOf<Columns extends readonly ShredColumn<never, never>[]> = {
   [Column in Columns[number] as Column['name']]: ColumnDef;
 };
 
-/** Builds the schema's `columns` map, keyed by the literal column names so a schema can assign it directly. */
-export function shredColumnDefs<Columns extends readonly ShredColumn<never, never>[]>(columns: Columns): ColumnDefsOf<Columns> {
-  const defs: Record<string, ColumnDef> = {};
-  for (const column of columns) defs[column.name] = column.notNull ? { type: column.type, notNull: true } : { type: column.type };
-  return defs as ColumnDefsOf<Columns>;
+/** Everything a column table generates, so a store declares its columns once and derives nothing by hand. */
+export interface ShredColumns<Columns extends readonly ShredColumn<never, never>[], Src, Ctx> {
+  /** The declarations themselves, for a store composing one spec out of these columns and more. */
+  columns: Columns;
+  /**
+   * The column names in declared order, which is the order a `ShredSpec` binds its `columns` and `ops` in. Both come
+   * from this one table, so a column added to the shred can't go missing from the bind.
+   */
+  names: string[];
+  /** The `RowTableSchema['columns']` map, keyed by the literal names so a schema can assign or spread it. */
+  columnDefs: ColumnDefsOf<Columns>;
+  /**
+   * `{ name, op }` per column, in order, for a spec concatenating these columns with others. Throws on a column that
+   * declares no `op`, so it is a method rather than a field: a store that never shreds natively never calls it and
+   * never has to declare one.
+   */
+  namedOps: () => { name: string; op: ShredOp }[];
+  /** Just the ops, in the same order, for a spec built from these columns alone. */
+  ops: () => ShredOp[];
+  /**
+   * One row, built by running every column's `js` extractor over one element of a payload — the JS ingest a store
+   * writes its `parse` in, and the path every store takes on web and in tests, where nothing shreds natively. Typed
+   * as the row the columns describe, so no ingest has to assert its own row type.
+   */
+  row: (src: Src, ctx: Ctx) => RowOf<Columns>;
 }
 
 /**
- * The table's column names in declared order, which is the order a `ShredSpec` binds its `columns` and `ops` in. Take
- * both from the same column table, so a column added to one can't go missing from the other.
+ * Binds a column table to everything derived from it. Called with the payload and context types first and the columns
+ * second, matching how a read is declared:
+ *
+ * ```ts
+ * const playerShred = defineShredColumns<Player, PlayerShredCtx>()(PLAYER_SHRED_COLUMNS);
+ * ```
  */
-export function shredColumnNames<S, C>(columns: readonly ShredColumn<S, C>[]): string[] {
-  return columns.map((column) => column.name);
-}
+export function defineShredColumns<Src, Ctx = void>() {
+  return <const Columns extends readonly ShredColumn<Src, Ctx>[]>(columns: Columns): ShredColumns<Columns, Src, Ctx> => {
+    const defs: Record<string, ColumnDef> = {};
+    for (const column of columns) defs[column.name] = column.notNull ? { type: column.type, notNull: true } : { type: column.type };
 
-/**
- * The native op behind each column, in the same order, for the `ops` of a store's `ShredSpec`. Throws on a column that
- * declares none: a table a store shreds natively has to carry an `op` on every one of its columns.
- */
-export function shredColumnOps<S, C>(columns: readonly ShredColumn<S, C>[]): { name: string; op: ShredOp }[] {
-  return columns.map((column) => {
-    if (!column.op) throw new Error(`shred_columns: column ${JSON.stringify(column.name)} has no native-shred op`);
-    return { name: column.name, op: column.op };
-  });
-}
+    const namedOps = (): { name: string; op: ShredOp }[] =>
+      columns.map((column) => {
+        if (!column.op) throw new Error(`shred_columns: column ${JSON.stringify(column.name)} has no native-shred op`);
+        return { name: column.name, op: column.op };
+      });
 
-/**
- * One row built by running every column's `js` extractor over one element of a payload — the JS ingest a store writes
- * its `parse` in, and the path every store takes on web and in tests, where nothing shreds natively.
- */
-export function shredRow<S, C>(columns: readonly ShredColumn<S, C>[], src: S, ctx: C): Record<string, SqlValue> {
-  const row: Record<string, SqlValue> = {};
-  for (const column of columns) row[column.name] = column.js(src, ctx);
-  return row;
+    return {
+      columns,
+      names: columns.map((column) => column.name),
+      columnDefs: defs as ColumnDefsOf<Columns>,
+      namedOps,
+      ops: () => namedOps().map((column) => column.op),
+      row: (src, ctx) => {
+        const row: Record<string, SqlValue> = {};
+        for (const column of columns) row[column.name] = column.js(src, ctx);
+        return row as RowOf<Columns>;
+      },
+    };
+  };
 }

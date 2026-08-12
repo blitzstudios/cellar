@@ -8,7 +8,7 @@ import { useCallback, useMemo } from 'react';
 import { cacheKey, EMPTY_VARY, isVaryPresent, KEY_SEP, partitionsKey, VaryValue, varyKey } from '../args_key';
 import { getOrCreate } from '../collections';
 import { PartitionField, partitionKeyOf, requiredFieldsOf, VaryField, varyValuesOf } from './partition_fields';
-import { createVersionedCache } from '../caches';
+import { createVersionedCache, shallowEqualValue } from '../caches';
 import { isLive, NO_PARTS, PartitionEntry, partitionEntries, VersionAtom } from '../reactivity/version_atom';
 import { createOnceGuard, onGuardReset } from '../diagnostics/once_guard';
 import { NO_PRIMING, type PrimeState } from '../prime_state';
@@ -78,6 +78,11 @@ interface CommonDef<Args, T, V extends VarySpec<Args>> {
   requires?: readonly string[];
   /** Must be a stable reference — it is returned while loading and while disabled. */
   empty: T;
+  /**
+   * How this read's value is compared, both to hold its prior reference and to bail its readers out. Defaults to
+   * {@link shallowEqualValue}, which covers a list or a record of reference-stable values; name one only where a
+   * level deeper decides it, which is what {@link shallowEqualStruct} builds.
+   */
   isEqual?: (left: T, right: T) => boolean;
   /** Sizes this read's value cache, keyed by partition and args together. Default 256, shared by every subscriber. */
   getCacheMax?: number;
@@ -249,7 +254,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   };
 
   const makeValueCache = <T>(def: { getCacheMax?: number; isEqual?: (left: T, right: T) => boolean }) =>
-    createVersionedCache<T>(def.getCacheMax ?? 256, def.isEqual);
+    createVersionedCache<T>(def.getCacheMax ?? 256, def.isEqual ?? shallowEqualValue);
 
   function defineRead<Args, T, const V extends VarySpec<Args>>(def: ReadDef<Args, Key, T, V>): Read<Args, T> {
     const getCache = makeValueCache<T>(def);
@@ -292,7 +297,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
         gates.read,
         [argsKey],
         () => (hasOne(key as Key, parts) ? cached(args as Args, key as Key, parts, argsKey) : def.empty),
-        def.isEqual ?? Object.is,
+        def.isEqual ?? shallowEqualValue,
         def.empty,
       );
       const doRefetch = useCallback(() => {
@@ -353,7 +358,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
         gates.read,
         [argsKey],
         () => (hasAny(entries) ? cached(args as Args, named, partitions, argsKey) : def.empty),
-        def.isEqual ?? Object.is,
+        def.isEqual ?? shallowEqualValue,
         def.empty,
       );
       const doRefetch = useCallback(() => {

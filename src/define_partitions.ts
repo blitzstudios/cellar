@@ -10,7 +10,7 @@ import { cacheKey, partitionLabel } from './args_key';
 import { createFetchIngest, FetchIngest, RawQuery } from './write/fetch_ingest';
 import { createReadSurface, Read, ReadDef, ReadGroupedDef, ReadManyDef, useResult, VarySpec } from './read/surface';
 import { RowShape, RowTable } from './table/types';
-import { createBoundedLru } from './caches';
+import { BoundMemos, createBoundedLru, createMemos, MemoDeclaration } from './caches';
 import { isLive, NO_PARTS, VersionAtom } from './reactivity/version_atom';
 import { PartitionField, partitionKeyOf } from './read/partition_fields';
 import { NO_PRIMING, PrimeState } from './prime_state';
@@ -126,6 +126,12 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
   readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>) => Read<A, T>;
   /** One group of candidates per thing the caller asks about; `select` gets them back in those groups. */
   readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+  /**
+   * Every value this store memoizes, declared in one block and bound to these partitions: each memo takes a key and
+   * derives the rest of its own key and the version it holds against, so a hydration names the partition and the
+   * thing it wants and never builds either. See {@link createMemos}.
+   */
+  memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
   where: (key: Key) => Partial<Row>;
   /** The key a partition record addresses, interning the pairing so a fetch can get the record back. */
   keyOf: (partition: Descriptor) => Key;
@@ -301,6 +307,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     read: surface.read,
     readMany: readManyOf,
     readGrouped: readGroupedOf,
+    memos: (decls) => createMemos(name, { parts: toParts, version: versionOf }, decls),
     where,
     keyOf,
     internedKeys: () => (interned ? (interned.keys() as IterableIterator<Key>) : NO_INTERNED[Symbol.iterator]()),

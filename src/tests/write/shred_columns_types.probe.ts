@@ -1,7 +1,7 @@
 /** Type-level tests, run by `tsc`: each `@ts-expect-error` fails typecheck if its guarantee stops holding. */
 
 import { ColumnDef, RowTableSchema } from '../../table/types';
-import { RowOf, ShredColumn, shredColumnDefs } from '../../write/shred_columns';
+import { defineShredColumns, RowOf, ShredColumn } from '../../write/shred_columns';
 
 /** `meta` is untyped on purpose: it is what makes an unannotated builder's return type `any`. */
 type Game = { week: number; team: string; meta: any };
@@ -28,7 +28,15 @@ declare const note: RowOf<typeof UNANNOTATED>['note'];
 // @ts-expect-error `any` would have been assignable to anything here, which is the bug; the message type is not
 export const unannotated: number = note;
 
-export const columns: RowTableSchema<Row>['columns'] = shredColumnDefs(COLUMNS);
+const shred = defineShredColumns<Game>()(COLUMNS);
+
+export const columns: RowTableSchema<Row>['columns'] = shred.columnDefs;
 
 // @ts-expect-error a name the table does not declare has no def, rather than an `any` one
-export const notADef: ColumnDef = shredColumnDefs(COLUMNS).opponent;
+export const notADef: ColumnDef = shred.columnDefs.opponent;
+
+/** The point of binding the columns: a built row is typed as the row they describe, so no ingest asserts its own. */
+export const built: Row = shred.row({ week: 1, team: 'SF', meta: null });
+
+// @ts-expect-error the row a bound table builds is not an untyped bag of columns
+export const builtWrong: number = shred.row({ week: 1, team: 'SF', meta: null }).team;

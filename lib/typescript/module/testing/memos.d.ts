@@ -1,0 +1,13 @@
+/** A store's memos, for a suite that builds one module of a store rather than the whole backend. */
+import { MemoFactory } from '../caches';
+import { VersionAtom } from '../reactivity/version_atom';
+/**
+ * The `memos` a `definePartitions` hands its hydration, for a test building that hydration directly. Pass the same atom
+ * the module under test bumps, or a memo will answer from an entry the test thought it had invalidated, and `parts` for
+ * a store whose key is an object rather than one string.
+ */
+export declare function testMemos<Key = string>(version: VersionAtom, opts?: {
+    store?: string;
+    parts?: (key: Key) => readonly string[];
+}): MemoFactory<Key>;
+//# sourceMappingURL=memos.d.ts.map

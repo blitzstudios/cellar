@@ -28,16 +28,15 @@ function exportedFrom(entry: string): string[] {
 describe('the core entry point', () => {
   it('exports what a store, a service or a screen writes against, and nothing else', () => {
     expect(exportedFrom('index.ts')).toEqual([
-      'ColumnDef', 'DATA_RESULT_KEYS', 'DataResult', 'DataStatus', 'Dep', 'KEY_SEP', 'Loose', 'MaybeId', 'NativeShredSpec',
-      'PinnedConnection', 'PrimeState', 'QueryClient', 'QuerySpec', 'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM',
-      'RawQuery', 'ReadOptions', 'RowOf', 'RowTable', 'RowTableSchema', 'ShredColumn', 'ShredOp', 'ShredSpec',
-      'SqlValue', 'SqliteConnection', 'VersionAtom', 'WindowedBlock', 'bySource', 'byVersion', 'cacheKey',
-      'configureDataKernel', 'createBoundedLru', 'createMemoryRowTable', 'createOnceGuard', 'createPushIngest',
-      'createSqliteRowTable', 'createTrackedSelector', 'createWindowedList', 'declareMemos', 'definePartitions',
-      'defineSqliteStore', 'getIngestTimings', 'groupRowsBy', 'indexRowsBy', 'makeResult', 'mapRows', 'orderedByIds',
-      'pairRead', 'pinnedReader', 'readRows', 'reportStoreDegradation', 'rollupIngestTimings', 'runSubscribed',
-      'runTracked', 'shallowEqualArray', 'shallowEqualRecord', 'shallowEqualStruct', 'shredColumnDefs',
-      'shredColumnNames', 'shredColumnOps', 'shredRow', 'stableKey',
+      'ColumnDef', 'DATA_RESULT_KEYS', 'DataResult', 'DataStatus', 'Dep', 'Loose', 'MaybeId', 'MemoDeclaration',
+      'MemoFactory', 'MemoPart', 'MemoSource', 'NativeShredSpec', 'PinnedConnection', 'PrimeState', 'QueryClient', 'QuerySpec',
+      'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM', 'RawQuery', 'ReadOptions', 'RowOf', 'RowTable', 'RowTableSchema',
+      'ShredColumn', 'ShredColumns', 'ShredOp', 'ShredSpec', 'SqlValue', 'SqliteConnection', 'VersionAtom',
+      'WindowedBlock', 'bySource', 'byVersion', 'configureDataKernel', 'createMemoryRowTable', 'createOnceGuard',
+      'createPushIngest', 'createSqliteRowTable', 'createTrackedSelector', 'createWindowedList', 'definePartitions',
+      'defineShredColumns', 'defineSqliteStore', 'makeResult', 'pairRead', 'pinnedReader', 'readRows',
+      'reportStoreDegradation', 'rowsOf', 'runSubscribed', 'runTracked', 'shallowEqualArray', 'shallowEqualRecord',
+      'shallowEqualStruct', 'shallowEqualValue',
     ]);
   });
 
@@ -57,11 +56,17 @@ describe('the nitro entry point', () => {
   });
 });
 
+describe('the diagnostics entry point', () => {
+  it('exports what a developer surface dumps, which no shipping screen reads', () => {
+    expect(exportedFrom('diagnostics/index.ts')).toEqual(['IngestRollup', 'IngestTiming', 'getIngestTimings', 'rollupIngestTimings']);
+  });
+});
+
 describe('the testing entry point', () => {
   it('exports the fixtures a store suite needs, including the internals no shipping code calls', () => {
     expect(exportedFrom('testing/index.ts')).toEqual([
       'SqlJsCapabilities', 'SqlJsConnection', 'createSqlJsConnection', 'createTestVersionAtom', 'createVersionAtom',
-      'evalShredElement', 'initSqlJs', 'installTestRuntime', 'itDev', 'resetOnceGuards',
+      'evalShredElement', 'initSqlJs', 'installTestRuntime', 'itDev', 'resetOnceGuards', 'testMemos',
     ]);
   });
 });

@@ -1,9 +1,9 @@
 /** Fire-once dedup. Every guard registers itself here, so {@link resetOnceGuards} re-arms all of them at once. */
 interface OnceGuard {
-    /** Whether `key` was already marked, marking it if not. */
-    seen(key: string): boolean;
-    /** A read-only test of `key`'s mark. */
-    has(key: string): boolean;
+    /** Whether these parts were already marked, marking them if not. Several parts name one key together. */
+    seen(...parts: readonly string[]): boolean;
+    /** A read-only test of their mark. */
+    has(...parts: readonly string[]): boolean;
 }
 /**
  * A set of keys that can each be marked once, for a warning or a degradation report that would otherwise fire on every

@@ -21,8 +21,9 @@ export type { DataStatus, DataResult } from './store_result';
 export { DATA_RESULT_KEYS, makeResult } from './store_result';
 export type { PrimeState } from './prime_state';
 
-export { cacheKey, KEY_SEP, stableKey } from './args_key';
-export { createBoundedLru, declareMemos, byVersion, bySource, shallowEqualRecord, shallowEqualArray, shallowEqualStruct } from './caches';
+// What a store memoizes, declared through its partitions (`stats.memos({ … })`) so no caller builds a key.
+export type { MemoDeclaration, MemoFactory, MemoPart, MemoSource } from './caches';
+export { byVersion, bySource, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
 
 // The table a store's schema describes, and the rows it holds.
 export type { SqlValue, ColumnDef, RowTableSchema, RowTable } from './table/types';
@@ -35,12 +36,12 @@ export { readRows, pinnedReader } from './table/connection';
 export type { RawQuery } from './write/fetch_ingest';
 export { RAW_TEXT_RESPONSE_TRANSFORM } from './write/fetch_ingest';
 export { createPushIngest } from './write/push_ingest';
-export type { ShredColumn, RowOf } from './write/shred_columns';
-export { shredColumnDefs, shredColumnNames, shredColumnOps, shredRow } from './write/shred_columns';
+export type { ShredColumn, ShredColumns, RowOf } from './write/shred_columns';
+export { defineShredColumns } from './write/shred_columns';
 export type { ShredOp, ShredSpec, NativeShredSpec } from './write/shred_spec';
 
 // Declaring reads, and turning rows into view models.
-export { groupRowsBy, indexRowsBy, mapRows, orderedByIds } from './read/row_shaping';
+export { rowsOf } from './read/row_shaping';
 export type { MaybeId, ReadOptions, Loose } from './read/facade';
 export { pairRead } from './read/facade';
 export type { WindowedBlock } from './read/windowed_list';
@@ -53,5 +54,4 @@ export { runTracked, runSubscribed } from './reactivity/tracking';
 export { createTrackedSelector } from './reactivity/tracked_selector';
 
 export { reportStoreDegradation } from './diagnostics/telemetry';
-export { getIngestTimings, rollupIngestTimings } from './diagnostics/ingest_timing';
 export { createOnceGuard } from './diagnostics/once_guard';

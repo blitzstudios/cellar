@@ -188,14 +188,16 @@ store is reaching past its entry point; import it from its own module only if yo
   newer, and lets a partition be **held** for the length of a fetch. Give it `idOf`, `toRows`, `bump` and
   `onWrite`; you get `queue` and `hold`. The `hold` is what `definePartitions`'s
   `fetch.holdWrites` wants. Only `player_stats` is push-fed today.
-- **`mapRows` / `orderedByIds` / `indexRowsBy` / `groupRowsBy`** (`row_shaping.ts`) — the four shapes every
-  hydration file needs over a query's rows, each of them returning the caller's **stable empty** when nothing
-  survives. `orderedByIds` is for an index-parallel result: SQL `IN` does not preserve argument order and `findIn`
-  chunks on top of that, so a caller treating rows as parallel to the ids it asked for needs them reordered.
-- **`cacheKey(...parts)`** (`args_key.ts`) — joins parts on a separator no part can contain. Use it rather than a
-  template literal or a bare `join` anywhere you build a key for a cache in `caches.ts`. Its counterpart
-  `partitionLabel(parts)` joins on `:` for a log line or a telemetry field, and is never a key: `:` occurs inside
-  a part (`clubsoccer:epl`), which is why keys don't use it.
+- **`rowsOf(table)`** (`row_shaping.ts`) — a hydration's whole read side: ask it for rows, then say what shape you
+  want them in. `rows.where(filter, opts)` and `rows.in(filter, column, values)` are the two queries, `.given(rows)`
+  wraps rows you already hold, and each hands back something with `.rows`, `.map(fn, empty)`, `.indexed(column)`,
+  `.grouped(column)` and — for `.in` — `.ordered(mapper, empty)`. Every shape returns the caller's **stable empty**
+  when nothing survives. `ordered` is for an index-parallel result: SQL `IN` does not preserve argument order and
+  `findIn` chunks on top of that, so a caller treating rows as parallel to the ids it asked for needs them reordered
+  — which is why it hangs off `.in` alone and cannot be reached from a query that has no ids.
+- **`partitionLabel(parts)`** (`args_key.ts`) — a partition's parts joined on `:` for a log line or a telemetry
+  field. Never a key: `:` occurs inside a part (`clubsoccer:epl`), which is why keys don't use it. Keys themselves
+  are not the caller's to build — a read's is the engine's, and a memo's comes from the partition it is bound to.
 - **`chunkList` / `getOrCreate`** (`collections.ts`) — bounded batches, and the `Map` entry that may not exist
   yet.
 - **`createVersionAtom`** — per-partition integer reactivity (a module-level `useSyncExternalStore`). `bump`
@@ -233,21 +235,29 @@ store is reaching past its entry point; import it from its own module only if yo
   and then re-slices it by index; and, for a push-fed table, leaving `fetch` off, so its reads report `success`
   over an empty value. The kernel takes the fetch half as one value: the priming hooks and the refetch that goes
   with them are supplied together or not at all.
-- **`declareMemos`** — every memo a store holds, in one block, and the only way it builds one:
+- **`partitions.memos`** — every memo a store holds, in one block, and the only way it builds one:
 
   ```ts
-  const memos = declareMemos('schedule', {
-    summaryMap: byVersion<ScheduleSummaryMap>({ max: 2048, keyedBy: 'partition' }),
+  const memos = schedule.memos({
+    summaryMap: byVersion<ScheduleSummaryMap>()({ max: 2048 }),
+    playerRow: bySource<PlayerRowVM>()({ max: 4096, by: ['playerId'] }),
   });
+
+  memos.summaryMap.for(key).read(() => deriveSummaryMap(rows.where(where(key)).rows));
+  memos.playerRow.for(key).put(playerId, row.data_json, () => toVM(row));
   ```
 
-  `max` bounds what the store derives onto the heap and `keyedBy` says what a key is built from, so the block is a
-  complete, reviewable account of it — which is the point, since the judgment below is made by reading the keys.
-  Each memo carries a dev-time watch that reports itself too small for the keys it keeps being asked for again, and
-  reports itself if it has never once answered from its entry.
+  The block is reached off the store's partitions, which is what makes `.for(key)` possible: the memo takes both
+  the partition's key and its current version from there, so **no store builds a memo key or looks up a version**.
+  What a store still names is `max`, which bounds what it derives onto the heap, and `by`, which is what the key
+  holds beyond the partition — one argument to `.for(…)`'s methods per name, in order, each either a scalar or a
+  structured value the kernel interns. So the block stays a complete, reviewable account of the store's heap, which
+  is the point: the judgment below is made by reading the keys. Each memo carries a dev-time watch that reports
+  itself too small for the keys it keeps being asked for again, and reports itself if it has never once answered
+  from its entry.
 - **`byVersion`** — a memo dropped by every write to its partition, with optional content-stable reference reuse: on
   a bump that didn't change an entry, hand back the _same reference_ so downstream shallow-equal bails.
-  `read(key, version, compute)` is the whole memo in one call; `peek`/`set` are its batched half, for a caller that
+  `read(…parts, compute)` is the whole memo in one call; `peek`/`set` are its batched half, for a caller that
   gathers its misses and computes them in one round-trip.
 
   Reach for it when **several reads** derive the same value from a partition's rows, or when **one read consults it
@@ -258,27 +268,30 @@ store is reaching past its entry point; import it from its own module only if yo
   alone skips the **SQL round-trip** for a read no write invalidated, but it misses for every entry in a partition
   the moment anything in it changes. A source — the `data_json` the value was built from — survives that miss and
   hands back the same reference, which is what keeps one socket flush rewriting one player's row from repainting
-  every reader of every other row in the partition. This carries both in one entry: `peek(key, version)` answers
-  with no query at all, and `put(key, version, source, build)` rebuilds only when the source really moved.
+  every reader of every other row in the partition. This carries both in one entry: `peek(…parts)` answers
+  with no query at all, and `put(…parts, source, build)` rebuilds only when the source really moved.
   **If a read's value feeds a downstream identity comparison — and every `isEqual` on a read descriptor is one —
   hydrate it through this.** All three of `player_stats`' hydrations do.
 
-  Two rules when you add one. Key the entry by the filter that produced it as well as by the entity, or two
+  Two rules when you add one. Name the filter that produced the entry in `by` as well as the entity, or two
   reads holding different rows for the same entity re-hydrate each other on every call. And leave
   whole-collection reads out of it: one of those evicts the bounded reads' entries and costs more than the
   repaints it saves.
 
-  `name` is required, and it is what the undersized report points at. This is the cache where too small is
+  The name a report points at is the one the block gave it. This is the cache where too small is
   worth catching at runtime, since a rebuilt value is a new reference and so a repaint no `isEqual` can bail
   out of — a cost that lands spread across React's render phase, where a profile has nothing to point at. A
   versioned cache that is too small costs a recompute instead, pooled under one function, so it is left to
   the profile and carries no name.
 - **`offHeapStatus`** — the loading-status rule (`loading` while a cold fetch is in flight, else `success`).
   The engine calls this for you; bespoke batch reads call it directly.
-- **`createBoundedLru`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct`** — small building blocks for
-  the above. The three `shallowEqual*` are the `isEqual` a read or a memo hands over: one for a record of values, one
-  for a list, and one for a struct, which takes a check per field for the fields that hold a record or a list and
-  compares the rest with `Object.is`.
+- **`shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct`** — the `isEqual` family. A
+  read that names none gets `shallowEqualValue`, which is one level the way a store would have written it by hand: a
+  list by its elements, a record by its values, anything else by identity — so a hydration rebuilding a list or a map
+  out of unchanged parts bails its readers out without being asked to. Name one only where a level is not enough,
+  which in practice means `shallowEqualStruct` for a struct: it takes a check per field for the fields holding a
+  record or a list and compares the rest with `Object.is`, so a scalar field added later is covered without touching
+  the call. `shallowEqualRecord` and `shallowEqualArray` are the two it composes, for a memo handing one over.
 
 **Declare reads through the engine; no store here hand-writes one.** If you ever need to, two rules apply:
 every imperative getter must call `version.get(parts)` on **every** call, cache hit included, or its reads
@@ -478,8 +491,9 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `define_partitions.ts`                    | one table's partitions: their keys, their fetch, and the lifecycle over them |
 | `store_result.ts`                                | the `DataResult` envelope, and the `offHeapStatus` rule that fills one     |
 | `prime_state.ts`                                 | what a read knows about the fetch behind its partition — the contract between the two, so neither imports the other |
-| `args_key.ts`                                    | the separators and the joins every cache key in the layer is built from   |
-| `caches.ts`                                      | bounded LRU, version-keyed memo, source-keyed cache                       |
+| `key.ts`                                         | how a key's parts are joined, on a separator no part can contain; imports nothing, so anything may have it |
+| `args_key.ts`                                    | what a read's key is derived from: a value by its content, a partition, a vary list |
+| `caches.ts`                                      | bounded LRU, the two memos and the block that binds them to a store's partitions, and the `isEqual` family |
 | `collections.ts`                                 | `chunkList` and `getOrCreate`                                             |
 | `runtime.ts`                                     | the host's two services — where a report goes, and the query runtime an ingest mounts on — and the inert defaults until one is installed |
 
@@ -495,14 +509,14 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
 | `fetch_ingest.ts`                                | write-through fetch → shred → bump                                       |
 | `push_ingest.ts`                                 | the push counterpart: buffer → dedupe → chunked write → bump, with per-partition holds for an in-flight fetch |
-| `shred_columns.ts`                               | co-located shred column table (each column's `sql` + its `js` twin)      |
+| `shred_columns.ts`                               | co-located shred column table (each column's `sql` + its `js` twin), and `defineShredColumns`, which binds it to everything derived from it |
 | `shred_spec.ts`                                  | the native shred op language + its JS reference interpreter              |
 
 | `read/` — how rows come out                      |                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
 | `surface.ts`                                     | the read engine — `read({ … })` → `{ getValue, useValue }`               |
 | `partition_fields.ts`                            | the field specs a read names its partition and its vary key with          |
-| `row_shaping.ts`                                 | rows → list / ordered list / record / groups, each with the stable empty |
+| `row_shaping.ts`                                 | `rowsOf`: a query, then rows → list / ordered list / record / groups, each with the stable empty |
 | `facade.ts`                                      | what a service is written against: `pairRead`, so it exposes the hook and the imperative read together, plus the types its methods are spelled in (`ReadOptions`, `MaybeId`, `Loose`) |
 | `windowed_list.ts`                               | windowed list reads (fetch a page, keep the rest off-heap), and the per-row `useWindowedDetail` that indexes back into one |
 
@@ -514,18 +528,21 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `diagnostics/` — how the layer reports on itself |                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
 | `telemetry.ts`                                   | reports silent perf degradation (a native fallback that stayed correct)  |
-| `ingest_timing.ts`                               | per-ingest timings, rolled up for the dev overlay                        |
+| `ingest_timing.ts`                               | per-ingest timings, rolled up for the dev overlay — the `./diagnostics` entry, which no shipping screen reads |
 | `once_guard.ts`                                  | warn-once guards that a test can reset                                   |
 
 | `nitro/` — the device                            |                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
 | `nitro_connection.ts`                            | the `SqliteConnection` over `react-native-nitro-sqlite`: pragmas, param coercion, the native shred sentinel, and the binds that degrade rather than throw |
 
-The `./testing` entry ships too, since a store's tests need it: `sqljs_connection.ts` (a real SQLite engine for
-parity tests), `version_atom.ts` (in-process version atom with working `subscribe`), `runtime.ts` (the host
-services as spies), and `dev_mode.ts` (the wrappers pinning a case to one build). It also re-exports the handful
-of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement` to check
-a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
+Two more entries ship beside the core one. `./diagnostics` holds what a developer surface dumps —
+`getIngestTimings` and `rollupIngestTimings` — kept out of the core entry because a shipping screen has no
+business reading them. `./testing` is what a store's tests are written against: `sqljs_connection.ts` (a real
+SQLite engine for parity tests), `version_atom.ts` (in-process version atom with working `subscribe`),
+`runtime.ts` (the host services as spies), `memos.ts` (a store's `memos` for a suite that builds one module
+rather than a whole backend), and `dev_mode.ts` (the wrappers pinning a case to one build). It also re-exports the
+handful of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement`
+to check a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
 
 Bespoke per store (the domain half you write, in the app): `schedule` is the small template, `player` is the same shape over
 a much larger payload (a native shred, and a `lifecycle` group), and `player_stats` is by far the largest — a

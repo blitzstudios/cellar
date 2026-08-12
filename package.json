@@ -1,6 +1,6 @@
 {
   "name": "@sleeperhq-private/react-data-kernel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "An off-heap data layer for React Native: SQLite-backed row tables, partition-versioned reactivity, and declarative reads.",
   "repository": {
     "type": "git",
@@ -42,6 +42,16 @@
         "default": "./lib/commonjs/testing/index.js"
       }
     },
+    "./diagnostics": {
+      "import": {
+        "types": "./lib/typescript/module/diagnostics/index.d.ts",
+        "default": "./lib/module/diagnostics/index.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/diagnostics/index.d.ts",
+        "default": "./lib/commonjs/diagnostics/index.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -49,6 +59,7 @@
     "lib",
     "nitro/package.json",
     "testing/package.json",
+    "diagnostics/package.json",
     "!**/tests",
     "!**/*.test.ts",
     "!**/*.probe.ts"

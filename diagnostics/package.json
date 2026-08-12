@@ -1,0 +1,7 @@
+{
+  "name": "@sleeperhq-private/react-data-kernel/diagnostics",
+  "private": true,
+  "main": "../lib/commonjs/diagnostics/index.js",
+  "module": "../lib/module/diagnostics/index.js",
+  "types": "../lib/typescript/commonjs/diagnostics/index.d.ts"
+}

@@ -1,18 +1,15 @@
 /** Key derivation for reads: a read's cache key is its partition plus the values it is scoped by. */
+export { cacheKey, KEY_SEP } from './key';
 /** A string that identifies a value by its content, with object keys sorted so equal content yields one key. */
 export declare function stableKey(value: unknown): string;
-/** A value a read varies by: anything `select` reads beyond the partition itself. */
-export type VaryValue = string | number | boolean | null | undefined | readonly unknown[] | Record<string, unknown>;
+/**
+ * A value a read varies by: anything `select` reads beyond the partition itself. An object or an array keys by its
+ * content, so a read can vary by a config or an options object without the caller serializing one — but it must be
+ * plain data, since only own enumerable properties count towards the key (see {@link stableKey}).
+ */
+export type VaryValue = string | number | boolean | null | undefined | readonly unknown[] | object;
 /** The vary list of a read that declares no `varyBy`, and of one called with no args: one shared array, not a fresh one per call. */
 export declare const EMPTY_VARY: readonly VaryValue[];
-/** Separator between a key's parts. A control character, since a part may itself contain `:` (`clubsoccer:epl`). */
-export declare const KEY_SEP = "\0";
-/**
- * The identity of one cache entry, built from the parts that distinguish it: two lookups share an entry exactly when
- * every part matches. Use this for any key in `caches.ts` rather than a template literal or a `join(':')`, which
- * collide two different keys as soon as a part contains `:` itself (`clubsoccer:epl`).
- */
-export declare function cacheKey(...parts: readonly string[]): string;
 /** Separator between groups of parts, one level above {@link KEY_SEP}, so the grouping is part of the key. */
 export declare const GROUP_SEP = "\u0001";
 /**
