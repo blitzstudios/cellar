@@ -1,0 +1,97 @@
+/**
+ * A whole-collection list read paired with the per-row detail read that indexes back into it. Rows resolve in
+ * blocks, so `useItem` collapses to one hydration per block however many rows call it.
+ */
+
+import { useMemo } from 'react';
+
+import { getOrCreate } from '../collections';
+import type { ReadOptions } from './facade';
+import { DataResult } from '../store_result';
+
+const EMPTY_IDS: readonly string[] = [];
+
+/**
+ * What a windowed list is assembled from: the read for the whole collection, a row's identity, whatever detail a list
+ * row already carries, and the plural read a block of ids hydrates through. `useDetailByIds` is called as a hook on
+ * every row's render, so it has to be one, and `enabled` and the ids it is handed are what gate it.
+ */
+export interface WindowedListSpec<Params, Row extends object, Detail> {
+  useList: (args: { params: Params } & ReadOptions) => DataResult<Row[]>;
+  idOf: (row: Row) => string;
+  prehydrated: (row: Row) => Detail | undefined;
+  useDetailByIds: (params: Params, ids: readonly string[], enabled: boolean) => Record<string, Detail> | undefined;
+  /** Rows per hydration, default 50. */
+  blockSize?: number;
+}
+
+/** The handle every row in a block shares, which collapses their `useItem` calls onto one read key. */
+export interface WindowedBlock<Params> {
+  params: Params;
+  ids: readonly string[];
+}
+
+/**
+ * The three pieces a screen uses together: `useList` where the list is read, `useBlocks` beside it, and `useItem` in
+ * each row. A row the parent's `rows` didn't cover still resolves, hydrating alone rather than sharing a block.
+ */
+export interface WindowedList<Params, Row extends object, Detail> {
+  useList: (args: { params: Params } & ReadOptions) => DataResult<Row[]>;
+  /** Call once where the list renders, over the rows being rendered; hand each row the block the result maps it to. */
+  useBlocks: (args: { params: Params; rows: readonly Row[] }) => (row: Row) => WindowedBlock<Params>;
+  useItem: (args: { params: { row: Row; block: WindowedBlock<Params> } }) => Detail | undefined;
+}
+
+/**
+ * The per-row half: one row's detail, taken from what the list row already carried or from the block hydration its
+ * neighbours share. `useDetailByIds` is a hook and runs on every render; `enabled` and the `ids` do the gating.
+ */
+export function useWindowedDetail<D>(
+  prehydrated: D | undefined,
+  id: string,
+  blockIds: readonly string[] | undefined,
+  useDetailByIds: (ids: readonly string[], enabled: boolean) => Record<string, D> | undefined,
+): D | undefined {
+  // Nullish, not falsy: a `Detail` of `0` or `''` is a value the list carried. Must match the return below.
+  const need = prehydrated == null;
+  const ids = useMemo(() => (need ? blockIds ?? [id] : EMPTY_IDS), [need, blockIds, id]);
+  const detail = useDetailByIds(ids, need);
+  return prehydrated ?? detail?.[id];
+}
+
+/**
+ * Builds one, for a virtualized list too long to hydrate whole whose rows still need detail the list itself does not
+ * carry — a ranked player list, where the rows on screen are a few dozen out of thousands. The alternative is a read
+ * per row, which is one subscription and one hydration per row on screen: the fan-out the read surface warns about.
+ */
+export function createWindowedList<Params, Row extends object, Detail>(spec: WindowedListSpec<Params, Row, Detail>): WindowedList<Params, Row, Detail> {
+  const blockSize = spec.blockSize ?? 50;
+
+  function useList(args: { params: Params } & ReadOptions): DataResult<Row[]> {
+    return spec.useList(args);
+  }
+
+  function useBlocks({ params, rows }: { params: Params; rows: readonly Row[] }): (row: Row) => WindowedBlock<Params> {
+    return useMemo(() => {
+      const byRow = new Map<Row, WindowedBlock<Params>>();
+      for (let start = 0; start < rows.length; start += blockSize) {
+        const block = rows.slice(start, start + blockSize);
+        // Hydrate only the rows still missing their detail.
+        const ids = block.filter((row) => !spec.prehydrated(row)).map(spec.idOf);
+        const handle: WindowedBlock<Params> = { params, ids };
+        for (const row of block) byRow.set(row, handle);
+      }
+      // A row outside `rows` gets a block of its own, cached so it too keeps one block identity across renders.
+      const alone = new Map<Row, WindowedBlock<Params>>();
+      return (row: Row): WindowedBlock<Params> => byRow.get(row) ?? getOrCreate(alone, row, () => ({ params, ids: [spec.idOf(row)] }));
+    }, [params, rows]);
+  }
+
+  function useItem({ params }: { params: { row: Row; block: WindowedBlock<Params> } }): Detail | undefined {
+    const { row, block } = params;
+    const useDetailByIds = (ids: readonly string[], enabled: boolean): Record<string, Detail> | undefined => spec.useDetailByIds(block.params, ids, enabled);
+    return useWindowedDetail(spec.prehydrated(row), spec.idOf(row), block.ids, useDetailByIds);
+  }
+
+  return { useList, useBlocks, useItem };
+}
