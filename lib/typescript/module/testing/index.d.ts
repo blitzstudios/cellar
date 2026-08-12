@@ -1,11 +1,16 @@
 /**
  * Fixtures for a suite that exercises a store built on this kernel: a real SQLite engine off-device, a version atom
  * that recomputes on every read, the host services as spies, and the wrappers that pin a case to one build.
+ *
+ * The kernel's own internals a test reaches for live here rather than on the core entry point, so the surface a
+ * screen or a service sees stays down to what it actually writes against.
  */
 export { createSqlJsConnection, initSqlJs } from './sqljs_connection';
 export type { SqlJsCapabilities, SqlJsConnection } from './sqljs_connection';
 export { createTestVersionAtom } from './version_atom';
 export { installTestRuntime } from './runtime';
-export type { TestRuntime } from './runtime';
-export { itDev, itProd, describeDev, devWarnings } from './dev_mode';
+export { itDev } from './dev_mode';
+export { createVersionAtom } from '../reactivity/version_atom';
+export { evalShredElement } from '../write/shred_spec';
+export { resetOnceGuards } from '../diagnostics/once_guard';
 //# sourceMappingURL=index.d.ts.map

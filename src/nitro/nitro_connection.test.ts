@@ -1,6 +1,7 @@
 import { open, openSecondary } from 'react-native-nitro-sqlite';
 
-import { configureDataKernel, resetOnceGuards } from '../index';
+import { configureDataKernel } from '../index';
+import { resetOnceGuards } from '../diagnostics/once_guard';
 import { bindSqliteBackend, bindSqliteStore, getOpenSqliteConnections, openNitroConnection } from './nitro_connection';
 
 jest.mock('react-native-nitro-sqlite', () => ({ open: jest.fn(), openSecondary: jest.fn() }));

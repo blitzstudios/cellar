@@ -14,7 +14,7 @@ which walks the store this doc points you at as the template.
 
 ```jsonc
 // package.json
-"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.1.0-gitpkg"
+"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.2.0-gitpkg"
 ```
 
 Three entry points:
@@ -23,7 +23,7 @@ Three entry points:
 | --- | --- | --- |
 | `@sleeperhq-private/react-data-kernel` | everything a store, a service or a screen writes against | stores, services, screens |
 | `…/nitro` | `openNitroConnection` and `bindSqliteStore`, over `react-native-nitro-sqlite` | the app's startup, on device |
-| `…/testing` | a real SQLite engine off-device, a test version atom, the host services as spies, the dev/prod `it` wrappers | a store's own tests |
+| `…/testing` | a real SQLite engine off-device, a test version atom, the host services as spies, and the kernel internals only a test reaches for | a store's own tests |
 
 The core entry runs anywhere React does; only `./nitro` touches native code. Each subpath is declared twice — in
 `exports`, and as a stub `package.json` beside `lib/` — because the app's TypeScript and Metro still resolve the
@@ -523,7 +523,9 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 
 The `./testing` entry ships too, since a store's tests need it: `sqljs_connection.ts` (a real SQLite engine for
 parity tests), `version_atom.ts` (in-process version atom with working `subscribe`), `runtime.ts` (the host
-services as spies), and `dev_mode.ts` (the wrappers pinning a case to one build).
+services as spies), and `dev_mode.ts` (the wrappers pinning a case to one build). It also re-exports the handful
+of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement` to check
+a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
 
 Bespoke per store (the domain half you write, in the app): `schedule` is the small template, `player` is the same shape over
 a much larger payload (a native shred, and a `lifecycle` group), and `player_stats` is by far the largest — a

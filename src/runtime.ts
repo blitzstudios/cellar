@@ -110,8 +110,8 @@ export const INERT_QUERY: QueryRuntime = {
 let runtime: DataKernelRuntime = { errors: INERT_ERRORS, query: INERT_QUERY };
 
 /**
- * Installs a host's services. Each half given replaces the one before it, so a test can hand back {@link INERT_ERRORS}
- * or {@link INERT_QUERY} to take one away again.
+ * Installs a host's services. Each half given replaces the one before it, so a host may configure error reporting and
+ * the query runtime from different places, and a test may install one and leave the other inert.
  */
 export function configureDataKernel(next: Partial<DataKernelRuntime>): void {
   runtime = {

@@ -73,8 +73,8 @@ export declare const INERT_ERRORS: ErrorSink;
  */
 export declare const INERT_QUERY: QueryRuntime;
 /**
- * Installs a host's services. Each half given replaces the one before it, so a test can hand back {@link INERT_ERRORS}
- * or {@link INERT_QUERY} to take one away again.
+ * Installs a host's services. Each half given replaces the one before it, so a host may configure error reporting and
+ * the query runtime from different places, and a test may install one and leave the other inert.
  */
 export declare function configureDataKernel(next: Partial<DataKernelRuntime>): void;
 export declare function errorSink(): ErrorSink;
