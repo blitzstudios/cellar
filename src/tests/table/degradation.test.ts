@@ -64,13 +64,31 @@ describe('guardedConnection', () => {
     expect(() => runBatch(conn, [['INSERT INTO things (id) VALUES (?);', ['a']]])).not.toThrow();
   });
 
-  itProd('resolves a failed native shred as zero rows, instead of rejecting into the JS-parse fallback', async () => {
+  itProd('lets a failed native shred reject, because that rejection is what `shred` falls back to a JS parse on', async () => {
+    const onFatal = jest.fn();
     const broken: SqliteConnection = {
       execute: () => ({ rows: { _array: [] } }),
-      shredJsonArrayAsync: () => Promise.reject(new Error('SQLITE_FULL: database or disk is full')),
+      shredJsonArrayAsync: () => Promise.reject(new Error('a payload shape the native shredder cannot take')),
+    };
+    const conn = guardedConnection(broken, onFatal);
+
+    await expect(conn.shredJsonArrayAsync!({} as never, '[]', [])).rejects.toThrow(/cannot take/);
+    // A shred that could not parse says nothing about the disk, so the store keeps its SQLite backend.
+    expect(onFatal).not.toHaveBeenCalled();
+  });
+
+  itProd('stops shredding once some other statement has already degraded the store', async () => {
+    const broken: SqliteConnection = {
+      execute: () => {
+        throw new Error('SQLITE_IOERR: disk I/O error');
+      },
+      shredJsonArrayAsync: jest.fn(async () => 5),
     };
     const conn = guardedConnection(broken, () => {});
+    conn.execute('SELECT 1;');
+
     await expect(conn.shredJsonArrayAsync!({} as never, '[]', [])).resolves.toBe(0);
+    expect(broken.shredJsonArrayAsync).not.toHaveBeenCalled();
   });
 
   itProd('guards the read handle as well, which is where every read actually goes', () => {
@@ -202,6 +220,34 @@ describe('defineSqliteStore — the wiring', () => {
     store.createSqliteBackend(broken);
 
     expect(() => readRows(capsConn!, 'SELECT 1;')).not.toThrow();
+  });
+});
+
+describe('a native shred the driver refuses', () => {
+  itProd('falls back to the JS parse over the guarded connection, which is the only wiring production runs', async () => {
+    const calls: string[] = [];
+    const conn: SqliteConnection = {
+      execute: (sql) => {
+        calls.push(sql);
+        return { rows: { _array: [] } };
+      },
+      shredJsonArrayAsync: () => Promise.reject(new Error('a payload shape the native shredder cannot take')),
+    };
+    const onFatal = jest.fn();
+    const table = createSqliteRowTable(schema, guardedConnection(conn, onFatal), {
+      specs: { all: {} as never },
+      variant: () => 'all',
+      binds: (scope) => [String(scope.sport)],
+    });
+    const parseRows = jest.fn(() => [{ id: 'a', sport: 'nfl' }]);
+
+    const count = await table.shred({ sport: 'nfl' }, '[{"id":"a"}]', parseRows);
+
+    expect(parseRows).toHaveBeenCalled();
+    expect(count).toBe(1);
+    expect(calls.some((sql) => /INSERT/.test(sql) && sql.includes('things'))).toBe(true);
+    // The rows landed, so the store keeps the SQLite backend it would otherwise have thrown away for the session.
+    expect(onFatal).not.toHaveBeenCalled();
   });
 });
 
