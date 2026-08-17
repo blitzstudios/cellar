@@ -34,9 +34,10 @@ export interface LiveSchema {
  */
 export declare function schemaFingerprint<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): number;
 /**
- * The same stamp with the column list left out, so that comparing it against a live database answers the one question
- * {@link schemaFingerprint} cannot: whether a declaration that no longer matches differs *only* in its columns. Masked
- * to 31 bits, since it is stored in a `PRAGMA` slot whose signedness is not worth relying on.
+ * The same stamp with the columns left out — the table's and the shred spec's alike — so that comparing it against a
+ * live database answers the one question {@link schemaFingerprint} cannot: whether a declaration that no longer matches
+ * differs *only* in the fields it holds. Masked to 31 bits, since it is stored in a `PRAGMA` slot whose signedness is
+ * not worth relying on.
  */
 export declare function schemaStructureStamp<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): number;
 /**

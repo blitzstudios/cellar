@@ -14,7 +14,7 @@ which walks the store this doc points you at as the template.
 
 ```jsonc
 // package.json
-"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.0-gitpkg"
+"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.1-gitpkg"
 ```
 
 Three entry points:
@@ -119,22 +119,25 @@ store is reaching past its entry point; import it from its own module only if yo
 
   Telling those apart takes two stamps, because a fingerprint that no longer matches can't say *what* moved:
   `PRAGMA user_version` holds the whole declaration's, and `PRAGMA application_id` holds the same hash with the
-  column list left out. Structure stamp equal and columns only added ⇒ widen; anything else ⇒ rebuild. A database
-  built before the second stamp existed reads it as `0`, so its next schema change is one last rebuild, and every
-  widening after that is free. The stamps are also what make an index edit take effect at all:
-  `CREATE INDEX IF NOT EXISTS` is a no-op against an index of the same name over different columns, and
-  `PRAGMA table_info` doesn't report indexes. Two fields on the schema go with them:
+  columns left out — the table's, and the shred spec's `columns`/`ops` with them, since a spec is index-aligned with
+  the table and a generated column arrives together with the op that fills it. Structure stamp equal and columns only
+  added ⇒ widen; anything else ⇒ rebuild. A database built before the second stamp existed reads it as `0`, so its
+  next schema change is one last rebuild, and every widening after that is free. The stamps are also what make an
+  index edit take effect at all: `CREATE INDEX IF NOT EXISTS` is a no-op against an index of the same name over
+  different columns, and `PRAGMA table_info` doesn't report indexes. Two fields on the schema go with them:
 
   - `pushFed: true` — for a store fed by socket as well as fetch. A rebuild there loses whatever arrived by push
     since the last fetch, so one files a sampled `info` notice naming the table. It does **not** throw, in `__DEV__`
     or anywhere else: `init` stamps the schema last, so refusing the rebuild would leave the stale stamp on disk and
     bind the in-memory backend on every launch after — permanently slower than the heap it replaced, over a change
     someone shipped on purpose. Catch the edit where the edit happens, by pinning the store's column set in a test.
-  - `rebuildVersion` — bump to force a rebuild for something the stamps can't see. They see the table **and** the
-    shred spec, so a changed shred op rebuilds on its own; what they can't see is a row builder written in JS with no
-    spec beside it (`schedule`). A change there leaves rows stale rather than malformed, and the stored ETag will 304
-    the correction away. Bumping this drops the ETags with the rows, which makes the next fetch a real one — and
-    because it is part of the structure stamp, it is never mistaken for a widening.
+  - `rebuildVersion` — bump to force a rebuild for something the stamps can't see, and it is part of the structure
+    stamp, so bumping it is never mistaken for a widening. Two things need it. One is a row builder written in JS with
+    no spec beside it (`schedule`): a change there leaves rows stale rather than malformed, and the stored ETag will
+    304 the correction away. The other is repointing a shred op on a column that already exists *in the same release
+    that adds a column* — alone that rebuilds (a plan with nothing to add is a rebuild), but alongside an addition it
+    reads as a widening and the old values under the repointed column stay. Bumping this drops the ETags with the
+    rows, which makes the next fetch a real one.
 
   **The shred spec is part of the fingerprint, which is why `NativeShredSpec` holds a `specs` map keyed by
   variant.** The fingerprint has to hash every spec a store can shred through, so the specs have to be

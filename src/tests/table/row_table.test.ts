@@ -313,15 +313,59 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       expect(planSchemaMigration(next as RowTableSchema<any>, liveSchema(schema))).toBe('rebuild');
     });
 
-    it('falls back to a rebuild when a shred op fills a column it already had from somewhere else', () => {
-      const spec = (path: string): NativeShredSpec => ({
-        specs: { all: { version: 1, table: 'things', insertVerb: 'INSERT OR REPLACE', columns: ['team'], ops: [{ op: 'text', path }], deleteWhere: [] } },
+    describe('and the shred spec, which moves with the columns', () => {
+      /** A spec index-aligned with the table, as one is: `columns[i]` is filled by `ops[i]`. */
+      const spec = (columns: string[], overrides: Partial<NativeShredSpec['specs'][string]> = {}): NativeShredSpec => ({
+        specs: {
+          all: {
+            version: 1,
+            table: 'things',
+            insertVerb: 'INSERT OR REPLACE',
+            columns,
+            ops: columns.map((column) => ({ op: 'text' as const, path: column })),
+            deleteWhere: [],
+            ...overrides,
+          },
+        },
         variant: () => 'all',
         binds: () => [],
       });
 
-      expect(planSchemaMigration(widened, liveSchema(schema, spec('team')), spec('team'))).toBe('extend');
-      expect(planSchemaMigration(widened, liveSchema(schema, spec('team')), spec('roster_team'))).toBe('rebuild');
+      /**
+       * The case the whole path exists for: `player_stats` generates its columns from the scoring catalog, so a new
+       * key adds a column *and* the op filling it. Reading that as structural would rebuild every install, which is
+       * what shipping one more scoring key used to cost.
+       */
+      it('widens when a new column arrives with the op that fills it, which is what one new scoring key looks like', () => {
+        const before = spec(['team']);
+        const after = spec(['team', 'extra']);
+
+        expect(planSchemaMigration(widened, liveSchema(schema, before), after)).toBe('extend');
+      });
+
+      it('rebuilds when an op repoints a column that already existed, since nothing was added to widen', () => {
+        const before = spec(['team']);
+        const repointed = spec(['team']);
+        repointed.specs.all.ops = [{ op: 'text', path: 'roster_team' }];
+
+        expect(planSchemaMigration(schema, liveSchema(schema, before), repointed)).toBe('rebuild');
+      });
+
+      it.each([
+        ['the rows a shred replaces', { deleteWhere: [{ column: 'sport', bindIndex: 0 }] }],
+        ['whether a shred replaces at all', { insertVerb: 'INSERT' as const }],
+        ['how the payload is walked', { source: 'objectValues' as const }],
+        ['which elements are skipped', { whereGuard: { paths: ['team'] } }],
+      ])('rebuilds when a spec changes %s, even alongside an added column', (_label, overrides) => {
+        expect(planSchemaMigration(widened, liveSchema(schema, spec(['team'])), spec(['team', 'extra'], overrides))).toBe('rebuild');
+      });
+
+      it('rebuilds when a variant is added, which is a new sport rather than a new field', () => {
+        const before = spec(['team']);
+        const added: NativeShredSpec = { ...before, specs: { ...before.specs, nfl: { ...before.specs.all } } };
+
+        expect(planSchemaMigration(widened, liveSchema(schema, before), added)).toBe('rebuild');
+      });
     });
 
     it('rebuilds a database stamped before the structure stamp existed, which is every install that predates it', () => {
