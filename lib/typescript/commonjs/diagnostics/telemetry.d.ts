@@ -1,6 +1,7 @@
 /**
  * The report an off-heap path files when it stays correct while losing the win it exists for, such as a native shred
- * that fell back to JS. Each site reports once per session, to the dev console and to Sentry.
+ * that fell back to JS. Each site reports once per session, to the dev console and to Sentry. `severity: 'info'` files
+ * the other kind: something expected that a reader of the same channel should not mistake for a fault.
  */
 /** Files one degradation, at most once per `scope` per session. */
 export declare function reportStoreDegradation(args: {

@@ -1,8 +1,8 @@
 import { configureDataKernel, INERT_ERRORS } from '../../runtime';
 import { BatchCommand, readRows, SqliteConnection } from '../../table/connection';
 import { createMemoryRowTable } from '../../table/memory';
-import { RowTableSchema } from '../../table/types';
-import { planSchemaMigration, schemaFingerprint } from '../../table/schema';
+import { columnNames, RowTableSchema } from '../../table/types';
+import { addedColumns, LiveColumn, LiveSchema, planSchemaMigration, schemaFingerprint, schemaStructureStamp } from '../../table/schema';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { itDev, itProd } from '../../testing/dev_mode';
 import type { NativeShredSpec, ShredOp } from '../../write/shred_spec';
@@ -147,16 +147,40 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS things_meta');
   });
 
-  /** A `setReader` fn answering `PRAGMA table_info` with existence and `PRAGMA user_version` with `stamp`. */
-  const reader = (tableExists: boolean, stamp: number) => (sql: string) =>
-    sql.startsWith('PRAGMA table_info') ? (tableExists ? [{ name: 'id' }] : []) : sql.startsWith('PRAGMA user_version') ? [{ user_version: stamp }] : [];
+  /**
+   * A `setReader` fn answering the three PRAGMAs `init` plans from, with `live` standing for the table already on disk:
+   * its columns, and the two stamps a build of it would have left.
+   */
+  const readerFor = (live: RowTableSchema<any> | undefined, stamp: number, structure = 0) => (sql: string) => {
+    if (sql.startsWith('PRAGMA table_info')) {
+      return live ? columnNames(live).map((name) => ({ name, type: live.columns[name].type, notnull: live.columns[name].notNull ? 1 : 0 })) : [];
+    }
+    if (sql.startsWith('PRAGMA user_version')) return [{ user_version: stamp }];
+    if (sql.startsWith('PRAGMA application_id')) return [{ application_id: structure }];
+    return [];
+  };
+
+  /** The reader for a database holding exactly what `built` declares, which is the upgrade case every plan starts from. */
+  const reader = (built: RowTableSchema<any> | undefined, spec?: NativeShredSpec) =>
+    built ? readerFor(built, schemaFingerprint(built, spec), schemaStructureStamp(built, spec)) : readerFor(undefined, 0);
+
+  /** What a live database holds, as `PRAGMA table_info` reports it. */
+  const liveOf = (built: RowTableSchema<any>): LiveColumn[] =>
+    columnNames(built).map((name) => ({ name, type: built.columns[name].type, notnull: built.columns[name].notNull ? 1 : 0 }));
+
+  /** The whole live account of a database built from `built`, for a planner call. */
+  const liveSchema = (built: RowTableSchema<any>, spec?: NativeShredSpec): LiveSchema => ({
+    columns: liveOf(built),
+    stamp: schemaFingerprint(built, spec),
+    structure: schemaStructureStamp(built, spec),
+  });
 
   describe('schema fingerprint (PRAGMA user_version)', () => {
     it('is the whole migration decision: create when absent, none when current, rebuild otherwise', () => {
-      const current = schemaFingerprint(schema);
-      expect(planSchemaMigration(schema, { tableExists: false, stamp: current })).toBe('create');
-      expect(planSchemaMigration(schema, { tableExists: true, stamp: current })).toBe('none');
-      expect(planSchemaMigration(schema, { tableExists: true, stamp: current + 1 })).toBe('rebuild');
+      const live = liveSchema(schema);
+      expect(planSchemaMigration(schema, { ...live, columns: [] })).toBe('create');
+      expect(planSchemaMigration(schema, live)).toBe('none');
+      expect(planSchemaMigration(schema, { ...live, stamp: live.stamp + 1, structure: live.structure + 1 })).toBe('rebuild');
     });
 
     it.each([
@@ -240,17 +264,18 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
     it('leaves a current table alone, without even a redundant stamp write', () => {
       const { conn, calls, setReader } = makeConn();
-      setReader(reader(true, schemaFingerprint(schema)) as never);
+      setReader(reader(schema) as never);
       createSqliteRowTable(schema, conn).init();
       expect(calls.some((column) => column.sql.startsWith('DROP TABLE'))).toBe(false);
       expect(calls.some((column) => column.sql.startsWith('PRAGMA user_version ='))).toBe(false);
+      expect(calls.some((column) => column.sql.startsWith('PRAGMA application_id ='))).toBe(false);
     });
 
     it('rebuilds an index change, the one case nothing else could detect', () => {
       const reindexed: RowTableSchema<TestRow> = { ...schema, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] };
 
       const { conn, calls, setReader } = makeConn();
-      setReader(reader(true, schemaFingerprint(schema)) as never);
+      setReader(reader(schema) as never);
       createSqliteRowTable(reindexed, conn).init();
       const sql = calls.map((column) => column.sql);
       expect(sql).toContain('DROP TABLE IF EXISTS things;');
@@ -260,40 +285,155 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     });
   });
 
-  describe('pushFed — a rebuild is data loss, not a refetch', () => {
-    const pushSchema: RowTableSchema<TestRow> = { ...schema, table: 'pushy', pushFed: true, meta: undefined };
+  describe('a widening (PRAGMA application_id)', () => {
+    /** The routine edit: a generated column set gains one, which is what a sport publishing a new stat looks like. */
+    const widened: RowTableSchema<TestRow & { extra: string | null }> = { ...schema, columns: { ...schema.columns, extra: { type: 'TEXT' } } };
 
-    itDev('throws rather than silently emptying the table', () => {
-      const { conn, setReader } = makeConn();
-      setReader(reader(true, schemaFingerprint(pushSchema) + 1) as never);
-      expect(() => createSqliteRowTable(pushSchema, conn).init()).toThrow(/push-fed/);
+    it('is planned where only the columns grew, and the structure stamp agrees the rest is untouched', () => {
+      expect(planSchemaMigration(widened, liveSchema(schema))).toBe('extend');
+      expect(addedColumns(widened, liveOf(schema))).toEqual(['extra']);
     });
 
-    itProd('rebuilds and reports it on a release build, rather than taking the store down with it', () => {
+    it.each([
+      ['a retyped column', { ...widened, columns: { ...widened.columns, num: { type: 'TEXT' as const } } }],
+      ['a column that became NOT NULL', { ...widened, columns: { ...widened.columns, num: { type: 'INTEGER' as const, notNull: true } } }],
+      ['a dropped column', { ...widened, columns: { id: schema.columns.id, sport: schema.columns.sport, extra: { type: 'TEXT' as const } } }],
+      ['a new NOT NULL column, which every existing row would violate', { ...widened, columns: { ...widened.columns, extra: { type: 'TEXT' as const, notNull: true } } }],
+    ])('falls back to a rebuild on %s, which no ALTER TABLE could apply', (_label, next) => {
+      expect(planSchemaMigration(next as RowTableSchema<any>, liveSchema(schema))).toBe('rebuild');
+      expect(addedColumns(next as RowTableSchema<any>, liveOf(schema))).toBeUndefined();
+    });
+
+    it.each([
+      ['a changed index', { ...widened, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] }],
+      ['a changed primary key', { ...widened, primaryKey: ['id'] }],
+      ['a renamed ETag table', { ...widened, meta: { ...schema.meta!, table: 'things_etags' } }],
+      ['a bumped rebuildVersion', { ...widened, rebuildVersion: 2 }],
+    ])('falls back to a rebuild on %s, which restates the rows already stored', (_label, next) => {
+      expect(planSchemaMigration(next as RowTableSchema<any>, liveSchema(schema))).toBe('rebuild');
+    });
+
+    it('falls back to a rebuild when a shred op fills a column it already had from somewhere else', () => {
+      const spec = (path: string): NativeShredSpec => ({
+        specs: { all: { version: 1, table: 'things', insertVerb: 'INSERT OR REPLACE', columns: ['team'], ops: [{ op: 'text', path }], deleteWhere: [] } },
+        variant: () => 'all',
+        binds: () => [],
+      });
+
+      expect(planSchemaMigration(widened, liveSchema(schema, spec('team')), spec('team'))).toBe('extend');
+      expect(planSchemaMigration(widened, liveSchema(schema, spec('team')), spec('roster_team'))).toBe('rebuild');
+    });
+
+    it('rebuilds a database stamped before the structure stamp existed, which is every install that predates it', () => {
+      expect(planSchemaMigration(widened, { columns: liveOf(schema), stamp: schemaFingerprint(schema), structure: 0 })).toBe('rebuild');
+    });
+
+    it('adds the column and clears the etags, keeping the table and every row in it', () => {
+      const { conn, calls, setReader } = makeConn();
+      setReader(reader(schema) as never);
+      createSqliteRowTable(widened, conn).init();
+      const sql = calls.map((column) => column.sql);
+
+      expect(sql).toContain('ALTER TABLE things ADD COLUMN extra TEXT;');
+      expect(sql.some((statement) => statement.startsWith('DROP TABLE'))).toBe(false);
+      // The added column is NULL in every row that predates it, so the fetch that fills it must not be 304'd away.
+      expect(sql).toContain('DELETE FROM things_meta;');
+      // Only the column list moved, so the structure stamp on disk already describes this schema.
+      expect(schemaStructureStamp(widened)).toBe(schemaStructureStamp(schema));
+      expect(sql.some((statement) => statement.startsWith('PRAGMA application_id ='))).toBe(false);
+      expect(last(calls)?.sql).toBe(`PRAGMA user_version = ${schemaFingerprint(widened)};`);
+    });
+
+    it('stamps the structure of a table it left alone, so a database that predates the stamp can widen next time', () => {
+      const { conn, calls, setReader } = makeConn();
+      setReader(readerFor(schema, schemaFingerprint(schema), 0) as never);
+      createSqliteRowTable(schema, conn).init();
+      const sql = calls.map((column) => column.sql);
+
+      expect(sql).toContain(`PRAGMA application_id = ${schemaStructureStamp(schema)};`);
+      expect(sql.some((statement) => statement.startsWith('DROP TABLE'))).toBe(false);
+      expect(sql.some((statement) => statement.startsWith('PRAGMA user_version ='))).toBe(false);
+    });
+  });
+
+  describe('pushFed — a rebuild empties rows a fetch will not all bring back', () => {
+    const pushSchema: RowTableSchema<TestRow> = { ...schema, table: 'pushy', pushFed: true, meta: undefined };
+    /** A rebuild's worth of change: an index the rows are not sorted by, which no widening can apply. */
+    const reindexed: RowTableSchema<TestRow> = { ...pushSchema, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] };
+
+    const withSentry = (assert: (sentry: { captureException: jest.Mock; captureMessage: jest.Mock }) => void): void => {
       const sentry = { captureException: jest.fn(), captureMessage: jest.fn() };
       configureDataKernel({ errors: sentry });
       resetOnceGuards();
-      const { conn, calls, setReader } = makeConn();
-      setReader(reader(true, schemaFingerprint(pushSchema) + 1) as never);
+      // The report is sampled, so an unlucky roll would otherwise decide whether this test sees it.
+      const random = jest.spyOn(Math, 'random').mockReturnValue(0);
+      try {
+        assert(sentry);
+      } finally {
+        random.mockRestore();
+        configureDataKernel({ errors: INERT_ERRORS });
+      }
+    };
 
-      expect(() => createSqliteRowTable(pushSchema, conn).init()).not.toThrow();
+    /**
+     * The rebuild has to happen on every build, dev included. `init` stamps the schema last, so a dev build that threw
+     * instead would leave the stale stamp on disk and take the in-memory backend again on the next launch, and the one
+     * after — permanently slower than the heap it replaced, over a change someone shipped on purpose.
+     */
+    it('rebuilds rather than refusing to, so the database is never left stale for the next launch to trip over', () => {
+      const { conn, calls, setReader } = makeConn();
+      setReader(reader(pushSchema) as never);
+
+      expect(() => createSqliteRowTable(reindexed, conn).init()).not.toThrow();
 
       expect(calls.some((column) => column.sql.startsWith('DROP TABLE'))).toBe(true);
-      expect(sentry.captureException).toHaveBeenCalledTimes(1);
-      expect(sentry.captureException.mock.calls[0][1].tags).toEqual({ off_heap_degradation: 'pushy.schema_rebuild' });
-      configureDataKernel({ errors: INERT_ERRORS });
+      expect(last(calls)?.sql).toBe(`PRAGMA user_version = ${schemaFingerprint(reindexed)};`);
+    });
+
+    it('files it as a notice and not an error, since shipping a schema change is not a malfunction', () => {
+      withSentry((sentry) => {
+        const { conn, setReader } = makeConn();
+        setReader(reader(pushSchema) as never);
+
+        createSqliteRowTable(reindexed, conn).init();
+
+        expect(sentry.captureException).not.toHaveBeenCalled();
+        expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+        expect(sentry.captureMessage.mock.calls[0][1].level).toBe('info');
+        expect(sentry.captureMessage.mock.calls[0][1].tags).toEqual({ off_heap_degradation: 'pushy.schema_rebuild' });
+      });
+    });
+
+    it('does not fire on a widening, which keeps every row the pushes wrote', () => {
+      withSentry((sentry) => {
+        const widened: RowTableSchema<TestRow & { extra: string | null }> = { ...pushSchema, columns: { ...pushSchema.columns, extra: { type: 'TEXT' } } };
+        const { conn, calls, setReader } = makeConn();
+        setReader(reader(pushSchema) as never);
+
+        createSqliteRowTable(widened, conn).init();
+
+        expect(calls.map((column) => column.sql)).toContain('ALTER TABLE pushy ADD COLUMN extra TEXT;');
+        expect(sentry.captureMessage).not.toHaveBeenCalled();
+        expect(sentry.captureException).not.toHaveBeenCalled();
+      });
     });
 
     it('does not fire on a first install, where there is nothing to lose', () => {
-      const { conn, setReader } = makeConn();
-      setReader(reader(false, 0) as never);
-      expect(() => createSqliteRowTable(pushSchema, conn).init()).not.toThrow();
+      withSentry((sentry) => {
+        const { conn, setReader } = makeConn();
+        setReader(reader(undefined) as never);
+        createSqliteRowTable(pushSchema, conn).init();
+        expect(sentry.captureMessage).not.toHaveBeenCalled();
+      });
     });
 
     it('does not fire on an unchanged schema, so the guard costs a matching store nothing', () => {
-      const { conn, setReader } = makeConn();
-      setReader(reader(true, schemaFingerprint(pushSchema)) as never);
-      expect(() => createSqliteRowTable(pushSchema, conn).init()).not.toThrow();
+      withSentry((sentry) => {
+        const { conn, setReader } = makeConn();
+        setReader(reader(pushSchema) as never);
+        createSqliteRowTable(pushSchema, conn).init();
+        expect(sentry.captureMessage).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -840,16 +980,51 @@ describe('row_table — a schema change, run against real SQLite', () => {
     expect(after.getOne({ sport: 'nfl', id: 'c' })?.position).toBe('QB');
   });
 
-  it('drops the rows the old schema wrote, rather than reading them through the new one', () => {
+  it('keeps the rows the old schema wrote, since a column added beside them restates none of them', () => {
     const { after } = upgrade(v2);
 
-    expect(after.find({ sport: 'nfl' })).toEqual([]);
+    expect(
+      after
+        .find({ sport: 'nfl' })
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(['a', 'b']);
   });
 
-  it('drops the etag with them, or the refetch that repairs this answers 304 and the partition stays empty', () => {
+  it('reads the added column as null on those rows, which is what no value yet has to look like', () => {
+    const { after } = upgrade(v2);
+
+    expect(after.getOne({ sport: 'nfl', id: 'a' })?.position ?? null).toBeNull();
+  });
+
+  it('drops the etag, or the fetch that fills the added column answers 304 and it stays null', () => {
     const { after } = upgrade(v2);
 
     expect(after.getMeta({ sport: 'nfl' })).toBeUndefined();
+  });
+
+  it('leaves the widened table current, so the next launch plans nothing at all', () => {
+    const { conn } = upgrade(v2);
+
+    const again = createSqliteRowTable(v2, conn);
+    again.init();
+
+    expect(
+      again
+        .find({ sport: 'nfl' })
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(['a', 'b']);
+  });
+
+  it('rebuilds instead where the added column is NOT NULL, which ALTER TABLE cannot add to rows that exist', () => {
+    const notNull: RowTableSchema<TestRow & { position: string | null }> = {
+      ...schema,
+      columns: { ...schema.columns, position: { type: 'TEXT', notNull: true } },
+    };
+    const { after } = upgrade(notNull);
+
+    expect(after.find({ sport: 'nfl' })).toEqual([]);
   });
 
   it('leaves an unchanged schema alone — the same build reopening its own database keeps its rows and its etag', () => {

@@ -1,16 +1,38 @@
 /**
- * The DDL a store's `init` runs and the migration plan that chooses it. A live schema is identified by a fingerprint
- * stamped into `PRAGMA user_version`, so a stamp that differs from the declared schema's forces a rebuild.
+ * The DDL a store's `init` runs and the migration plan that chooses it. A live schema is identified by two stamps: the
+ * whole declaration's fingerprint in `PRAGMA user_version`, and everything but its column list in
+ * `PRAGMA application_id`. A table whose declaration only grew columns is widened in place; anything else is rebuilt.
  */
 
 import { cacheKey, GROUP_SEP } from '../args_key';
-import { columnNames, IndexDef, MetaDef, RowShape, RowTableSchema } from './types';
+import { ColumnDef, columnNames, IndexDef, MetaDef, RowShape, RowTableSchema } from './types';
 import { NativeShredSpec } from '../write/shred_spec';
 import { readRows, SqliteConnection } from './connection';
 import { reportStoreDegradation } from '../diagnostics/telemetry';
 
-/** What `init` does with the table it found — build it, leave it alone, or drop and rebuild it — as {@link planSchemaMigration} decides. */
-export type SchemaMigration = 'create' | 'none' | 'rebuild';
+/**
+ * What `init` does with the table it found — build it, leave it alone, widen it, or drop and rebuild it — as
+ * {@link planSchemaMigration} decides.
+ */
+export type SchemaMigration = 'create' | 'none' | 'extend' | 'rebuild';
+
+/** One column as `PRAGMA table_info` reports it, which is the only account of the live table's shape. */
+export interface LiveColumn {
+  name: string;
+  type: string;
+  /** SQLite's 0 or 1, not a boolean. */
+  notnull: number;
+}
+
+/** What {@link readLiveSchema} finds on disk for {@link planSchemaMigration} to weigh the declaration against. */
+export interface LiveSchema {
+  /** Empty where the table does not exist, which is the whole of how `init` tells a first install from an upgrade. */
+  columns: ReadonlyArray<LiveColumn>;
+  /** `PRAGMA user_version`: the built schema's {@link schemaFingerprint}. */
+  stamp: number;
+  /** `PRAGMA application_id`: its {@link schemaStructureStamp}, `0` on a database built before that stamp existed. */
+  structure: number;
+}
 
 /** 32-bit FNV-1a. `PRAGMA user_version` is a signed 32-bit int, so the stamp has to fit in one. */
 function fnv1a32(input: string): number {
@@ -34,37 +56,102 @@ function shredFingerprint(nativeShredSpec?: NativeShredSpec): string {
     .join(GROUP_SEP);
 }
 
+/** The column list's contribution to a stamp, in declaration order, which is the order an `INSERT` binds them in. */
+function columnsCanonical<Row extends RowShape>(schema: RowTableSchema<Row>): string {
+  return columnNames(schema)
+    .map((column) => `${column}:${schema.columns[column].type}:${schema.columns[column].notNull ? 1 : 0}`)
+    .join('|');
+}
+
 /**
- * The stamp identifying a built schema, hashed out of everything `init` creates, so that editing a schema rebuilds the
- * database rather than needing a migration. A change that alters what the rows hold without touching the columns,
- * key, indexes, ETag table or shred specs is invisible here — bump `schema.rebuildVersion` to force it.
+ * Everything but the columns: the parts of a declaration that describe what the rows already on disk *mean*, rather
+ * than how many fields they have. Both stamps read these from the same expressions, so the pair cannot drift.
  */
-export function schemaFingerprint<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): number {
-  const cols = columnNames(schema).map((column) => `${column}:${schema.columns[column].type}:${schema.columns[column].notNull ? 1 : 0}`);
+function structureCanonical<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): string[] {
   // Sorted, so only a real index change moves the fingerprint.
   const indexes = (schema.indexes ?? []).map((index) => `${index.name}(${index.columns.join(',')})`).sort();
   const meta = schema.meta ? `${schema.meta.table}(${schema.meta.keyColumns.join(',')}):${schema.meta.column}` : '';
+  return [`pk(${schema.primaryKey.join(',')})`, indexes.join('|'), meta, shredFingerprint(nativeShredSpec)];
+}
+
+/**
+ * The stamp identifying a built schema, hashed out of everything `init` creates, so that editing a schema migrates the
+ * database rather than needing one written by hand. A change that alters what the rows hold without touching the
+ * columns, key, indexes, ETag table or shred specs is invisible here — bump `schema.rebuildVersion` to force it.
+ */
+export function schemaFingerprint<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): number {
   const canonical = cacheKey(
     `r${schema.rebuildVersion ?? 0}`,
     schema.table,
-    cols.join('|'),
-    `pk(${schema.primaryKey.join(',')})`,
-    indexes.join('|'),
-    meta,
-    shredFingerprint(nativeShredSpec),
+    columnsCanonical(schema),
+    ...structureCanonical(schema, nativeShredSpec),
   );
   // 0 is reserved for an unstamped database, so the stamp steps past it.
   return fnv1a32(canonical) || 1;
 }
 
-/** Chooses between creating, keeping, and rebuilding the table; a rebuild is the only repair SQLite offers here. */
+/**
+ * The same stamp with the column list left out, so that comparing it against a live database answers the one question
+ * {@link schemaFingerprint} cannot: whether a declaration that no longer matches differs *only* in its columns. Masked
+ * to 31 bits, since it is stored in a `PRAGMA` slot whose signedness is not worth relying on.
+ */
+export function schemaStructureStamp<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): number {
+  const canonical = cacheKey(`r${schema.rebuildVersion ?? 0}`, schema.table, ...structureCanonical(schema, nativeShredSpec));
+  // 0 is reserved for a database that has never been stamped, so the stamp steps past it.
+  return (fnv1a32(canonical) & 0x7fffffff) || 1;
+}
+
+/**
+ * Chooses between creating, keeping, widening, and rebuilding the table.
+ *
+ * A widening is the cheap case worth detecting, because it is the routine one: a schema whose columns are generated
+ * from a catalog — the scoring keys a sport publishes, say — gains a column every time that catalog does, and dropping
+ * every row to add one costs a user their whole table for nothing. Anything else changes what the rows on disk mean —
+ * an index they are not sorted by, a key they were not deduped on, a shred op that fills a column they already have
+ * from a different path — and dropping them is the honest repair, since no `ALTER TABLE` can restate them.
+ */
 export function planSchemaMigration<Row extends RowShape>(
   schema: RowTableSchema<Row>,
-  live: { tableExists: boolean; stamp: number },
+  live: LiveSchema,
   nativeShredSpec?: NativeShredSpec,
 ): SchemaMigration {
-  if (!live.tableExists) return 'create';
-  return live.stamp === schemaFingerprint(schema, nativeShredSpec) ? 'none' : 'rebuild';
+  if (!live.columns.length) return 'create';
+  if (live.stamp === schemaFingerprint(schema, nativeShredSpec)) return 'none';
+  if (live.structure !== schemaStructureStamp(schema, nativeShredSpec)) return 'rebuild';
+  return addedColumns(schema, live.columns) ? 'extend' : 'rebuild';
+}
+
+/**
+ * The columns a widening would add, or `undefined` where the live table cannot be widened into the declared one:
+ *
+ * - a column the live table has and the declaration dropped, which a `SELECT *` would still read;
+ * - one whose type or nullability moved, which restates the values already stored under it;
+ * - a new column declared `NOT NULL`, which `ALTER TABLE ADD COLUMN` cannot add without a default, and which every
+ *   existing row would violate anyway;
+ * - nothing at all, which is a declaration that only reordered its columns — no cheaper than a rebuild to detect, and
+ *   rare enough not to be worth one.
+ */
+export function addedColumns<Row extends RowShape>(
+  schema: RowTableSchema<Row>,
+  live: ReadonlyArray<LiveColumn>,
+): Array<keyof Row & string> | undefined {
+  const declared = columnNames(schema);
+  const declaredNames = new Set<string>(declared);
+  for (const column of live) if (!declaredNames.has(column.name)) return undefined;
+
+  const liveByName = new Map(live.map((column) => [column.name, column]));
+  const added: Array<keyof Row & string> = [];
+  for (const name of declared) {
+    const def: ColumnDef = schema.columns[name];
+    const found = liveByName.get(name);
+    if (!found) {
+      if (def.notNull) return undefined;
+      added.push(name);
+    } else if (found.type.trim().toUpperCase() !== def.type || Number(found.notnull) !== (def.notNull ? 1 : 0)) {
+      return undefined;
+    }
+  }
+  return added.length ? added : undefined;
 }
 
 /**
@@ -103,17 +190,60 @@ export const createIndexSql = <Row extends RowShape>(table: string, idx: IndexDe
 /** The drop half of that pair, for a bulk write that rebuilds its indexes afterwards rather than maintaining them row by row. */
 export const dropIndexSql = <Row extends RowShape>(idx: IndexDef<Row>): string => `DROP INDEX IF EXISTS ${idx.name};`;
 
+/**
+ * The `ALTER TABLE` a widening runs per column {@link addedColumns} named. No `NOT NULL` clause is possible here and
+ * none is needed: SQLite refuses to add such a column without a default, which is why `addedColumns` rejects one.
+ */
+export const addColumnSql = <Row extends RowShape>(schema: RowTableSchema<Row>, column: keyof Row & string): string =>
+  `ALTER TABLE ${schema.table} ADD COLUMN ${column} ${schema.columns[column].type};`;
+
 /** Reads a live database's schema stamp, `0` where nothing has stamped one, for `init` to weigh against {@link schemaFingerprint}. */
 export function readUserVersion(conn: SqliteConnection): number {
   const rows = readRows<{ user_version?: number }>(conn, 'PRAGMA user_version;');
   return rows[0]?.user_version ?? 0;
 }
 
-/** Throws in `__DEV__`, reports in production. */
+/** Its companion, `0` on every database built before this stamp existed, which is what makes such a table rebuild once. */
+export function readApplicationId(conn: SqliteConnection): number {
+  const rows = readRows<{ application_id?: number }>(conn, 'PRAGMA application_id;');
+  return rows[0]?.application_id ?? 0;
+}
+
+/** Everything `init` plans from, in the three PRAGMA reads it takes to find it. */
+export function readLiveSchema(conn: SqliteConnection, table: string): LiveSchema {
+  const rows = readRows<{ name?: string; type?: string; notnull?: number | string }>(conn, `PRAGMA table_info(${table});`);
+  return {
+    columns: rows
+      .filter((row): row is { name: string; type?: string; notnull?: number | string } => typeof row.name === 'string')
+      .map((row) => ({ name: row.name, type: String(row.type ?? ''), notnull: Number(row.notnull ?? 0) })),
+    stamp: readUserVersion(conn),
+    structure: readApplicationId(conn),
+  };
+}
+
+/**
+ * A trickle is enough: this fires once per install behind a schema change, so a release wave reports the same expected
+ * event from every device that upgrades.
+ */
+const SCHEMA_REBUILD_SAMPLE_RATE = 0.001;
+
+/**
+ * Notes that a rebuild emptied a push-fed table, whose rows a fetch refills except for the pushes that arrived since
+ * the last one. That is a consequence of shipping a schema change rather than a malfunction, so it reports as a sampled
+ * notice rather than an error, beside the failures that genuinely took a store off SQLite.
+ *
+ * It deliberately does not throw, in `__DEV__` or anywhere else. `init` stamps the schema last, so refusing the rebuild
+ * would leave the stale stamp on disk and take the in-memory backend again on every launch after — permanently slower
+ * than the heap it replaced, over an expected event. Catching the edit belongs where the edit happens: a store pins its
+ * column set in a test, which is what fails when the schema widens.
+ */
 export function reportPushFedRebuild(table: string): void {
-  const message =
-    `[${table}] a schema change forces a rebuild of a push-fed table, which drops rows no fetch will bring back. ` +
-    'Either keep the schema compatible, or add a backfill for this table before changing it.';
-  if (__DEV__) throw new Error(message);
-  reportStoreDegradation({ scope: `${table}.schema_rebuild`, context: message });
+  reportStoreDegradation({
+    scope: `${table}.schema_rebuild`,
+    context:
+      'a schema change rebuilt a push-fed table: a fetch refills its rows, but pushes that arrived since the last fetch are gone. ' +
+      'Where a change can be spelled as new columns it widens the table in place instead, and costs nothing',
+    severity: 'info',
+    sampleRate: SCHEMA_REBUILD_SAMPLE_RATE,
+  });
 }

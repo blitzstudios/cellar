@@ -14,7 +14,7 @@ which walks the store this doc points you at as the template.
 
 ```jsonc
 // package.json
-"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.4.1-gitpkg"
+"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.0-gitpkg"
 ```
 
 Three entry points:
@@ -102,22 +102,39 @@ store is reaching past its entry point; import it from its own module only if yo
   delete; and in DEV every row they write is checked against the filter it was written under.
 
   **Changing a schema.** Edit the schema and ship it; there is no migration to write. `init` stamps a fingerprint
-  of everything it builds — columns, primary key, indexes, the ETag side-table — into `PRAGMA user_version`, and a
-  database whose stamp doesn't match is dropped and rebuilt from the next fetch. Rebuild is the only repair on
-  offer, because SQLite can add a column but not change a key or an index, and a half-migrated table fails
-  silently (a stale primary key turns ingest's `INSERT OR REPLACE` back into `INSERT`).
+  of everything it builds — columns, primary key, indexes, the ETag side-table, the shred spec — into
+  `PRAGMA user_version`, and a database whose stamp doesn't match is migrated on the spot. There are two ways that
+  can go, and which one you get is worth knowing before you edit:
 
-  The stamp is also what makes an index edit take effect: `CREATE INDEX IF NOT EXISTS` is a no-op against an
-  index of the same name with different columns, and `PRAGMA table_info` doesn't report indexes, so the
-  fingerprint is the only thing that notices. Two fields on the schema go with it:
+  - **A widening**, where the declaration only *added* columns. The table is kept and each new column arrives by
+    `ALTER TABLE ADD COLUMN`, so not one row is lost. This is the case worth having: a schema whose columns are
+    generated from a catalog — the scoring keys a sport publishes — gains a column every time the catalog does, and
+    dropping a user's whole table to add one costs them a refetch for nothing. The added columns are `NULL` in every
+    row that predates them, so the ETags go even though the rows stay: keeping one would answer the fetch that fills
+    them with a 304.
+  - **A rebuild**, for everything else — a changed key, a changed index, a renamed ETag table, a shred op that now
+    fills a column it already had from a different path. Each of those restates rows already on disk, and no
+    `ALTER TABLE` can restate them, so the table is dropped and refilled from the next fetch. A half-migrated table
+    fails silently instead (a stale primary key turns ingest's `INSERT OR REPLACE` back into `INSERT`).
 
-  - `pushFed: true` — for a store fed by socket rather than fetch. A rebuild there is data loss, not a refetch,
-    so one throws in `__DEV__` instead of quietly emptying the table.
-  - `rebuildVersion` — bump to force a rebuild for something the fingerprint can't see. It sees the table **and**
-    the shred spec, so a changed shred op rebuilds on its own; what it can't see is a row builder written in JS
-    with no spec beside it (`schedule`). A change there leaves rows stale rather than malformed, and the stored
-    ETag will 304 the correction away. Bumping this drops the ETags with the rows, which makes the next fetch a
-    real one.
+  Telling those apart takes two stamps, because a fingerprint that no longer matches can't say *what* moved:
+  `PRAGMA user_version` holds the whole declaration's, and `PRAGMA application_id` holds the same hash with the
+  column list left out. Structure stamp equal and columns only added ⇒ widen; anything else ⇒ rebuild. A database
+  built before the second stamp existed reads it as `0`, so its next schema change is one last rebuild, and every
+  widening after that is free. The stamps are also what make an index edit take effect at all:
+  `CREATE INDEX IF NOT EXISTS` is a no-op against an index of the same name over different columns, and
+  `PRAGMA table_info` doesn't report indexes. Two fields on the schema go with them:
+
+  - `pushFed: true` — for a store fed by socket as well as fetch. A rebuild there loses whatever arrived by push
+    since the last fetch, so one files a sampled `info` notice naming the table. It does **not** throw, in `__DEV__`
+    or anywhere else: `init` stamps the schema last, so refusing the rebuild would leave the stale stamp on disk and
+    bind the in-memory backend on every launch after — permanently slower than the heap it replaced, over a change
+    someone shipped on purpose. Catch the edit where the edit happens, by pinning the store's column set in a test.
+  - `rebuildVersion` — bump to force a rebuild for something the stamps can't see. They see the table **and** the
+    shred spec, so a changed shred op rebuilds on its own; what they can't see is a row builder written in JS with no
+    spec beside it (`schedule`). A change there leaves rows stale rather than malformed, and the stored ETag will 304
+    the correction away. Bumping this drops the ETags with the rows, which makes the next fetch a real one — and
+    because it is part of the structure stamp, it is never mistaken for a widening.
 
   **The shred spec is part of the fingerprint, which is why `NativeShredSpec` holds a `specs` map keyed by
   variant.** The fingerprint has to hash every spec a store can shred through, so the specs have to be
@@ -442,8 +459,8 @@ a fetch fills a partition, and live frames keep it current.
    for. Make this choice explicitly: it decides whether a score can appear at all.
 
 A store fed *only* by a socket leaves `definePartitions`'s `fetch` off, so its reads report `success` over
-an empty value, and sets `pushFed: true` on the schema so a fingerprint mismatch throws in `__DEV__` instead of
-rebuilding a table no fetch can refill. No store is push-only today.
+an empty value, and sets `pushFed: true` on the schema so a rebuild of a table no fetch can refill says so out
+loud. No store is push-only today.
 
 ### The buffered flush
 
@@ -501,7 +518,7 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
 | `types.ts`                                       | the schema types and the `RowTable` contract both backends implement      |
 | `sqlite.ts`, `memory.ts`                         | the two backends behind that contract; `query.ts` holds the `where`/order semantics they must answer identically |
-| `schema.ts`                                      | what `init` builds, and the fingerprint in `PRAGMA user_version` that decides when to rebuild |
+| `schema.ts`                                      | what `init` builds, and the two stamps that decide between widening it and rebuilding it |
 | `presence.ts`                              | whether a row filter holds rows, cached — a read asks far more often than it changes |
 | `connection.ts`                                  | batch/read helpers over the native binding; routes reads to the reader handle (`pinnedReader` opts out, for `TEMP`-table readers) |
 

@@ -22,10 +22,28 @@ function toNativeParams(params?: ReadonlyArray<unknown>): Array<string | number 
   });
 }
 
-const openConnections = new Map<string, SqliteConnection>();
+/** Every connection this module has open, with the handles to close it by: nitro addresses a handle by name, not by object. */
+const openConnections = new Map<string, { conn: SqliteConnection; handles: ReadonlyArray<{ close(): void }> }>();
 
 export function getOpenSqliteConnections(): Array<{ name: string; conn: SqliteConnection }> {
-  return Array.from(openConnections, ([name, conn]) => ({ name, conn }));
+  return Array.from(openConnections, ([name, entry]) => ({ name, conn: entry.conn }));
+}
+
+/**
+ * Closes a connection's handles and forgets it. Best effort per handle: a handle that will not close is one this
+ * process cannot hand back either way, and the report that follows a failed bind is the one worth keeping.
+ */
+export function closeNitroConnection(name: string): void {
+  const entry = openConnections.get(name);
+  if (!entry) return;
+  openConnections.delete(name);
+  for (const handle of entry.handles) {
+    try {
+      handle.close();
+    } catch {
+      /* already gone, or never opened */
+    }
+  }
 }
 
 const PRAGMAS: ReadonlyArray<{ sql: string; cost: string }> = [
@@ -74,6 +92,7 @@ function adaptHandle(conn: ReturnType<typeof open>): PinnedConnection {
 export function openNitroConnection(name: string, opts?: { dedicatedReader?: boolean }): SqliteConnection {
   const writer = open({ name });
   applyPragmas(writer, name);
+  const handles: Array<{ close(): void }> = [writer];
 
   let reader: PinnedConnection | undefined;
   if (opts?.dedicatedReader) {
@@ -82,6 +101,7 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
       const readHandle = openSecondary({ name, handle });
       applyPragmas(readHandle, handle);
       reader = adaptHandle(readHandle);
+      handles.push(readHandle);
     } catch (error) {
       reportStoreDegradation({
         scope: `nitro_connection.reader.${name}`,
@@ -93,14 +113,29 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
   }
 
   const adapted: SqliteConnection = { ...adaptHandle(writer), reader };
-  openConnections.set(name, adapted);
+  openConnections.set(name, { conn: adapted, handles });
+  openedDuringBind?.add(name);
   return adapted;
 }
 
+/**
+ * Names opened by the bind currently running, tracked by what this attempt opened rather than by what was already
+ * registered: a store re-initializing — a retry, or a Fast Refresh — opens a name that is *also* the one it held
+ * before, and comparing registries would take that for a connection someone else owns and leave it open.
+ */
+let openedDuringBind: Set<string> | undefined;
+
 export function bindSqliteBackend(label: string, bind: () => void): void {
+  const outer = openedDuringBind;
+  const opened = new Set<string>();
+  openedDuringBind = opened;
   try {
     bind();
   } catch (error) {
+    // A half-bound store would otherwise keep its handles for the life of the process, and a secondary handle's name is
+    // exclusive: whatever opens next could not have its reader back, and would report a handle collision on top of the
+    // failure that actually happened.
+    for (const name of opened) closeNitroConnection(name);
     reportStoreDegradation({
       scope: `nitro_connection.bind.${label}`,
       context:
@@ -108,6 +143,8 @@ export function bindSqliteBackend(label: string, bind: () => void): void {
       error,
       extra: { label },
     });
+  } finally {
+    openedDuringBind = outer;
   }
 }
 

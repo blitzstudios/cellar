@@ -24,6 +24,7 @@ interface FakeHandle {
   executeAsync: jest.Mock;
   executeBatch: jest.Mock;
   executeBatchAsync: jest.Mock;
+  close: jest.Mock;
 }
 
 function fakeHandle(opts: { failOn?: string; asyncResult?: unknown } = {}): FakeHandle {
@@ -49,6 +50,7 @@ function fakeHandle(opts: { failOn?: string; asyncResult?: unknown } = {}): Fake
       batches.push(cmds);
       return Promise.resolve();
     }),
+    close: jest.fn(),
   };
 }
 
@@ -244,5 +246,81 @@ describe('binding a store', () => {
     const conn = openNitroConnection('registered.db');
 
     expect(getOpenSqliteConnections()).toContainEqual({ name: 'registered.db', conn });
+  });
+});
+
+/**
+ * A secondary handle's name is exclusive for the life of the process, so handles a failed bind opened are not merely
+ * untidy: they are what makes the *next* attempt — a retry, or a Fast Refresh re-running the same init — report a
+ * handle collision on top of the failure that actually happened.
+ */
+describe('binding a store — the handles a failure opened', () => {
+  const failingBind = (name: string, writer: FakeHandle, reader: FakeHandle) => {
+    mockOpen.mockReturnValue(writer as never);
+    mockOpenSecondary.mockReturnValue(reader as never);
+    bindSqliteBackend('stats', () => {
+      openNitroConnection(name, { dedicatedReader: true });
+      throw new Error('a schema change forces a rebuild');
+    });
+  };
+
+  it('closes both of them, handing back the names the next attempt has to open', () => {
+    const writer = fakeHandle();
+    const reader = fakeHandle();
+
+    failingBind('stats.db', writer, reader);
+
+    expect(writer.close).toHaveBeenCalledTimes(1);
+    expect(reader.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets the connection, so nothing later reads through a handle that is closed', () => {
+    failingBind('stats.db', fakeHandle(), fakeHandle());
+
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain('stats.db');
+  });
+
+  it('still reports the failure that started it, which is the one worth reading', () => {
+    failingBind('stats.db', fakeHandle(), fakeHandle());
+
+    expect(lastReport().scope).toBe('nitro_connection.bind.stats');
+    expect(lastReport().context).toContain('stays on its in-memory backend');
+  });
+
+  it('leaves a connection another store already had open alone', () => {
+    const other = fakeHandle();
+    mockOpen.mockReturnValue(other as never);
+    openNitroConnection('schedule.db');
+
+    failingBind('stats.db', fakeHandle(), fakeHandle());
+
+    expect(other.close).not.toHaveBeenCalled();
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('schedule.db');
+  });
+
+  it('closes the reopened handles of a store that had already bound this database once, which is the Fast Refresh case', () => {
+    mockOpen.mockReturnValue(fakeHandle() as never);
+    mockOpenSecondary.mockReturnValue(fakeHandle() as never);
+    openNitroConnection('again.db', { dedicatedReader: true });
+
+    const writer = fakeHandle();
+    const reader = fakeHandle();
+    failingBind('again.db', writer, reader);
+
+    expect(writer.close).toHaveBeenCalledTimes(1);
+    expect(reader.close).toHaveBeenCalledTimes(1);
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain('again.db');
+  });
+
+  it('closes nothing when the bind succeeds, which is the whole point of holding the handles', () => {
+    const writer = fakeHandle();
+    mockOpen.mockReturnValue(writer as never);
+
+    bindSqliteBackend('stats', () => {
+      openNitroConnection('kept.db');
+    });
+
+    expect(writer.close).not.toHaveBeenCalled();
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('kept.db');
   });
 });

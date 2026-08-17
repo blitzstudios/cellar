@@ -6,14 +6,17 @@ import { createPresence, whereMapKey } from './presence';
 import { columnNames, FindOpts, IndexDef, RowShape, RowTable, RowTableSchema, SqlValue } from './types';
 import { assertRowsMatchWhere, comparator, whereClause } from './query';
 import {
+  addColumnSql,
+  addedColumns,
   createIndexSql,
   createMetaTableSql,
   createTableSql,
   dropIndexSql,
   planSchemaMigration,
-  readUserVersion,
+  readLiveSchema,
   reportPushFedRebuild,
   schemaFingerprint,
+  schemaStructureStamp,
 } from './schema';
 import { NativeShredSpec } from '../write/shred_spec';
 import { BatchCommand, readRows, runBatch, runBatchAsync, SqliteConnection } from './connection';
@@ -178,8 +181,8 @@ export function createSqliteRowTable<Row extends RowShape>(
 
   return {
     init(): void {
-      const tableExists = readRows<{ name?: string }>(conn, `PRAGMA table_info(${schema.table});`).length > 0;
-      const plan = planSchemaMigration(schema, { tableExists, stamp: readUserVersion(conn) }, nativeShredSpec);
+      const live = readLiveSchema(conn, schema.table);
+      const plan = planSchemaMigration(schema, live, nativeShredSpec);
       if (plan === 'rebuild') {
         if (schema.pushFed) reportPushFedRebuild(schema.table);
         // Drops the table's indexes with it, which is how an index change gets applied.
@@ -187,10 +190,19 @@ export function createSqliteRowTable<Row extends RowShape>(
         // The etags describe the dropped rows, so keeping them would 304 the refetch away.
         if (schema.meta) conn.execute(`DROP TABLE IF EXISTS ${schema.meta.table};`);
       }
+      // A widening keeps every row, so this is the one migration that costs a user nothing.
+      if (plan === 'extend') for (const column of addedColumns(schema, live.columns) ?? []) conn.execute(addColumnSql(schema, column));
       conn.execute(createTableSql(schema));
       for (const idx of secondaryIndexes) conn.execute(createIndexSql(schema.table, idx));
       if (schema.meta) conn.execute(createMetaTableSql(schema.meta));
-      // Stamped last, so a stamp only ever describes a fully built schema. `PRAGMA` takes no bind parameter.
+      // The columns a widening just added are NULL in every row that predates them, and a kept etag would answer the
+      // fetch that fills them with a 304. Dropped rather than dropping the table, so the rows stay.
+      if (plan === 'extend' && schema.meta) conn.execute(`DELETE FROM ${schema.meta.table};`);
+      // Stamped even where the plan is `none`, so a database built before this stamp existed acquires one on the next
+      // launch, and its next widening is an `ALTER TABLE` rather than a rebuild. `PRAGMA` takes no bind parameter.
+      const structure = schemaStructureStamp(schema, nativeShredSpec);
+      if (live.structure !== structure) conn.execute(`PRAGMA application_id = ${structure};`);
+      // Stamped last, so a stamp only ever describes a fully built schema.
       if (plan !== 'none') conn.execute(`PRAGMA user_version = ${schemaFingerprint(schema, nativeShredSpec)};`);
     },
 
