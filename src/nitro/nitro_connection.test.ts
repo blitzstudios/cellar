@@ -324,3 +324,65 @@ describe('binding a store — the handles a failure opened', () => {
     expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('kept.db');
   });
 });
+
+/**
+ * The bind that *succeeds* and then runs again is the ordinary case in development, and it is the one that leaked:
+ * the second open registered over the first entry without closing it, so the reader name stayed taken and the store
+ * spent the rest of the session reading through the writer handle, contending with its own ingests.
+ */
+describe('reopening a database this process already holds', () => {
+  /** Secondary handle names nitro is currently holding. Claiming one twice is what throws on the device. */
+  let taken: Set<string>;
+  /** Every handle the fake driver has handed out, newest last, since the point at issue is which ones get closed. */
+  let writers: FakeHandle[];
+  let readers: FakeHandle[];
+
+  beforeEach(() => {
+    taken = new Set();
+    writers = [];
+    readers = [];
+    mockOpen.mockImplementation((() => {
+      const handle = fakeHandle();
+      writers.push(handle);
+      return handle;
+    }) as never);
+    mockOpenSecondary.mockImplementation((({ handle }: { handle: string }) => {
+      if (taken.has(handle)) throw new Error(`NitroSQLite.openSecondary(...): handle '${handle}' is already in use by an open connection`);
+      taken.add(handle);
+      const opened = fakeHandle();
+      opened.close.mockImplementation(() => taken.delete(handle));
+      readers.push(opened);
+      return opened;
+    }) as never);
+  });
+
+  const openWithReader = (name: string) => openNitroConnection(name, { dedicatedReader: true });
+
+  it('closes the handles it held, rather than registering over them', () => {
+    openWithReader('reopened.db');
+
+    openWithReader('reopened.db');
+
+    expect(writers[0].close).toHaveBeenCalledTimes(1);
+    expect(readers[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('gets its dedicated reader back, instead of degrading to the writer for the rest of the session', () => {
+    openWithReader('reopened.db');
+
+    const second = openWithReader('reopened.db');
+
+    expect(second.reader).toBeDefined();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('leaves a database another store has open alone', () => {
+    openWithReader('untouched.db');
+
+    openWithReader('reopened.db');
+
+    expect(writers[0].close).not.toHaveBeenCalled();
+    expect(readers[0].close).not.toHaveBeenCalled();
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('untouched.db');
+  });
+});

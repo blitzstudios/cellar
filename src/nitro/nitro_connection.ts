@@ -90,6 +90,11 @@ function adaptHandle(conn: ReturnType<typeof open>): PinnedConnection {
 }
 
 export function openNitroConnection(name: string, opts?: { dedicatedReader?: boolean }): SqliteConnection {
+  // Reopening a database this process already holds — a Fast Refresh re-running init, or a store rebound after a
+  // schema change — has to hand the previous handles back first. Registering over them would leak them, and because a
+  // secondary handle's name is exclusive, the reader is the one that would not come back.
+  closeNitroConnection(name);
+
   const writer = open({ name });
   applyPragmas(writer, name);
   const handles: Array<{ close(): void }> = [writer];
