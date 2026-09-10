@@ -1,6 +1,6 @@
 {
   "name": "@sleeperhq-private/react-data-kernel",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "An off-heap data layer for React Native: SQLite-backed row tables, partition-versioned reactivity, and declarative reads.",
   "repository": {
     "type": "git",
@@ -73,7 +73,7 @@
     "prepublishOnly": "yarn build"
   },
   "dependencies": {
-    "react-native-nitro-sqlite": "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.2-gitpkg"
+    "react-native-nitro-sqlite": "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.4-gitpkg"
   },
   "peerDependencies": {
     "@tanstack/query-core": ">=4",

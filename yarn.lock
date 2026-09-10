@@ -1847,7 +1847,7 @@ __metadata:
     jest: "npm:^29.7.0"
     react: "npm:19.2.3"
     react-native-builder-bob: "npm:^0.31.0"
-    react-native-nitro-sqlite: "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.2-gitpkg"
+    react-native-nitro-sqlite: "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.4-gitpkg"
     react-test-renderer: "npm:19.2.3"
     sql.js: "npm:1.13.0"
     ts-jest: "npm:^29.1.2"
@@ -5307,16 +5307,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-native-nitro-sqlite@blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.2-gitpkg":
-  version: 1.1.2
-  resolution: "react-native-nitro-sqlite@https://github.com/blitzstudios/react-native-nitro-sqlite.git#commit=4168089cd1129442ace7d18784d2f6e4cbf4ec14"
+"react-native-nitro-sqlite@blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.4-gitpkg":
+  version: 1.1.4
+  resolution: "react-native-nitro-sqlite@https://github.com/blitzstudios/react-native-nitro-sqlite.git#commit=20a2acd0434d4d5a73ed8ca56f735ef5dbb4d259"
   dependencies:
     typeorm: "npm:0.3.27"
   peerDependencies:
     react: ">=17.0.0"
     react-native: ">=0.75.0"
     react-native-nitro-modules: ">=0.35.0"
-  checksum: 10c0/d5767cda2c6a84145e3f40f96f56dbb15a87bc0c9fe0d7b977bd61670207a3aa10f294ce44cb51059860242bccc2043ecd9464d59cd4a2806e27a7af8dfeb545
+  checksum: 10c0/8a88f5cbde07bd6731cc48dcd1fc4e55d438caec11efbfa04a1c82fd2ddd0e464c99ce86948ff67d4b778a3d649eff2d36f2dc901facd87a98006d804e84a9e1
   languageName: node
   linkType: hard
 
