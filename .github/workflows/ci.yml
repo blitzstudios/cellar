@@ -29,7 +29,18 @@ jobs:
       - run: yarn test:prod
 
       # Also typechecks: `build` is `yarn typecheck && bob build`.
-      - run: yarn build
+      #
+      # Retried because bob builds its targets with Promise.all, and the commonjs target validates
+      # the `main` field -- which points into lib/module -- so it fails whenever it happens to
+      # finish before the module target has written that file. Nothing to fix on our side short of
+      # repointing `main` at the commonjs output, which would change what bundlers resolve.
+      - name: build
+        run: |
+          for attempt in 1 2 3; do
+            if yarn build; then exit 0; fi
+            echo "::warning::build attempt $attempt failed; retrying (known bob target race)"
+          done
+          exit 1
 
       # `lib/` is committed and nothing rebuilds it on the consumer's side: `prepublishOnly` never
       # fires for a git dependency, and `package.json` points main/module at `./lib/module`. A tag
