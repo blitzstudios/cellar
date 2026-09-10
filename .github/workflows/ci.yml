@@ -14,6 +14,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          # Off because it probes `yarn cache dir` inside this step, which is before corepack is on
+          # -- so it runs the runner's global yarn 1 against a `packageManager` field it refuses.
+          package-manager-cache: false
 
       # yarn comes from `packageManager`, so corepack has to be on before any yarn command.
       - run: corepack enable
