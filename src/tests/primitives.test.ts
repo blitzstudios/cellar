@@ -149,6 +149,65 @@ describe('createBoundedLru', () => {
 
     expect([...lru.keys()]).toEqual(['absent', 'c']);
   });
+
+  it('orders keys least- to most-recently used, which is the order eviction walks', () => {
+    const lru = createBoundedLru<number>(3);
+    lru.set('a', 1);
+    lru.set('b', 2);
+    lru.set('c', 3);
+
+    lru.get('a');
+
+    expect([...lru.keys()]).toEqual(['b', 'c', 'a']);
+  });
+
+  it('leaves the order alone when the entry read is already the hottest', () => {
+    const lru = createBoundedLru<number>(2);
+    lru.set('a', 1);
+    lru.set('b', 2);
+
+    lru.get('b');
+
+    expect([...lru.keys()]).toEqual(['a', 'b']);
+  });
+
+  it('drops the coldest entry when full, naming the key that went so the owner can notice', () => {
+    const evicted: string[] = [];
+    const lru = createBoundedLru<number>(2, (key) => evicted.push(key));
+    lru.set('a', 1);
+    lru.set('b', 2);
+
+    lru.set('c', 3);
+
+    expect(evicted).toEqual(['a']);
+    expect([...lru.keys()]).toEqual(['b', 'c']);
+    expect(lru.get('a')).toBeUndefined();
+  });
+
+  it('spares the entry a read promoted, dropping the one that went untouched', () => {
+    const lru = createBoundedLru<number>(2);
+    lru.set('a', 1);
+    lru.set('b', 2);
+
+    lru.get('a');
+    lru.set('c', 3);
+
+    expect(lru.get('a')).toBe(1);
+    expect(lru.get('b')).toBeUndefined();
+  });
+
+  it('replaces the value of a key it already holds rather than seating a second entry', () => {
+    const evicted: string[] = [];
+    const lru = createBoundedLru<number>(2, (key) => evicted.push(key));
+    lru.set('a', 1);
+    lru.set('b', 2);
+
+    lru.set('a', 10);
+
+    expect(lru.get('a')).toBe(10);
+    expect([...lru.keys()]).toEqual(['b', 'a']);
+    expect(evicted).toEqual([]);
+  });
 });
 
 describe('createVersionedSourceCache', () => {

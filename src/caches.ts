@@ -72,28 +72,65 @@ export interface BoundedLru<V> {
   keys(): IterableIterator<string>;
 }
 
+/** One entry's place in the recency list: `older` runs toward the coldest end, `newer` toward the hottest. */
+type LruNode<V> = { key: string; value: V; older: LruNode<V> | undefined; newer: LruNode<V> | undefined };
+
 /** Builds one holding at most `max` entries. `onEvict` fires for a key dropped for capacity, which is how a cache notices it is undersized. */
 export function createBoundedLru<V>(max: number, onEvict?: (key: string) => void): BoundedLru<V> {
-  const map = new Map<string, V>();
+  const map = new Map<string, LruNode<V>>();
+  // Recency rides a linked list rather than `Map` insertion order: reordering by re-inserting
+  // allocates a fresh entry on every hit, and hits are the hot path. Relinking mutates nodes.
+  let oldest: LruNode<V> | undefined;
+  let newest: LruNode<V> | undefined;
+
+  const unlink = (node: LruNode<V>): void => {
+    if (node.older) node.older.newer = node.newer;
+    else oldest = node.newer;
+    if (node.newer) node.newer.older = node.older;
+    else newest = node.older;
+    node.older = undefined;
+    node.newer = undefined;
+  };
+
+  const linkNewest = (node: LruNode<V>): void => {
+    node.older = newest;
+    if (newest) newest.newer = node;
+    else oldest = node;
+    newest = node;
+  };
+
+  const touch = (node: LruNode<V>): void => {
+    if (node === newest) return;
+    unlink(node);
+    linkNewest(node);
+  };
+
   return {
-    keys: () => map.keys(),
+    *keys() {
+      for (let node = oldest; node !== undefined; node = node.newer) yield node.key;
+    },
     get(key) {
-      // `V` may itself be `undefined`, so membership needs `has`; a value test pins such an entry at the cold end.
-      if (!map.has(key)) return undefined;
-      const hit = map.get(key) as V;
-      map.delete(key);
-      map.set(key, hit);
-      return hit;
+      // A present key always has a node, so a stored `undefined` still reads as a hit.
+      const node = map.get(key);
+      if (node === undefined) return undefined;
+      touch(node);
+      return node.value;
     },
     set(key, value) {
-      map.delete(key);
-      map.set(key, value);
-      if (map.size > max) {
-        const oldest = map.keys().next().value;
-        if (oldest !== undefined && oldest !== key) {
-          map.delete(oldest);
-          onEvict?.(oldest);
-        }
+      const existing = map.get(key);
+      if (existing !== undefined) {
+        existing.value = value;
+        touch(existing);
+        return;
+      }
+      const node: LruNode<V> = { key, value, older: undefined, newer: undefined };
+      map.set(key, node);
+      linkNewest(node);
+      if (map.size > max && oldest !== undefined && oldest !== node) {
+        const evicted = oldest;
+        unlink(evicted);
+        map.delete(evicted.key);
+        onEvict?.(evicted.key);
       }
     },
   };
