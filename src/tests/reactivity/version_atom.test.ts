@@ -87,6 +87,39 @@ describe('createVersionAtom — imperative surface', () => {
     atom.bump(NFL);
     expect(listener).toHaveBeenCalledTimes(1);
   });
+
+  it('reports one descriptor per partition instead of building a fresh one on every read', () => {
+    const atom = createVersionAtom('test_store_version');
+    const first = runTracked(() => atom.get(NFL)).deps[0];
+
+    expect(runTracked(() => atom.get(NFL)).deps[0]).toBe(first);
+    expect(runTracked(() => atom.get(NBA)).deps[0]).not.toBe(first);
+  });
+
+  it('keeps a held descriptor live, so the version read through it follows later bumps', () => {
+    const atom = createVersionAtom('test_store_version');
+    const dep = runTracked(() => atom.get(NFL)).deps[0];
+    expect(dep.getVersion()).toBe(0);
+
+    atom.bump(NFL);
+    expect(dep.getVersion()).toBe(1);
+  });
+
+  it('keeps a descriptor handed out earlier working after its entry was dropped', () => {
+    const atom = createVersionAtom('test_store_version');
+    const dep = runTracked(() => atom.get(NFL)).deps[0];
+    // Subscribing and leaving with nothing written drops the entry, and the descriptor along with it.
+    atom.subscribe(NFL, () => {})();
+    expect(runTracked(() => atom.get(NFL)).deps[0]).not.toBe(dep);
+
+    // The one already handed out resolves its partition on each call, so it is still wired to it.
+    const listener = jest.fn();
+    const unsub = dep.subscribe(listener);
+    atom.bump(NFL);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(dep.getVersion()).toBe(1);
+    unsub();
+  });
 });
 
 describe('createVersionAtom — reactive hooks', () => {

@@ -6,7 +6,7 @@ import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/w
 
 import { cacheKey, GROUP_SEP, partitionsKey } from '../args_key';
 import { getOrCreate } from '../collections';
-import { runSubscribed, trackDependency } from './tracking';
+import { Dep, runSubscribed, trackDependency } from './tracking';
 
 /** Whether a part list addresses a real partition: at least one part, and every part filled in. */
 export const isLive = (parts: readonly string[]): boolean => parts.length > 0 && parts.every(Boolean);
@@ -63,9 +63,27 @@ export function createVersionAtom(root: string): VersionAtom {
   const ensure = (spec: string): VersionEntry => getOrCreate(entries, spec, () => ({ value: 0, listeners: new Set() }));
 
   const getSpec = (spec: string): number => entries.get(spec)?.value ?? 0;
+
+  /**
+   * One descriptor per partition rather than one per read. `root` is fixed for the atom and the closures capture
+   * nothing but `spec`, so what `get` used to build every call -- an id string, an object and two closures -- was
+   * identical each time, and `get` runs once per partition per read. {@link trackDependency} dedupes by `id` and
+   * only ever reads the descriptor, so one shared instance behaves the same as a fresh one.
+   *
+   * Held apart from `entries` because `get` deliberately does not create an entry: seeding one per read would widen
+   * what `bumpAll` bumps. Its keys are partitions, the same space `entries` occupies.
+   */
+  const deps = new Map<string, Dep>();
+  const depFor = (spec: string): Dep =>
+    getOrCreate(deps, spec, () => ({
+      id: cacheKey(root, spec),
+      subscribe: (listener: () => void) => subscribeSpec(spec, listener),
+      getVersion: () => getSpec(spec),
+    }));
+
   const get = (parts: readonly string[]): number => {
     const spec = specifier(parts);
-    trackDependency({ id: cacheKey(root, spec), subscribe: (listener) => subscribeSpec(spec, listener), getVersion: () => getSpec(spec) });
+    trackDependency(depFor(spec));
     return getSpec(spec);
   };
 
@@ -87,7 +105,12 @@ export function createVersionAtom(root: string): VersionAtom {
     return () => {
       entry.listeners.delete(listener);
       // A written entry must stay: dropping it resets `get` to 0, and a value cached with version 0 reads as current.
-      if (entry.listeners.size === 0 && entry.value === 0 && entries.get(spec) === entry) entries.delete(spec);
+      if (entry.listeners.size === 0 && entry.value === 0 && entries.get(spec) === entry) {
+        entries.delete(spec);
+        // Follows the entry rather than outliving it. A descriptor already handed to a sink keeps working -- it
+        // reads `entries` through `spec` on each call -- and the next read rebuilds an identical one.
+        deps.delete(spec);
+      }
     };
   };
 
