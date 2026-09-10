@@ -12,7 +12,7 @@ import {
   shallowEqualStruct,
   shallowEqualValue,
 } from '../caches';
-import { itDev } from '../testing/dev_mode';
+import { itDev, itProd } from '../testing/dev_mode';
 import { makeResult } from '../store_result';
 import { BatchCommand, readRows, runBatch, runBatchAsync, SqliteConnection } from '../table/connection';
 import { resetOnceGuards } from '../diagnostics/once_guard';
@@ -400,6 +400,69 @@ describe('a memo bound to a partition', () => {
     expect(rows.for('nfl').read({ perGame: true, orderBy: 'pts' }, 'p1', build)).toBe(1);
     expect(rows.for('nfl').read({ orderBy: 'pts', perGame: false }, 'p1', build)).toBe(2);
     expect(built).toBe(2);
+  });
+
+  it('keys a part held across calls the same as an equal one built fresh, since the id still comes from the content', () => {
+    const { binding } = bindable();
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    let built = 0;
+    const build = () => {
+      built += 1;
+      return built;
+    };
+    const held = { orderBy: 'pts', perGame: true };
+
+    expect(rows.for('nfl').read(held, 'p1', build)).toBe(1);
+    expect(rows.for('nfl').read({ perGame: true, orderBy: 'pts' }, 'p1', build)).toBe(1);
+    expect(rows.for('nfl').read(held, 'p1', build)).toBe(1);
+    expect(built).toBe(1);
+  });
+
+  it('serializes a structured part once per reference, so a caller re-keying one per row pays for it once', () => {
+    const { binding } = bindable();
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    let reads = 0;
+    // A getter counts what the identity walk touched, which no amount of internal caching can fake.
+    const shape = Object.defineProperty({ perGame: true }, 'orderBy', {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return 'pts';
+      },
+    });
+
+    rows.for('nfl').read(shape, 'p0', () => 0);
+    const toIdentify = reads;
+    for (let row = 1; row < 20; row += 1) rows.for('nfl').read(shape, `p${row}`, () => row);
+
+    expect(toIdentify).toBeGreaterThan(0);
+    expect(reads).toBe(toIdentify);
+  });
+
+  itDev('freezes a structured part, so its content cannot drift from the identity remembered for it', () => {
+    const { binding } = bindable();
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    const shape = { orderBy: 'pts', nested: { perGame: true }, tags: ['starters'] };
+
+    rows.for('nfl').read(shape, 'p1', () => 1);
+
+    // Deep, because a part is only as settled as everything the identity walk reached through it.
+    expect(Object.isFrozen(shape)).toBe(true);
+    expect(Object.isFrozen(shape.nested)).toBe(true);
+    expect(Object.isFrozen(shape.tags)).toBe(true);
+    expect(() => {
+      shape.orderBy = 'reb';
+    }).toThrow(TypeError);
+  });
+
+  itProd('leaves a part unfrozen in a release build, where the walk buys nothing a test has not already caught', () => {
+    const { binding } = bindable();
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    const shape = { orderBy: 'pts' };
+
+    rows.for('nfl').read(shape, 'p1', () => 1);
+
+    expect(Object.isFrozen(shape)).toBe(false);
   });
 
   it('holds a source-keyed value across a write, and rebuilds it when the source moves', () => {

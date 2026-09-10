@@ -271,6 +271,46 @@ export interface PartitionBinding<Key> {
 const INTERNED_PARTS_MAX = 256;
 
 /**
+ * Freezes what {@link stableKey} walked, so a part whose identity is remembered cannot drift from it. Mirrors that
+ * walk rather than freezing everything reachable: a `Map`, a `Set` or a class instance is not content-addressed —
+ * `stableKey` warns about it instead — and freezing one would break invariants it maintains for its owner.
+ */
+function freezeKeyPart(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+  if (Array.isArray(value)) {
+    Object.freeze(value);
+    for (const entry of value) freezeKeyPart(entry);
+    return;
+  }
+  const proto = Object.getPrototypeOf(value) as unknown;
+  if (proto !== Object.prototype && proto !== null) return;
+  Object.freeze(value);
+  for (const entry of Object.values(value as Record<string, unknown>)) freezeKeyPart(entry);
+}
+
+/**
+ * The content identity of a part, remembered per reference. Callers that hold one part across a loop -- ranking a
+ * page of rows re-keys the same shape object once per row -- otherwise re-serialize an unchanged object every time,
+ * and the part carrying a whole scoring config makes that the most expensive thing on the read path.
+ *
+ * Shared across keyers because {@link stableKey} is a pure function of the part. Only the serialization is skipped:
+ * the id still comes from the content, so an equal part built fresh keys the same as one held, and a reference whose
+ * id was evicted re-mints exactly as it would have.
+ */
+const identities = new WeakMap<object, string>();
+
+function identityOf(part: object): string {
+  const known = identities.get(part);
+  if (known !== undefined) return known;
+  const identity = stableKey(part);
+  // Reading a reference's identity from cache is only sound while its content holds still. Nothing here can detect a
+  // later mutation, so dev makes it impossible rather than letting a stale key through a release build unnoticed.
+  if (__DEV__) freezeKeyPart(part);
+  identities.set(part, identity);
+  return identity;
+}
+
+/**
  * Turns a memo's parts into one key. A structured part is interned rather than spelled out: two lookups passing equal
  * content get the same id, and a memo of thousands of entries holds ids instead of repeated JSON. An id evicted for
  * capacity costs a rebuild, never a wrong answer.
@@ -279,7 +319,7 @@ function createPartKeyer(): (prefix: string, parts: readonly MemoPart[]) => stri
   const ids = createBoundedLru<string>(INTERNED_PARTS_MAX);
   let nextId = 0;
   const idFor = (part: object): string => {
-    const identity = stableKey(part);
+    const identity = identityOf(part);
     const held = ids.get(identity);
     if (held) return held;
     nextId += 1;

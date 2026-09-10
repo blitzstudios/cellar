@@ -14,7 +14,7 @@ which walks the store this doc points you at as the template.
 
 ```jsonc
 // package.json
-"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.4-gitpkg"
+"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.5-gitpkg"
 ```
 
 Three entry points:
