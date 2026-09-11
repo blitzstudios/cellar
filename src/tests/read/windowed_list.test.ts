@@ -54,7 +54,7 @@ function makeSpecHarness(opts: { prehydrate?: (row: Row) => Detail | undefined; 
       return React.createElement(
         React.Fragment,
         null,
-        data.map((row, index) => React.createElement(Child, { key: row.id, row, block: blockOf(row), sink, at: index })),
+        data.map((row, index) => React.createElement(Child, { key: row.id, row, block: blockOf(row, index), sink, at: index })),
       );
     };
 
@@ -67,7 +67,7 @@ function makeSpecHarness(opts: { prehydrate?: (row: Row) => Detail | undefined; 
     return { labels, distinctReads: new Set(calls.map((ids) => ids.join(','))).size };
   };
 
-  return { render, makeParent, calls, windowed, list };
+  return { render, makeParent, Child, calls, windowed, list };
 }
 
 const NFL: Params = { sport: 'nfl' };
@@ -156,6 +156,52 @@ describe('createWindowedList', () => {
     expect(label).toBe('nfl:stray');
     expect(harness.calls).toEqual([['stray']]);
   });
+
+  it('builds a block only where a row asks for one, so a long list costs what it renders and not what it holds', () => {
+    const harness = makeSpecHarness({ blockSize: 10 });
+    const rows = rowsOf(1000);
+    harness.list.rows = rows;
+    const labels: (string | undefined)[] = [];
+
+    // The two rows a window this far apart would show, and nothing between them.
+    const onScreen = [0, 500];
+    const Parent = (): React.ReactElement => {
+      const blockOf = harness.windowed.useBlocks({ params: NFL, rows });
+      return React.createElement(
+        React.Fragment,
+        null,
+        onScreen.map((index, at) =>
+          React.createElement(harness.Child, { key: rows[index].id, row: rows[index], block: blockOf(rows[index], index), sink: labels, at }),
+        ),
+      );
+    };
+    act(() => {
+      TestRenderer.create(React.createElement(Parent));
+    });
+
+    expect(labels).toEqual(['nfl:p0', 'nfl:p500']);
+    // Two blocks, not a hundred: the 998 rows nobody rendered were never grouped.
+    expect(harness.calls).toHaveLength(2);
+    expect(harness.calls.map((ids) => ids.length)).toEqual([10, 10]);
+  });
+
+  it('treats a row its index does not point at as one the list left out, rather than trusting the index', () => {
+    const harness = makeSpecHarness({ blockSize: 10 });
+    const rows = rowsOf(3);
+    harness.list.rows = rows;
+    let ids: readonly string[] = [];
+
+    const Parent = (): null => {
+      const blockOf = harness.windowed.useBlocks({ params: NFL, rows });
+      ids = blockOf(rows[0], 2).ids;
+      return null;
+    };
+    act(() => {
+      TestRenderer.create(React.createElement(Parent));
+    });
+
+    expect(ids).toEqual(['p0']);
+  });
 });
 
 describe('createWindowedList — two lists over the same rows', () => {
@@ -183,7 +229,7 @@ describe('createWindowedList — two lists over the same rows', () => {
     const seen: unknown[] = [];
     const Parent = (): null => {
       const blockOf = harness.windowed.useBlocks({ params: NFL, rows });
-      seen.push(blockOf(rows[0]));
+      seen.push(blockOf(rows[0], 0));
       return null;
     };
 

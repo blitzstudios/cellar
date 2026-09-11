@@ -37,8 +37,12 @@ export interface WindowedBlock<Params> {
  */
 export interface WindowedList<Params, Row extends object, Detail> {
   useList: (args: { params: Params } & ReadOptions) => DataResult<Row[]>;
-  /** Call once where the list renders, over the rows being rendered; hand each row the block the result maps it to. */
-  useBlocks: (args: { params: Params; rows: readonly Row[] }) => (row: Row) => WindowedBlock<Params>;
+  /**
+   * Call once where the list renders, over the rows being rendered; hand each row the block the result maps it to.
+   * Pass the row's index in `rows` — blocks are built as they are asked for, and the index is what finds one without
+   * walking the list. A row `rows` does not hold at that index, including the default, hydrates on its own.
+   */
+  useBlocks: (args: { params: Params; rows: readonly Row[] }) => (row: Row, index?: number) => WindowedBlock<Params>;
   useItem: (args: { params: { row: Row; block: WindowedBlock<Params> } }) => Detail | undefined;
 }
 
@@ -71,19 +75,34 @@ export function createWindowedList<Params, Row extends object, Detail>(spec: Win
     return spec.useList(args);
   }
 
-  function useBlocks({ params, rows }: { params: Params; rows: readonly Row[] }): (row: Row) => WindowedBlock<Params> {
+  function useBlocks({ params, rows }: { params: Params; rows: readonly Row[] }): (row: Row, index?: number) => WindowedBlock<Params> {
     return useMemo(() => {
-      const byRow = new Map<Row, WindowedBlock<Params>>();
-      for (let start = 0; start < rows.length; start += blockSize) {
-        const block = rows.slice(start, start + blockSize);
-        // Hydrate only the rows still missing their detail.
-        const ids = block.filter((row) => !spec.prehydrated(row)).map(spec.idOf);
-        const handle: WindowedBlock<Params> = { params, ids };
-        for (const row of block) byRow.set(row, handle);
-      }
+      // Keyed by block start rather than by row, and filled as rows ask. A virtualized list hands `rows` the whole
+      // collection but renders a window of it, so building a block per row up front sized this with the collection
+      // -- thousands of map entries and a copy of every row -- to answer for the few dozen on screen.
+      const blocks = new Map<number, WindowedBlock<Params>>();
       // A row outside `rows` gets a block of its own, cached so it too keeps one block identity across renders.
       const alone = new Map<Row, WindowedBlock<Params>>();
-      return (row: Row): WindowedBlock<Params> => byRow.get(row) ?? getOrCreate(alone, row, () => ({ params, ids: [spec.idOf(row)] }));
+
+      const soloFor = (row: Row): WindowedBlock<Params> => getOrCreate(alone, row, () => ({ params, ids: [spec.idOf(row)] }));
+
+      return (row: Row, index = -1): WindowedBlock<Params> => {
+        // The index is the caller's claim about where the row sits; anything it does not identify is treated as a row
+        // `rows` never covered, which is what an out-of-range or omitted index means.
+        if (rows[index] !== row) return soloFor(row);
+
+        const start = index - (index % blockSize);
+        return getOrCreate(blocks, start, () => {
+          const end = Math.min(start + blockSize, rows.length);
+          // Hydrate only the rows still missing their detail.
+          const ids: string[] = [];
+          for (let at = start; at < end; at++) {
+            const member = rows[at];
+            if (!spec.prehydrated(member)) ids.push(spec.idOf(member));
+          }
+          return { params, ids };
+        });
+      };
     }, [params, rows]);
   }
 

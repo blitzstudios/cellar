@@ -32,11 +32,15 @@ export interface WindowedList<Params, Row extends object, Detail> {
     useList: (args: {
         params: Params;
     } & ReadOptions) => DataResult<Row[]>;
-    /** Call once where the list renders, over the rows being rendered; hand each row the block the result maps it to. */
+    /**
+     * Call once where the list renders, over the rows being rendered; hand each row the block the result maps it to.
+     * Pass the row's index in `rows` — blocks are built as they are asked for, and the index is what finds one without
+     * walking the list. A row `rows` does not hold at that index, including the default, hydrates on its own.
+     */
     useBlocks: (args: {
         params: Params;
         rows: readonly Row[];
-    }) => (row: Row) => WindowedBlock<Params>;
+    }) => (row: Row, index?: number) => WindowedBlock<Params>;
     useItem: (args: {
         params: {
             row: Row;
