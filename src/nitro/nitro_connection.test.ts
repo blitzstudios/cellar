@@ -1,13 +1,16 @@
-import { open, openSecondary } from 'react-native-nitro-sqlite';
+import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { configureDataKernel } from '../index';
 import { resetOnceGuards } from '../diagnostics/once_guard';
 import { bindSqliteBackend, bindSqliteStore, getOpenSqliteConnections, openNitroConnection } from './nitro_connection';
 
-jest.mock('react-native-nitro-sqlite', () => ({ open: jest.fn(), openSecondary: jest.fn() }));
+jest.mock('react-native-nitro-sqlite', () => ({ open: jest.fn(), openSecondary: jest.fn(), NitroSQLite: { native: { close: jest.fn() } } }));
 
 const mockOpen = open as jest.MockedFunction<typeof open>;
 const mockOpenSecondary = openSecondary as jest.MockedFunction<typeof openSecondary>;
+const mockNativeClose = NitroSQLite.native.close as jest.MockedFunction<typeof NitroSQLite.native.close>;
+/** What nitro throws when a secondary handle's name is still registered — the only marker that says so. */
+const handleInUse = () => new Error("handle 'things:reader' is already in use by an open connection");
 const captureException = jest.fn();
 configureDataKernel({ errors: { captureException, captureMessage: jest.fn() } });
 
@@ -147,7 +150,44 @@ describe('openNitroConnection — the dedicated read handle', () => {
 
     expect(conn.reader).toBeUndefined();
     expect(conn.execute).toBeDefined();
-    expect(lastReport().context).toContain('contend');
+    expect(lastReport().context).toContain('in-memory backend');
+  });
+
+  // An iOS CodePush reload replaces the JS runtime inside the running process, so `openConnections` comes back empty
+  // while nitro still holds every handle the previous runtime opened. The writer re-registers by name; the reader is
+  // the one whose name is exclusive, and losing it is what puts the store's whole working set back on the JS heap.
+  it('reclaims a reader handle a previous JS runtime left open, rather than giving it up', () => {
+    mockOpen.mockReturnValue(fakeHandle() as never);
+    const reader = fakeHandle();
+    mockOpenSecondary.mockImplementationOnce(() => {
+      throw handleInUse();
+    });
+    mockOpenSecondary.mockReturnValue(reader as never);
+
+    const conn = openNitroConnection('things', { dedicatedReader: true });
+
+    expect(mockNativeClose).toHaveBeenCalledWith('things:reader');
+    expect(mockOpenSecondary).toHaveBeenLastCalledWith({ name: 'things', handle: 'things:reader' });
+    expect(conn.reader).toBeDefined();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('takes a handle name of its own when the stale one will not close, which cannot collide either', () => {
+    mockOpen.mockReturnValue(fakeHandle() as never);
+    const reader = fakeHandle();
+    mockOpenSecondary.mockImplementationOnce(() => {
+      throw handleInUse();
+    });
+    mockOpenSecondary.mockReturnValue(reader as never);
+    mockNativeClose.mockImplementationOnce(() => {
+      throw new Error('not ours to close');
+    });
+
+    const conn = openNitroConnection('things', { dedicatedReader: true });
+
+    expect(conn.reader).toBeDefined();
+    expect(String(mockOpenSecondary.mock.lastCall?.[0].handle)).toMatch(/^things:reader:.+/);
+    expect(captureException).not.toHaveBeenCalled();
   });
 });
 

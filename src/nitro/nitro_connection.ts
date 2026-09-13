@@ -5,7 +5,7 @@
  * SQLite backend keeps running on the in-memory one.
  */
 
-import { open, openSecondary } from 'react-native-nitro-sqlite';
+import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { PinnedConnection, reportStoreDegradation, ShredSpec, SqliteConnection } from '../index';
 
@@ -89,6 +89,46 @@ function adaptHandle(conn: ReturnType<typeof open>): PinnedConnection {
   };
 }
 
+/** A handle name nitro still holds is reported this way; the message is the only thing that distinguishes it. */
+function isHandleInUse(error: unknown): boolean {
+  return String((error as { message?: unknown })?.message ?? error).includes('is already in use');
+}
+
+/**
+ * Opens `name`'s dedicated reader, reclaiming the handle if a previous JS runtime left it open.
+ *
+ * {@link closeNitroConnection} can only hand back handles this module's own map knows about, and that map lives in the
+ * JS heap. An iOS CodePush reload replaces the JS runtime in the same native process, so the new runtime starts with an
+ * empty map while nitro's registry still holds every handle the old one opened. The writer survives that, because
+ * `open` addresses a database by name and re-registers it; a secondary handle's name is exclusive, so the reader is the
+ * one that collides.
+ *
+ * Losing it is not the small thing it reads as. `readRows` falls back to the writer handle, so the ranker's multi
+ * statement `TEMP` work starts interleaving with an ingest's savepoint on one connection, SQLite refuses the nested
+ * transaction, and the first refusal degrades the whole store onto its in-memory backend — the entire working set back
+ * on the JS heap. So this tries hard: close the stale handle by name and retry, and failing that take a unique name,
+ * which cannot collide with anything.
+ */
+function openReader(name: string): ReturnType<typeof openSecondary> | undefined {
+  const preferred = `${name}:reader`;
+  try {
+    return openSecondary({ name, handle: preferred });
+  } catch (error) {
+    if (!isHandleInUse(error)) throw error;
+  }
+
+  // Addressed by name, which is how nitro identifies a connection — holding the original object is not required, and
+  // after a reload there is no object to hold.
+  try {
+    NitroSQLite.native.close(preferred);
+    return openSecondary({ name, handle: preferred });
+  } catch {
+    /* the stale handle would not close, or the retry lost the same race; fall through to a name of our own */
+  }
+
+  return openSecondary({ name, handle: `${preferred}:${Date.now().toString(36)}` });
+}
+
 export function openNitroConnection(name: string, opts?: { dedicatedReader?: boolean }): SqliteConnection {
   // Reopening a database this process already holds — a Fast Refresh re-running init, or a store rebound after a
   // schema change — has to hand the previous handles back first. Registering over them would leak them, and because a
@@ -101,16 +141,19 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
 
   let reader: PinnedConnection | undefined;
   if (opts?.dedicatedReader) {
-    const handle = `${name}:reader`;
     try {
-      const readHandle = openSecondary({ name, handle });
-      applyPragmas(readHandle, handle);
-      reader = adaptHandle(readHandle);
-      handles.push(readHandle);
+      const readHandle = openReader(name);
+      if (readHandle) {
+        applyPragmas(readHandle, `${name}:reader`);
+        reader = adaptHandle(readHandle);
+        handles.push(readHandle);
+      }
     } catch (error) {
       reportStoreDegradation({
         scope: `nitro_connection.reader.${name}`,
-        context: 'failed to open the dedicated reader handle — reads share the writer handle, and may contend with ingests',
+        context:
+          'failed to open the dedicated reader handle — reads fall back to the writer, where a read that needs a transaction can collide ' +
+          'with an ingest and degrade the store onto its in-memory backend',
         error,
         extra: { connection: name },
       });

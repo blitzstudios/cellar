@@ -52,6 +52,47 @@ describe('guardedConnection', () => {
     expect(broken.attempts).toBe(1);
   });
 
+  // Contention says another statement held the connection, not that the database is gone: the next one on an idle
+  // connection works. Calling it fatal costs the store's whole working set, which moves onto the JS heap for the
+  // session — a far worse trade than retrying the ingest that lost.
+  itProd('absorbs a contended statement instead of degrading, since the database itself is fine', () => {
+    const contended = brokenConn(/nothing/);
+    contended.execute = () => {
+      throw new Error('cannot start a transaction within a transaction');
+    };
+    const onFatal = jest.fn();
+    const conn = guardedConnection(contended, onFatal);
+
+    for (let index = 0; index < 3; index += 1) conn.execute('SELECT 1;');
+
+    expect(onFatal).not.toHaveBeenCalled();
+  });
+
+  itProd('gives up on a run of them, which is no longer one unlucky interleave', () => {
+    const contended = brokenConn(/nothing/);
+    contended.execute = () => {
+      throw new Error('cannot start a transaction within a transaction');
+    };
+    const onFatal = jest.fn();
+    const onContended = jest.fn();
+    const conn = guardedConnection(contended, onFatal, onContended);
+
+    for (let index = 0; index < 8; index += 1) conn.execute('SELECT 1;');
+
+    expect(onFatal).toHaveBeenCalledTimes(1);
+    // Once: the first says the connection is being shared by something that should not be, and the rest repeat it.
+    expect(onContended).toHaveBeenCalledTimes(1);
+  });
+
+  itProd('still degrades on the first failure that is not contention, which no retry would recover', () => {
+    const onFatal = jest.fn();
+    const conn = guardedConnection(brokenConn(), onFatal);
+
+    conn.execute('SELECT * FROM things;');
+
+    expect(onFatal).toHaveBeenCalledTimes(1);
+  });
+
   itProd('names the operation that failed, so a read and an ingest are told apart in the report', () => {
     const onFatal = jest.fn();
     const conn = guardedConnection(brokenConn(), onFatal);

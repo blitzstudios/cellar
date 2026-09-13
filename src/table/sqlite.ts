@@ -117,7 +117,12 @@ export function createSqliteRowTable<Row extends RowShape>(
 
   /** Bulk-writes with the secondary indexes dropped and rebuilt after: one sort beats maintaining them row by row. */
   async function withDeferredIndexes<T>(write: () => Promise<T>): Promise<T> {
-    const defer = secondaryIndexes.length > 0 && (deferrals > 0 || readRows(conn, `SELECT 1 FROM ${schema.table} LIMIT 1;`).length === 0);
+    // Never without a dedicated reader. Dropping and recreating indexes around the write turns one statement into
+    // several, and every one of them is a window in which a read that needs a transaction — the ranker's `TEMP`
+    // tables, which fall back to this handle when there is no reader — can land inside the write and be refused as a
+    // nested transaction. That refusal degrades the store, which costs far more than the indexes save.
+    const defer =
+      !!conn.reader && secondaryIndexes.length > 0 && (deferrals > 0 || readRows(conn, `SELECT 1 FROM ${schema.table} LIMIT 1;`).length === 0);
     if (!defer) return write();
     deferrals += 1;
     // Swallowed: the rebuild below is `IF NOT EXISTS`, so it restores whatever did drop.

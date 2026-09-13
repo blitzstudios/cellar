@@ -654,10 +654,16 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   });
 
   describe('secondary indexes are deferred across a shred into an empty table', () => {
+    // Deferral is gated on the dedicated reader, so the connection under test has one: without it a read that needs a
+    // transaction shares the writer, and the extra DDL is exactly the window it can land in.
     const makeShredStore = (conn: SqliteConnection, shredJsonArrayAsync: (...args: never[]) => Promise<number> = async () => 2) =>
       createSqliteRowTable(
         schema,
-        { ...conn, shredJsonArrayAsync: shredJsonArrayAsync as SqliteConnection['shredJsonArrayAsync'] },
+        {
+          ...conn,
+          reader: { execute: (sql, params) => conn.execute(sql, params), reader: undefined },
+          shredJsonArrayAsync: shredJsonArrayAsync as SqliteConnection['shredJsonArrayAsync'],
+        },
         { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.region)] },
       );
 
@@ -691,6 +697,19 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       const { conn, calls, setReader } = makeConn();
       setReader(() => [{ 1: 1 }]); // the emptiness probe finds a row
       await makeShredStore(conn).shred({ region: 'us' }, '[{"id":"p1"}]', () => []);
+
+      expect(ddl(calls)).toEqual([]);
+    });
+
+    it('leaves them alone without a dedicated reader, whose absence makes the extra statements a place for a read to collide', async () => {
+      const { conn, calls, setReader } = makeConn();
+      setReader(() => []); // empty, so the only thing holding the indexes back is the missing reader
+      const table = createSqliteRowTable(
+        schema,
+        { ...conn, reader: undefined, shredJsonArrayAsync: (async () => 2) as SqliteConnection['shredJsonArrayAsync'] },
+        { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.region)] },
+      );
+      await table.shred({ region: 'us' }, '[{"id":"p1"}]', () => []);
 
       expect(ddl(calls)).toEqual([]);
     });

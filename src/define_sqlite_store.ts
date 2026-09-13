@@ -117,12 +117,23 @@ export function defineSqliteStore<Row extends RowShape, Backend extends StoreBac
     },
     createSqliteBackend: (conn) => {
       // Guarded before anything is built on it, so a failure below degrades the store.
-      const guarded = guardedConnection(conn, (error, op) =>
-        degrade({
-          context: `SQLite \`${op}\` failed mid-session; the store is now on its in-memory backend and will refetch`,
-          error,
-          extra: { store: config.name, table: config.schema.table, op },
-        }),
+      const guarded = guardedConnection(
+        conn,
+        (error, op) =>
+          degrade({
+            context: `SQLite \`${op}\` failed mid-session; the store is now on its in-memory backend and will refetch`,
+            error,
+            extra: { store: config.name, table: config.schema.table, op },
+          }),
+        (error, op) =>
+          reportStoreDegradation({
+            scope: `${config.name}.contention`,
+            context:
+              `SQLite \`${op}\` was refused because another statement held the connection — absorbed rather than degraded, but the ` +
+              'store is one connection short of where it should be, which usually means its dedicated reader never opened',
+            error,
+            extra: { store: config.name, table: config.schema.table, op },
+          }),
       );
       const backend = config.buildBackend(
         createSqliteRowTable(config.schema, guarded, config.nativeShredSpec),

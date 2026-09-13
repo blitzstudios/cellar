@@ -43,7 +43,7 @@ export declare function runBatch(conn: SqliteConnection, commands: ReadonlyArray
  */
 export declare function runBatchAsync(conn: SqliteConnection, commands: ReadonlyArray<BatchCommand>): Promise<void>;
 /** Wraps `conn` so every statement returns: the first failure calls `onFatal`, and later calls answer empty. */
-export declare function guardedConnection(conn: SqliteConnection, onFatal: (error: unknown, op: string) => void): SqliteConnection;
+export declare function guardedConnection(conn: SqliteConnection, onFatal: (error: unknown, op: string) => void, onContended?: (error: unknown, op: string) => void): SqliteConnection;
 /**
  * Runs a `SELECT` and hands back its rows as plain JS objects, which is how everything in this layer reads a database.
  * Reads go to the connection's dedicated reader handle wherever there is one, so a statement that depends on
