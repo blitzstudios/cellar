@@ -1,5 +1,5 @@
 {
-  "name": "@sleeperhq-private/react-data-kernel/testing",
+  "name": "@sleeperhq/react-data-kernel/testing",
   "private": true,
   "main": "../lib/commonjs/testing/index.js",
   "module": "../lib/module/testing/index.js",

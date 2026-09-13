@@ -1,4 +1,4 @@
-# `@sleeperhq-private/react-data-kernel`
+# `@sleeperhq/react-data-kernel`
 
 A SQLite-backed data layer for React. Large datasets live in the database instead of on the JS heap, and only
 the slice that is on screen is ever materialized in JS.
@@ -34,7 +34,7 @@ in-memory row table, which is what web and tests use.
 
 ```jsonc
 // package.json
-"@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.8-gitpkg"
+"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.6.0-gitpkg"
 ```
 
 ## Quick start
@@ -48,7 +48,7 @@ One entry per persisted column. The row type and the `CREATE TABLE` are both gen
 field means adding a column here and nothing else.
 
 ```ts
-import { defineShredColumns, RowOf, RowTableSchema, ShredColumn } from '@sleeperhq-private/react-data-kernel';
+import { defineShredColumns, RowOf, RowTableSchema, ShredColumn } from '@sleeperhq/react-data-kernel';
 
 type RawItem = { id: string; name?: string; rank?: number };
 /** Values that belong to the slice rather than to the payload. */
@@ -81,7 +81,7 @@ presence, what a fetch replaces, where the ETag goes, what a write bumps. `read`
 whatever the screen actually wants.
 
 ```ts
-import { definePartitions, rowsOf, RowTable, VersionAtom } from '@sleeperhq-private/react-data-kernel';
+import { definePartitions, rowsOf, RowTable, VersionAtom } from '@sleeperhq/react-data-kernel';
 
 export type ItemKey = { groupId: string };
 export type ItemVM = { id: string; name: string };
@@ -132,7 +132,7 @@ before that, so it has to be a stable reference.
 ### 3. Declare the store
 
 ```ts
-import { defineSqliteStore } from '@sleeperhq-private/react-data-kernel';
+import { defineSqliteStore } from '@sleeperhq/react-data-kernel';
 
 const itemStore = defineSqliteStore<ItemRow, ItemBackend>({
   name: 'item_store',
@@ -153,7 +153,7 @@ What comes back already runs on an in-memory row table, so web and tests need no
 everything else. A read declares which args it waits on, so the pair stays inert until a caller has them.
 
 ```ts
-import { pairRead } from '@sleeperhq-private/react-data-kernel';
+import { pairRead } from '@sleeperhq/react-data-kernel';
 
 export const GroupItems = pairRead(() => getItemBackend().reads.GroupItems);
 ```
@@ -174,8 +174,8 @@ Calling it with no `groupId` is fine: the read addresses nothing, fetches nothin
 The host installs two services, and binds SQLite where the platform has it.
 
 ```ts
-import { configureDataKernel } from '@sleeperhq-private/react-data-kernel';
-import { bindSqliteStore } from '@sleeperhq-private/react-data-kernel/nitro';
+import { configureDataKernel } from '@sleeperhq/react-data-kernel';
+import { bindSqliteStore } from '@sleeperhq/react-data-kernel/nitro';
 
 configureDataKernel({
   errors: { captureException, captureMessage },
@@ -290,7 +290,7 @@ same replacement from an undecoded response body.
 
 | entry | holds |
 | --- | --- |
-| `@sleeperhq-private/react-data-kernel` | everything above: what a store, a service or a screen writes against |
+| `@sleeperhq/react-data-kernel` | everything above: what a store, a service or a screen writes against |
 | `…/nitro` | `openNitroConnection` and `bindSqliteStore`, over `react-native-nitro-sqlite` — the only part that touches native code |
 | `…/testing` | a real SQLite engine off-device, an in-process version atom, the host services as spies, and the internals only a test reaches for |
 | `…/diagnostics` | `getIngestTimings` and `rollupIngestTimings`, for a developer surface; no shipping screen reads these |
