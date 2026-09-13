@@ -59,7 +59,7 @@ interface NativeShredColumns {
 /**
  * Whether every column carries an `op`. A table one column short of a native shred cannot produce a bind order that
  * matches its columns, so it offers neither member rather than throwing when something reaches for one — which means
- * a store like `schedule`, whose payload is small enough to shred in JS, never declares an `op` it has no use for.
+ * a store like `catalog`, whose payload is small enough to shred in JS, never declares an `op` it has no use for.
  */
 type EveryColumnShreds<Columns extends readonly ShredColumn<never, never>[]> = Columns[number] extends { op: ShredOp } ? true : false;
 
@@ -72,7 +72,7 @@ export type ShredColumns<Columns extends readonly ShredColumn<never, never>[], S
  * second, matching how a read is declared:
  *
  * ```ts
- * const playerShred = defineShredColumns<Player, PlayerShredCtx>()(PLAYER_SHRED_COLUMNS);
+ * const itemShred = defineShredColumns<Item, ItemShredCtx>()(ITEM_SHRED_COLUMNS);
  * ```
  */
 export function defineShredColumns<Src, Ctx = void>() {
@@ -80,7 +80,7 @@ export function defineShredColumns<Src, Ctx = void>() {
     const defs: Record<string, ColumnDef> = {};
     for (const column of columns) defs[column.name] = column.notNull ? { type: column.type, notNull: true } : { type: column.type };
 
-    // Derived on first read and kept: the ops are the expensive pair, and a spec built per sport asks for them again.
+    // Derived on first read and kept: the ops are the expensive pair, and a spec built per category asks for them again.
     let named: { name: string; op: ShredOp }[] | undefined;
     const namedOps = (): { name: string; op: ShredOp }[] =>
       (named ??= columns.map((column) => {

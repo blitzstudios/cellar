@@ -18,7 +18,7 @@ export declare const GROUP_SEP = "\u0001";
  * part of the key, so the same partitions named differently are a different set.
  */
 export declare function partitionsKey(partitions: readonly (readonly string[])[]): string;
-/** A partition's parts as a human reads them. Never as a key: `:` occurs inside a part (`clubsoccer:epl`). */
+/** A partition's parts as a human reads them. Never as a key: `:` occurs inside a part (`region:us-west`). */
 export declare function partitionLabel(parts: readonly string[]): string;
 /** `undefined`, `null`, `''` and an empty array count as absent; `0` and `false` count as present. */
 export declare function isVaryPresent(value: VaryValue): boolean;

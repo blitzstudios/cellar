@@ -28,12 +28,12 @@ function fanoutWarnings(): string[] {
 
 function makeSurface(name?: string) {
   const atom = createVersionAtom('fanout_test_version');
-  const present = new Set<string>(['nfl']);
+  const present = new Set<string>(['us']);
   const surface = createReadSurface<string>({
     name,
     version: atom,
-    toParts: (sport) => [sport],
-    has: (sport) => present.has(sport),
+    toParts: (region) => [region],
+    has: (region) => present.has(region),
     ingest: {
       usePrime: () => ({ isInitialLoading: false, isFetching: false, isError: false }),
       usePrimeMany: () => ({ isInitialLoading: false, isFetching: false, isError: false }),
@@ -42,17 +42,17 @@ function makeSurface(name?: string) {
     },
   });
 
-  return surface.read<{ sport: string; id: string }, string>()({
-    partition: (args) => args.sport,
+  return surface.read<{ region: string; id: string }, string>()({
+    partition: (args) => args.region,
     varyBy: ['id'],
     select: (args) => args.id,
     empty: '',
   });
 }
 
-function renderRows(surface: { useValue: (args: { sport: string; id: string } | undefined) => unknown }, rows: number): void {
+function renderRows(surface: { useValue: (args: { region: string; id: string } | undefined) => unknown }, rows: number): void {
   const Row = ({ id }: { id: string }): null => {
-    surface.useValue({ sport: 'nfl', id });
+    surface.useValue({ region: 'us', id });
     return null;
   };
   const List = (): React.ReactElement =>
@@ -71,20 +71,20 @@ function renderRows(surface: { useValue: (args: { sport: string; id: string } | 
 
 describeDev('per-row fan-out tripwire', () => {
   it('warns when many rows each read for themselves, naming the store and sampling the args', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     renderRows(surface, 60);
 
     const warnings = fanoutWarnings();
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('[player_store]');
+    expect(warnings[0]).toContain('[item_store]');
     expect(warnings[0]).toContain('60 separate reads');
-    expect(warnings[0]).toContain('nfl\u0000"p0"');
+    expect(warnings[0]).toContain('us\u0000"p0"');
   });
 
   it('stays quiet for a list whose reads are batched, because one batched read is one arg key', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     const Parent = (): null => {
-      surface.useValue({ sport: 'nfl', id: Array.from({ length: 40 }, (_value, index) => `p${index}`).join(',') });
+      surface.useValue({ region: 'us', id: Array.from({ length: 40 }, (_value, index) => `p${index}`).join(',') });
       return null;
     };
     act(() => {
@@ -98,25 +98,25 @@ describeDev('per-row fan-out tripwire', () => {
   });
 
   it('stays quiet below the threshold, so an ordinary screen with a few reads is not flagged', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     renderRows(surface, 8);
 
     expect(fanoutWarnings()).toEqual([]);
   });
 
   it('stays quiet for a virtualized list reading once per visible row, which is bounded by the viewport', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     renderRows(surface, 30);
 
     expect(fanoutWarnings()).toEqual([]);
   });
 
   it('warns when each row reads several times over, which scales past a viewport', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     const Row = ({ id }: { id: string }): null => {
-      surface.useValue({ sport: 'nfl', id: `${id}:stat` });
-      surface.useValue({ sport: 'nfl', id: `${id}:proj` });
-      surface.useValue({ sport: 'nfl', id: `${id}:game` });
+      surface.useValue({ region: 'us', id: `${id}:metric` });
+      surface.useValue({ region: 'us', id: `${id}:proj` });
+      surface.useValue({ region: 'us', id: `${id}:event` });
       return null;
     };
     const List = (): React.ReactElement =>
@@ -137,7 +137,7 @@ describeDev('per-row fan-out tripwire', () => {
   });
 
   it('warns once per store, so a scrolling list cannot spam the console', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     renderRows(surface, 60);
     renderRows(surface, 60);
 
@@ -145,9 +145,9 @@ describeDev('per-row fan-out tripwire', () => {
   });
 
   it('counts distinct args rather than calls, so many rows sharing one arg key are not fan-out', () => {
-    const surface = makeSurface('player');
+    const surface = makeSurface('item');
     const Row = (): null => {
-      surface.useValue({ sport: 'nfl', id: 'same' });
+      surface.useValue({ region: 'us', id: 'same' });
       return null;
     };
     const List = (): React.ReactElement =>

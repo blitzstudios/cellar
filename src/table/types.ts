@@ -2,7 +2,7 @@
 
 export type SqlValue = string | number | null;
 
-/** One row's column values; `undefined` binds as null, which covers a generated column a sport leaves blank. */
+/** One row's column values; `undefined` binds as null, which covers a generated column a category leaves blank. */
 export type RowShape = Record<string, SqlValue | undefined>;
 
 /**
@@ -37,7 +37,7 @@ export interface MetaDef<Row extends RowShape> {
 export interface RowTableSchema<Row extends RowShape> {
   table: string;
   columns: { [K in keyof Row]: ColumnDef };
-  /** `[]` for a snapshot table that legitimately holds duplicate rows, such as schedule. */
+  /** `[]` for a snapshot table that legitimately holds duplicate rows, such as one refilled wholesale by each fetch. */
   primaryKey: ReadonlyArray<keyof Row & string>;
   indexes?: ReadonlyArray<IndexDef<Row>>;
   meta?: MetaDef<Row>;

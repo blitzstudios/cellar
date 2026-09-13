@@ -227,11 +227,11 @@ describe('createReadSurface — a read declared by field name', () => {
       empty: harness.EMPTY,
       isEqual: shallowEqualRecord,
     });
-    harness.land('nfl', { a: { score: 1 }, b: { score: 2 } });
+    harness.land('us', { a: { score: 1 }, b: { score: 2 } });
 
-    expect(read.getValue({ key: 'nfl', id: 'a' })).toEqual({ a: { score: 1 } });
-    expect(read.getValue({ key: 'nfl', id: 'b' })).toEqual({ b: { score: 2 } });
-    expect(runTracked(() => read.getValue({ key: 'nfl', id: 'a' })).deps.map((dep) => dep.id)).toEqual(['read_surface_field_version\u0000nfl']);
+    expect(read.getValue({ key: 'us', id: 'a' })).toEqual({ a: { score: 1 } });
+    expect(read.getValue({ key: 'us', id: 'b' })).toEqual({ b: { score: 2 } });
+    expect(runTracked(() => read.getValue({ key: 'us', id: 'a' })).deps.map((dep) => dep.id)).toEqual(['read_surface_field_version\u0000us']);
   });
 
   it('gates on an absent named vary field, exactly as a varyBy function does', () => {
@@ -242,10 +242,10 @@ describe('createReadSurface — a read declared by field name', () => {
       select: () => ({ a: { score: 1 } }),
       empty: harness.EMPTY,
     });
-    harness.land('nfl', {});
+    harness.land('us', {});
 
-    expect(read.getValue({ key: 'nfl' })).toBe(harness.EMPTY);
-    expect(read.getValue({ key: 'nfl', id: 'a' })).toEqual({ a: { score: 1 } });
+    expect(read.getValue({ key: 'us' })).toBe(harness.EMPTY);
+    expect(read.getValue({ key: 'us', id: 'a' })).toEqual({ a: { score: 1 } });
   });
 });
 
@@ -262,10 +262,10 @@ describe('createReadSurface — varyBy (the read is keyed and gated by one decla
   it('keys the read by its scope without being told to, so two scopes never share an entry', () => {
     const harness = makeHarness();
     const read = scopedRead(harness, (args) => [args.id]);
-    harness.land('nfl', {});
+    harness.land('us', {});
 
-    expect(read.getValue({ key: 'nfl', id: 1 })).toEqual({ a: { score: 1 } });
-    expect(read.getValue({ key: 'nfl', id: 2 })).toEqual({ a: { score: 2 } });
+    expect(read.getValue({ key: 'us', id: 1 })).toEqual({ a: { score: 1 } });
+    expect(read.getValue({ key: 'us', id: 2 })).toEqual({ a: { score: 2 } });
   });
 
   it.each([
@@ -282,9 +282,9 @@ describe('createReadSurface — varyBy (the read is keyed and gated by one decla
       select,
       empty: harness.EMPTY,
     });
-    harness.land('nfl', {});
+    harness.land('us', {});
 
-    const probe = renderHook(() => read.useValue({ key: 'nfl', id }));
+    const probe = renderHook(() => read.useValue({ key: 'us', id }));
 
     expect(probe.current.data).toBe(harness.EMPTY);
     expect(select).not.toHaveBeenCalled();
@@ -297,18 +297,18 @@ describe('createReadSurface — varyBy (the read is keyed and gated by one decla
   ])('treats %s as present, because it is a value and not an absence', (_label, id) => {
     const harness = makeHarness();
     const read = scopedRead(harness, (args) => [args.id]);
-    harness.land('nfl', {});
+    harness.land('us', {});
 
-    expect(read.getValue({ key: 'nfl', id })).toEqual({ a: { score: Number(id) } });
+    expect(read.getValue({ key: 'us', id })).toEqual({ a: { score: Number(id) } });
   });
 
   it('primes the partition even while a scope value is missing, so the row is there when the id arrives', () => {
     const harness = makeHarness();
     const read = scopedRead(harness, (args) => [args.id]);
 
-    const probe = renderHook(() => read.useValue({ key: 'nfl', id: undefined }));
+    const probe = renderHook(() => read.useValue({ key: 'us', id: undefined }));
 
-    expect(harness.spies.usePrime[harness.spies.usePrime.length - 1]).toEqual({ key: 'nfl', enabled: true });
+    expect(harness.spies.usePrime[harness.spies.usePrime.length - 1]).toEqual({ key: 'us', enabled: true });
     expect(probe.current.data).toBe(harness.EMPTY);
     probe.unmount();
   });
@@ -368,13 +368,13 @@ describe('createReadSurface — get (imperative)', () => {
       select: (args) => rows[args.id],
       empty: undefined,
     });
-    harness.land('nfl', {});
+    harness.land('us', {});
 
-    expect(rowRead.getValue({ key: 'nfl', id: 'p1' })).toEqual({ score: 1 });
-    expect(rowRead.getValue({ key: 'nfl', id: 'p2' })).toEqual({ score: 2 });
+    expect(rowRead.getValue({ key: 'us', id: 'p1' })).toEqual({ score: 1 });
+    expect(rowRead.getValue({ key: 'us', id: 'p2' })).toEqual({ score: 2 });
 
-    const first = renderHook(() => rowRead.useValue({ key: 'nfl', id: 'p1' }));
-    const second = renderHook(() => rowRead.useValue({ key: 'nfl', id: 'p2' }));
+    const first = renderHook(() => rowRead.useValue({ key: 'us', id: 'p1' }));
+    const second = renderHook(() => rowRead.useValue({ key: 'us', id: 'p2' }));
     expect(first.current.data).toEqual({ score: 1 });
     expect(second.current.data).toEqual({ score: 2 });
     first.unmount();
@@ -475,12 +475,12 @@ describe('createReadSurface — presence gating', () => {
     const select = jest.fn(() => harness.EMPTY);
     const slice = harness.read({ ...harness.sliceDef, select });
 
-    const probe = renderHook(() => slice.useValue({ key: 'nfl' }));
+    const probe = renderHook(() => slice.useValue({ key: 'us' }));
     expect(select).not.toHaveBeenCalled();
-    expect(slice.getValue({ key: 'nfl' })).toBe(harness.EMPTY);
+    expect(slice.getValue({ key: 'us' })).toBe(harness.EMPTY);
     expect(select).not.toHaveBeenCalled();
 
-    harness.land('nfl', { p1: { score: 1 } });
+    harness.land('us', { p1: { score: 1 } });
 
     expect(select).toHaveBeenCalled();
     probe.unmount();
@@ -786,7 +786,7 @@ describe('createReadSurface — a push-fed store, which has no fetch to own', ()
 
   it('reports success rather than loading while empty, since nothing is coming to fill it', () => {
     const harness = pushHarness();
-    const probe = renderHook(() => harness.slice.useValue({ key: 'nfl' }));
+    const probe = renderHook(() => harness.slice.useValue({ key: 'us' }));
 
     expect(probe.current.data).toBe(harness.EMPTY);
     expect(probe.current.status).toBe('success');
@@ -797,15 +797,15 @@ describe('createReadSurface — a push-fed store, which has no fetch to own', ()
 
   it('still serves a pushed row, so omitting the fetch hooks costs no reactivity', () => {
     const harness = pushHarness();
-    const probe = renderHook(() => harness.slice.useValue({ key: 'nfl' }));
+    const probe = renderHook(() => harness.slice.useValue({ key: 'us' }));
 
     act(() => {
-      harness.slices.set('nfl', { p1: { score: 3 } });
-      harness.atom.bump(['nfl']);
+      harness.slices.set('us', { p1: { score: 3 } });
+      harness.atom.bump(['us']);
     });
 
     expect(probe.current.data.p1.score).toBe(3);
-    expect(harness.slice.getValue({ key: 'nfl' })).toBe(probe.current.data);
+    expect(harness.slice.getValue({ key: 'us' })).toBe(probe.current.data);
     probe.unmount();
   });
 });

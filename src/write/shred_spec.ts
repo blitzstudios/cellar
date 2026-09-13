@@ -1,6 +1,6 @@
 /**
  * The wire protocol for the native (simdjson) shredder in the `react-native-nitro-sqlite` fork: per-column ops over
- * dot-delimited paths rooted at the element (`player.player_id`). `evalOp` is the reference implementation the C++
+ * dot-delimited paths rooted at the element (`item.item_id`). `evalOp` is the reference implementation the C++
  * side mirrors, pinned by a parity test, so a new op must land on both sides.
  */
 

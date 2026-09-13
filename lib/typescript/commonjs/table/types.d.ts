@@ -1,6 +1,6 @@
 /** The row table interface both backends implement: SQLite on mobile, a `Map` on web and in tests. */
 export type SqlValue = string | number | null;
-/** One row's column values; `undefined` binds as null, which covers a generated column a sport leaves blank. */
+/** One row's column values; `undefined` binds as null, which covers a generated column a category leaves blank. */
 export type RowShape = Record<string, SqlValue | undefined>;
 /**
  * The storage classes a column can be declared as, and the whole of what a row can hold: a flag is an `INTEGER` of 0
@@ -32,7 +32,7 @@ export interface RowTableSchema<Row extends RowShape> {
     columns: {
         [K in keyof Row]: ColumnDef;
     };
-    /** `[]` for a snapshot table that legitimately holds duplicate rows, such as schedule. */
+    /** `[]` for a snapshot table that legitimately holds duplicate rows, such as one refilled wholesale by each fetch. */
     primaryKey: ReadonlyArray<keyof Row & string>;
     indexes?: ReadonlyArray<IndexDef<Row>>;
     meta?: MetaDef<Row>;

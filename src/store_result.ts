@@ -20,7 +20,7 @@ export interface DataResult<T> {
 }
 
 /**
- * Every field a {@link DataResult} carries. `eslint-plugin-sleeper` reads this to decide which fields a screen may
+ * Every field a {@link DataResult} carries. A lint rule in the consuming app reads this to decide which fields a screen may
  * take off a read, so the rule and the type cannot drift.
  */
 export const DATA_RESULT_KEYS = ['data', 'status', 'isLoading', 'isFetching', 'isSuccess', 'isError', 'refetch'] as const satisfies readonly (keyof DataResult<unknown>)[];

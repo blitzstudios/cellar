@@ -97,7 +97,7 @@ describe('createFetchIngest — 304 / etag short-circuit', () => {
     harness.setResponse({ __etagMatch: true });
     const ingest = createFetchIngest(harness.cfg);
 
-    const out = await ingest.prefetch('nfl');
+    const out = await ingest.prefetch('us');
 
     expect(harness.cfg.ingestRaw).not.toHaveBeenCalled();
     expect(harness.cfg.setEtag).not.toHaveBeenCalled();
@@ -111,10 +111,10 @@ describe('createFetchIngest — 304 / etag short-circuit', () => {
     harness.setResponse({ __etagMatch: true });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
-    expect(harness.cfg.getEtag).toHaveBeenCalledWith('nfl');
-    expect(harness.cfg.rawQuery).toHaveBeenCalledWith('nfl', 'W/"abc"');
+    expect(harness.cfg.getEtag).toHaveBeenCalledWith('us');
+    expect(harness.cfg.rawQuery).toHaveBeenCalledWith('us', 'W/"abc"');
   });
 });
 
@@ -135,7 +135,7 @@ describe('createFetchIngest — ingest timing', () => {
     harness.setResponse({ data: '[{"id":1}]', etag: 'W/"new"' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
     const [timing] = getIngestTimings();
     expect(timing.fetchMs).toBe(120);
@@ -147,13 +147,13 @@ describe('createFetchIngest — ingest timing', () => {
     harness.setResponse({ data: '[{"id":1}]' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
     const [timing] = getIngestTimings();
     expect(timing.chars).toBe('[{"id":1}]'.length);
     expect(timing.rows).toBe(5);
     expect(timing.store).toBe('test_ingest');
-    expect(timing.partition).toBe('nfl');
+    expect(timing.partition).toBe('us');
   });
 
   it('records a 304 as a fetch that shred nothing, so a cheap launch is not mistaken for a missing ingest', async () => {
@@ -162,7 +162,7 @@ describe('createFetchIngest — ingest timing', () => {
     harness.setResponse({ __etagMatch: true });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
     const [timing] = getIngestTimings();
     expect(timing.ingestMs).toBe(0);
@@ -175,8 +175,8 @@ describe('createFetchIngest — ingest timing', () => {
     harness.setResponse({ data: '[{"id":1}]' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
-    await ingest.prefetch('nba');
+    await ingest.prefetch('us');
+    await ingest.prefetch('eu');
 
     const [roll] = rollupIngestTimings();
     expect(roll.store).toBe('test_ingest');
@@ -184,12 +184,12 @@ describe('createFetchIngest — ingest timing', () => {
     expect(roll.rows).toBe(10);
   });
 
-  it('does not count an etag match toward rows, which would inflate what the store actually shredded', async () => {
+  it('does not count an etag match toward rows, which would iusate what the store actually shredded', async () => {
     const harness = makeCfg();
     harness.setResponse({ __etagMatch: true });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
     const [roll] = rollupIngestTimings();
     expect(roll.rows).toBe(0);
@@ -216,7 +216,7 @@ describe('createFetchIngest — holdWrites', () => {
     harness.cfg.rawQuery = jest.fn(() => ({
       queryFn: async () => {
         held.order.push('request');
-        return { data: '[{"player_id":"a"}]' };
+        return { data: '[{"item_id":"a"}]' };
       },
     }));
     harness.cfg.ingestRaw = jest.fn(async () => {
@@ -224,9 +224,9 @@ describe('createFetchIngest — holdWrites', () => {
       return 1;
     });
 
-    await createFetchIngest(harness.cfg).prefetch('nfl');
+    await createFetchIngest(harness.cfg).prefetch('us');
 
-    expect(held.holdWrites).toHaveBeenCalledWith('nfl');
+    expect(held.holdWrites).toHaveBeenCalledWith('us');
     expect(held.order).toEqual(['hold', 'request', 'ingest', 'release']);
   });
 
@@ -235,7 +235,7 @@ describe('createFetchIngest — holdWrites', () => {
     const harness = makeCfg({ holdWrites: held.holdWrites });
     harness.setResponse({ __etagMatch: true });
 
-    await createFetchIngest(harness.cfg).prefetch('nfl');
+    await createFetchIngest(harness.cfg).prefetch('us');
 
     expect(held.order).toEqual(['hold', 'release']);
   });
@@ -245,7 +245,7 @@ describe('createFetchIngest — holdWrites', () => {
     const harness = makeCfg({ holdWrites: held.holdWrites });
     harness.setReject(new Error('offline'));
 
-    await expect(createFetchIngest(harness.cfg).prefetch('nfl')).rejects.toThrow('offline');
+    await expect(createFetchIngest(harness.cfg).prefetch('us')).rejects.toThrow('offline');
 
     expect(held.release).toHaveBeenCalledTimes(1);
   });
@@ -254,25 +254,25 @@ describe('createFetchIngest — holdWrites', () => {
 describe('createFetchIngest — successful ingest (200)', () => {
   it('shreds the raw text, persists the new etag, and bumps the version once', async () => {
     const harness = makeCfg();
-    harness.setResponse({ data: '[{"player_id":"a"}]', etag: 'W/"new"' });
+    harness.setResponse({ data: '[{"item_id":"a"}]', etag: 'W/"new"' });
     const ingest = createFetchIngest(harness.cfg);
 
-    const out = await ingest.prefetch('nfl');
+    const out = await ingest.prefetch('us');
 
-    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('nfl', '[{"player_id":"a"}]');
-    expect(harness.cfg.setEtag).toHaveBeenCalledWith('nfl', 'W/"new"');
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('us', '[{"item_id":"a"}]');
+    expect(harness.cfg.setEtag).toHaveBeenCalledWith('us', 'W/"new"');
     expect(harness.version.bump).toHaveBeenCalledTimes(1);
     expect(out).toEqual({ version: 1, count: 5 });
   });
 
   it('coerces a non-string (object) body to JSON text before shredding', async () => {
     const harness = makeCfg();
-    harness.setResponse({ data: { players: [1, 2] }, etag: 'e' });
+    harness.setResponse({ data: { items: [1, 2] }, etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
-    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('nfl', JSON.stringify({ players: [1, 2] }));
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('us', JSON.stringify({ items: [1, 2] }));
   });
 
   it('bumps but refuses the etag from a 200 that carried no body, so the next launch is a real fetch', async () => {
@@ -280,7 +280,7 @@ describe('createFetchIngest — successful ingest (200)', () => {
     harness.setResponse({ etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    const out = await ingest.prefetch('nfl');
+    const out = await ingest.prefetch('us');
 
     expect(harness.cfg.ingestRaw).not.toHaveBeenCalled();
     expect(harness.cfg.setEtag).not.toHaveBeenCalled();
@@ -292,10 +292,10 @@ describe('createFetchIngest — successful ingest (200)', () => {
     harness.setResponse({ data: '[]', etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
-    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('nfl', '[]');
-    expect(harness.cfg.setEtag).toHaveBeenCalledWith('nfl', 'e');
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('us', '[]');
+    expect(harness.cfg.setEtag).toHaveBeenCalledWith('us', 'e');
   });
 
   it('refuses the etag for an empty-string body too, which is the same nothing as a missing one', async () => {
@@ -303,7 +303,7 @@ describe('createFetchIngest — successful ingest (200)', () => {
     harness.setResponse({ data: '', etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
     expect(harness.cfg.setEtag).not.toHaveBeenCalled();
   });
@@ -313,7 +313,7 @@ describe('createFetchIngest — successful ingest (200)', () => {
     harness.setResponse({ data: '[]' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
 
     expect(harness.cfg.setEtag).not.toHaveBeenCalled();
     expect(harness.version.bump).toHaveBeenCalledTimes(1);
@@ -338,10 +338,10 @@ describe('createFetchIngest — prefetch / ensure gating', () => {
     harness.setResponse({ data: '[]', etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    await ingest.prefetch('nfl');
+    await ingest.prefetch('us');
     expect(fetchQueryMock.mock.calls[0][0].staleTime).toBe(1000);
 
-    await ingest.prefetch('nfl', { staleTime: 50 });
+    await ingest.prefetch('us', { staleTime: 50 });
     expect(fetchQueryMock.mock.calls[1][0].staleTime).toBe(50);
   });
 
@@ -350,13 +350,13 @@ describe('createFetchIngest — prefetch / ensure gating', () => {
     harness.setReject(new Error('network down'));
     const ingest = createFetchIngest(harness.cfg);
 
-    expect(() => ingest.ensure('nfl')).not.toThrow();
+    expect(() => ingest.ensure('us')).not.toThrow();
     await new Promise((response) => {
       setTimeout(response, 0);
     });
     expect(fetchQueryMock).toHaveBeenCalledTimes(1);
 
-    await expect(ingest.prefetch('nfl')).rejects.toThrow('network down');
+    await expect(ingest.prefetch('us')).rejects.toThrow('network down');
   });
 });
 
@@ -365,10 +365,10 @@ describe('createFetchIngest — usePrime (reactive wiring)', () => {
     const harness = makeCfg();
     const ingest = createFetchIngest(harness.cfg);
 
-    const res = ingest.usePrime('nfl');
+    const res = ingest.usePrime('us');
 
     const config = useFocusGatedQueryMock.mock.calls[0][0];
-    expect(config.queryKey).toEqual(['test_ingest', 'nfl']);
+    expect(config.queryKey).toEqual(['test_ingest', 'us']);
     expect(config.enabled).toBe(true);
     expect(config.staleTime).toBe(1000);
     expect(config.cacheTime).toBe(2000);
@@ -384,7 +384,7 @@ describe('createFetchIngest — usePrime (reactive wiring)', () => {
     ingest.usePrime('');
     expect(useFocusGatedQueryMock.mock.calls[0][0].enabled).toBe(false);
 
-    ingest.usePrime('nfl', false);
+    ingest.usePrime('us', false);
     expect(useFocusGatedQueryMock.mock.calls[1][0].enabled).toBe(false);
   });
 
@@ -393,11 +393,11 @@ describe('createFetchIngest — usePrime (reactive wiring)', () => {
     harness.setResponse({ data: '[{"x":1}]', etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    ingest.usePrime('nfl');
+    ingest.usePrime('us');
     const { queryFn } = useFocusGatedQueryMock.mock.calls[0][0];
     const out = await queryFn();
 
-    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('nfl', '[{"x":1}]');
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('us', '[{"x":1}]');
     expect(out).toEqual({ version: 1, count: 5 });
   });
 
@@ -410,7 +410,7 @@ describe('createFetchIngest — usePrime (reactive wiring)', () => {
     });
     const ingest = createFetchIngest(harness.cfg);
 
-    expect(() => ingest.usePrime('nfl')).not.toThrow();
+    expect(() => ingest.usePrime('us')).not.toThrow();
 
     const config = useFocusGatedQueryMock.mock.calls[0][0];
     expect(config.staleTime).toBeUndefined();
@@ -424,15 +424,15 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const harness = makeCfg();
     const ingest = createFetchIngest(harness.cfg);
 
-    renderHook(() => ingest.usePrimeMany(['nfl', 'nba']));
+    renderHook(() => ingest.usePrimeMany(['us', 'eu']));
     const first = useFocusGatedQueriesMock.mock.calls[0][0].queries;
     expect(first.map((query: { queryKey: string[] }) => query.queryKey)).toEqual([
-      ['test_ingest', 'nfl'],
-      ['test_ingest', 'nba'],
+      ['test_ingest', 'us'],
+      ['test_ingest', 'eu'],
     ]);
     expect(first[0].notifyOnChangeProps).toEqual(['isInitialLoading', 'isFetching', 'isError']);
 
-    renderHook(() => ingest.usePrimeMany(['nfl']));
+    renderHook(() => ingest.usePrimeMany(['us']));
     expect(useFocusGatedQueriesMock.mock.calls[1][0].queries).toHaveLength(1);
   });
 
@@ -440,7 +440,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const harness = makeCfg();
     const ingest = createFetchIngest(harness.cfg);
 
-    renderHook(() => ingest.usePrimeMany(['nfl', '']));
+    renderHook(() => ingest.usePrimeMany(['us', '']));
 
     expect(useFocusGatedQueriesMock.mock.calls[0][0].queries).toHaveLength(1);
   });
@@ -449,7 +449,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const harness = makeCfg();
     const ingest = createFetchIngest(harness.cfg);
 
-    renderHook(() => ingest.usePrimeMany(['nfl', 'nba'], false));
+    renderHook(() => ingest.usePrimeMany(['us', 'eu'], false));
 
     expect(useFocusGatedQueriesMock.mock.calls[0][0].queries.every((query: { enabled: boolean }) => !query.enabled)).toBe(true);
   });
@@ -459,7 +459,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const ingest = createFetchIngest(harness.cfg);
     useFocusGatedQueriesMock.mockReturnValueOnce([{ isInitialLoading: false }, { isInitialLoading: true }]);
 
-    expect(renderHook(() => ingest.usePrimeMany(['nfl', 'nba'])).current).toEqual({ isInitialLoading: true, isFetching: false, isError: false });
+    expect(renderHook(() => ingest.usePrimeMany(['us', 'eu'])).current).toEqual({ isInitialLoading: true, isFetching: false, isError: false });
   });
 
   it('reports fetching while any one partition refreshes, even though none is initially loading', () => {
@@ -470,7 +470,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
       { isInitialLoading: false, isFetching: true },
     ]);
 
-    expect(renderHook(() => ingest.usePrimeMany(['nfl', 'nba'])).current).toEqual({ isInitialLoading: false, isFetching: true, isError: false });
+    expect(renderHook(() => ingest.usePrimeMany(['us', 'eu'])).current).toEqual({ isInitialLoading: false, isFetching: true, isError: false });
   });
 
   it('reports error only when every partition failed, so one bad partition degrades to a gap', () => {
@@ -478,10 +478,10 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const ingest = createFetchIngest(harness.cfg);
 
     useFocusGatedQueriesMock.mockReturnValueOnce([{ isError: true }, { isError: false }]);
-    expect(renderHook(() => ingest.usePrimeMany(['nfl', 'nba'])).current.isError).toBe(false);
+    expect(renderHook(() => ingest.usePrimeMany(['us', 'eu'])).current.isError).toBe(false);
 
     useFocusGatedQueriesMock.mockReturnValueOnce([{ isError: true }, { isError: true }]);
-    expect(renderHook(() => ingest.usePrimeMany(['nfl', 'nba'])).current.isError).toBe(true);
+    expect(renderHook(() => ingest.usePrimeMany(['us', 'eu'])).current.isError).toBe(true);
   });
 
   it('reports no error for an empty partition set, so a list with nothing live is not an error', () => {
@@ -497,7 +497,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const ingest = createFetchIngest(harness.cfg);
 
     // A fresh array each render, as `def.partitions(args)` produces.
-    const probe = renderHook(() => ingest.usePrimeMany(['nfl', 'nba']));
+    const probe = renderHook(() => ingest.usePrimeMany(['us', 'eu']));
     probe.rerender();
     probe.rerender();
 
@@ -511,7 +511,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const harness = makeCfg();
     const ingest = createFetchIngest(harness.cfg);
 
-    const probe = renderHook(() => ingest.usePrimeMany(['nfl', 'nba']));
+    const probe = renderHook(() => ingest.usePrimeMany(['us', 'eu']));
     (harness.cfg.rawQuery as jest.Mock).mockClear();
     probe.rerender();
 
@@ -523,16 +523,16 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const harness = makeCfg();
     const ingest = createFetchIngest(harness.cfg);
 
-    let partitions: string[] = ['nfl'];
+    let partitions: string[] = ['us'];
     const probe = renderHook(() => ingest.usePrimeMany(partitions));
-    partitions = ['nfl', 'nba'];
+    partitions = ['us', 'eu'];
     probe.rerender();
 
     const [first, second] = useFocusGatedQueriesMock.mock.calls.map((call) => call[0].queries);
     expect(second).not.toBe(first);
     expect(second.map((query: { queryKey: string[] }) => query.queryKey)).toEqual([
-      ['test_ingest', 'nfl'],
-      ['test_ingest', 'nba'],
+      ['test_ingest', 'us'],
+      ['test_ingest', 'eu'],
     ]);
     probe.unmount();
   });
@@ -542,7 +542,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     const ingest = createFetchIngest(harness.cfg);
 
     let enabled = true;
-    const probe = renderHook(() => ingest.usePrimeMany(['nfl'], enabled));
+    const probe = renderHook(() => ingest.usePrimeMany(['us'], enabled));
     enabled = false;
     probe.rerender();
 
@@ -557,10 +557,10 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
     harness.setResponse({ data: '[{"x":1}]', etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    renderHook(() => ingest.usePrimeMany(['nfl']));
+    renderHook(() => ingest.usePrimeMany(['us']));
     const out = await useFocusGatedQueriesMock.mock.calls[0][0].queries[0].queryFn();
 
-    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('nfl', '[{"x":1}]');
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('us', '[{"x":1}]');
     expect(out).toEqual({ version: 1, count: 5 });
   });
 });

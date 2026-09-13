@@ -58,7 +58,7 @@ export function partitionsKey(partitions: readonly (readonly string[])[]): strin
   return partitions.map((parts) => cacheKey(...parts)).join(GROUP_SEP);
 }
 
-/** A partition's parts as a human reads them. Never as a key: `:` occurs inside a part (`clubsoccer:epl`). */
+/** A partition's parts as a human reads them. Never as a key: `:` occurs inside a part (`region:us-west`). */
 export function partitionLabel(parts: readonly string[]): string {
   return parts.join(':');
 }

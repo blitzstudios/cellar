@@ -7,7 +7,7 @@ import { makeResult } from '../../store_result';
 /* global globalThis */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type Params = { sport: string };
+type Params = { region: string };
 type Row = { id: string; display?: string };
 type Detail = { label: string };
 
@@ -20,7 +20,7 @@ function makeSpecHarness(opts: { prehydrate?: (row: Row) => Detail | undefined; 
     if (!enabled || ids.length === 0) return undefined;
     calls.push([...ids]);
     const out: Record<string, Detail> = {};
-    for (const id of ids) out[id] = { label: `${params.sport}:${id}` };
+    for (const id of ids) out[id] = { label: `${params.region}:${id}` };
     return out;
   };
 
@@ -58,7 +58,7 @@ function makeSpecHarness(opts: { prehydrate?: (row: Row) => Detail | undefined; 
       );
     };
 
-  const render = (rows: Row[], params: Params = NFL): { labels: (string | undefined)[]; distinctReads: number } => {
+  const render = (rows: Row[], params: Params = US): { labels: (string | undefined)[]; distinctReads: number } => {
     list.rows = rows;
     const labels: (string | undefined)[] = [];
     act(() => {
@@ -70,7 +70,7 @@ function makeSpecHarness(opts: { prehydrate?: (row: Row) => Detail | undefined; 
   return { render, makeParent, Child, calls, windowed, list };
 }
 
-const NFL: Params = { sport: 'nfl' };
+const US: Params = { region: 'us' };
 const rowsOf = (count: number, from = 0): Row[] => Array.from({ length: count }, (_value, index) => ({ id: `p${from + index}` }));
 
 describe('createWindowedList', () => {
@@ -78,7 +78,7 @@ describe('createWindowedList', () => {
     const harness = makeSpecHarness();
     const { labels } = harness.render(rowsOf(4));
 
-    expect(labels).toEqual(['nfl:p0', 'nfl:p1', 'nfl:p2', 'nfl:p3']);
+    expect(labels).toEqual(['us:p0', 'us:p1', 'us:p2', 'us:p3']);
   });
 
   it('hydrates a block once however many rows read from it', () => {
@@ -95,7 +95,7 @@ describe('createWindowedList', () => {
 
     expect(distinctReads).toBe(4);
     expect(harness.calls.every((ids) => ids.length <= 10)).toBe(true);
-    expect(labels[34]).toBe('nfl:p34');
+    expect(labels[34]).toBe('us:p34');
   });
 
   it("asks only for the rows in the reader's own block, so a row never drags in the rest of the list", () => {
@@ -124,7 +124,7 @@ describe('createWindowedList', () => {
     const { labels } = harness.render([{ id: 'p0', display: 'carried' }, { id: 'p1' }]);
 
     expect(labels[0]).toBe('carried');
-    expect(labels[1]).toBe('nfl:p1');
+    expect(labels[1]).toBe('us:p1');
     expect(harness.calls.flat()).toEqual(['p1']);
   });
 
@@ -132,17 +132,17 @@ describe('createWindowedList', () => {
     const harness = makeSpecHarness();
     const { labels } = harness.render(rowsOf(2));
 
-    expect(labels).toEqual(['nfl:p0', 'nfl:p1']);
+    expect(labels).toEqual(['us:p0', 'us:p1']);
   });
 
-  it('reads a row the list left out on its own, since unbatched is a cost and blank is a bug', () => {
+  it('reads a row the list left out on its own, since ueutched is a cost and blank is a bug', () => {
     const harness = makeSpecHarness();
     harness.list.rows = rowsOf(2);
     const stray: Row = { id: 'stray' };
     let label: string | undefined = 'unset';
 
     const Parent = (): React.ReactElement => {
-      const blockOf = harness.windowed.useBlocks({ params: NFL, rows: harness.list.rows });
+      const blockOf = harness.windowed.useBlocks({ params: US, rows: harness.list.rows });
       return React.createElement(Solo, { block: blockOf(stray) });
     };
     const Solo = ({ block }: { block: ReturnType<ReturnType<typeof harness.windowed.useBlocks>> }): null => {
@@ -153,7 +153,7 @@ describe('createWindowedList', () => {
       TestRenderer.create(React.createElement(Parent));
     });
 
-    expect(label).toBe('nfl:stray');
+    expect(label).toBe('us:stray');
     expect(harness.calls).toEqual([['stray']]);
   });
 
@@ -166,7 +166,7 @@ describe('createWindowedList', () => {
     // The two rows a window this far apart would show, and nothing between them.
     const onScreen = [0, 500];
     const Parent = (): React.ReactElement => {
-      const blockOf = harness.windowed.useBlocks({ params: NFL, rows });
+      const blockOf = harness.windowed.useBlocks({ params: US, rows });
       return React.createElement(
         React.Fragment,
         null,
@@ -179,7 +179,7 @@ describe('createWindowedList', () => {
       TestRenderer.create(React.createElement(Parent));
     });
 
-    expect(labels).toEqual(['nfl:p0', 'nfl:p500']);
+    expect(labels).toEqual(['us:p0', 'us:p500']);
     // Two blocks, not a hundred: the 998 rows nobody rendered were never grouped.
     expect(harness.calls).toHaveLength(2);
     expect(harness.calls.map((ids) => ids.length)).toEqual([10, 10]);
@@ -192,7 +192,7 @@ describe('createWindowedList', () => {
     let ids: readonly string[] = [];
 
     const Parent = (): null => {
-      const blockOf = harness.windowed.useBlocks({ params: NFL, rows });
+      const blockOf = harness.windowed.useBlocks({ params: US, rows });
       ids = blockOf(rows[0], 2).ids;
       return null;
     };
@@ -209,17 +209,17 @@ describe('createWindowedList — two lists over the same rows', () => {
     const harness = makeSpecHarness();
     const shared = rowsOf(2);
     harness.list.rows = shared;
-    const nflLabels: (string | undefined)[] = [];
-    const nbaLabels: (string | undefined)[] = [];
-    const Nfl = harness.makeParent({ sport: 'nfl' }, nflLabels);
-    const Nba = harness.makeParent({ sport: 'nba' }, nbaLabels);
+    const usLabels: (string | undefined)[] = [];
+    const euLabels: (string | undefined)[] = [];
+    const Us = harness.makeParent({ region: 'us' }, usLabels);
+    const Eu = harness.makeParent({ region: 'eu' }, euLabels);
 
     act(() => {
-      TestRenderer.create(React.createElement(React.Fragment, null, React.createElement(Nfl), React.createElement(Nba)));
+      TestRenderer.create(React.createElement(React.Fragment, null, React.createElement(Us), React.createElement(Eu)));
     });
 
-    expect(nflLabels).toEqual(['nfl:p0', 'nfl:p1']);
-    expect(nbaLabels).toEqual(['nba:p0', 'nba:p1']);
+    expect(usLabels).toEqual(['us:p0', 'us:p1']);
+    expect(euLabels).toEqual(['eu:p0', 'eu:p1']);
   });
 
   it('hands a row the same block object across re-renders, so its hydration is not re-keyed every render', () => {
@@ -228,7 +228,7 @@ describe('createWindowedList — two lists over the same rows', () => {
     harness.list.rows = rows;
     const seen: unknown[] = [];
     const Parent = (): null => {
-      const blockOf = harness.windowed.useBlocks({ params: NFL, rows });
+      const blockOf = harness.windowed.useBlocks({ params: US, rows });
       seen.push(blockOf(rows[0], 0));
       return null;
     };

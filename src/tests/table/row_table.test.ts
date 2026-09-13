@@ -11,8 +11,8 @@ import { createSqlJsConnection, initSqlJs } from '../../testing/sqljs_connection
 
 type TestRow = {
   id: string;
-  sport: string;
-  team: string | null;
+  region: string;
+  cohort: string | null;
   num: number | null;
 };
 
@@ -24,85 +24,85 @@ const schema: RowTableSchema<TestRow> = {
   table: 'things',
   columns: {
     id: { type: 'TEXT', notNull: true },
-    sport: { type: 'TEXT', notNull: true },
-    team: { type: 'TEXT' },
+    region: { type: 'TEXT', notNull: true },
+    cohort: { type: 'TEXT' },
     num: { type: 'INTEGER' },
   },
-  primaryKey: ['sport', 'id'],
-  indexes: [{ name: 'idx_things_team', columns: ['sport', 'team'] }],
-  meta: { table: 'things_meta', keyColumns: ['sport'], column: 'etag' },
+  primaryKey: ['region', 'id'],
+  indexes: [{ name: 'idx_things_cohort', columns: ['region', 'cohort'] }],
+  meta: { table: 'things_meta', keyColumns: ['region'], column: 'etag' },
 };
 
-function row(id: string, sport: string, team: string | null, num: number | null): TestRow {
-  return { id, sport, team, num };
+function row(id: string, region: string, cohort: string | null, num: number | null): TestRow {
+  return { id, region, cohort, num };
 }
 
 describe('row_table — memory backend', () => {
   it('overwrite replaces a scope, and reads project by equality', () => {
     const db = createMemoryRowTable(schema);
-    db.overwrite({ sport: 'nfl' }, [row('a', 'nfl', 'NE', 2), row('b', 'nfl', 'NE', 1), row('c', 'nfl', 'KC', 3)]);
-    db.overwrite({ sport: 'nba' }, [row('x', 'nba', 'BOS', 9)]);
+    db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 2), row('b', 'us', 'NE', 1), row('c', 'us', 'KC', 3)]);
+    db.overwrite({ region: 'eu' }, [row('x', 'eu', 'BOS', 9)]);
 
-    expect(db.getOne({ sport: 'nfl', id: 'b' })).toEqual(row('b', 'nfl', 'NE', 1));
+    expect(db.getOne({ region: 'us', id: 'b' })).toEqual(row('b', 'us', 'NE', 1));
     expect(
       db
-        .find({ sport: 'nfl', team: 'NE' })
+        .find({ region: 'us', cohort: 'NE' })
         .map((row) => row.id)
         .sort(),
     ).toEqual(['a', 'b']);
-    expect(db.find({ sport: 'nba' })).toHaveLength(1);
+    expect(db.find({ region: 'eu' })).toHaveLength(1);
 
-    db.overwrite({ sport: 'nfl' }, [row('z', 'nfl', 'KC', 5)]);
-    expect(db.find({ sport: 'nfl' }).map((row) => row.id)).toEqual(['z']);
-    expect(db.find({ sport: 'nba' })).toHaveLength(1);
+    db.overwrite({ region: 'us' }, [row('z', 'us', 'KC', 5)]);
+    expect(db.find({ region: 'us' }).map((row) => row.id)).toEqual(['z']);
+    expect(db.find({ region: 'eu' })).toHaveLength(1);
   });
 
   it('find orderBy sorts ascending (numeric)', () => {
     const db = createMemoryRowTable(schema);
-    db.overwrite({ sport: 'nfl' }, [row('a', 'nfl', 'NE', 3), row('b', 'nfl', 'NE', 1), row('c', 'nfl', 'NE', 2)]);
-    expect(db.find({ sport: 'nfl' }, { orderBy: 'num' }).map((row) => row.id)).toEqual(['b', 'c', 'a']);
+    db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 3), row('b', 'us', 'NE', 1), row('c', 'us', 'NE', 2)]);
+    expect(db.find({ region: 'us' }, { orderBy: 'num' }).map((row) => row.id)).toEqual(['b', 'c', 'a']);
   });
 
   it('findIn returns rows for scope + IN, unordered', () => {
     const db = createMemoryRowTable(schema);
-    db.overwrite({ sport: 'nfl' }, [row('a', 'nfl', 'NE', 1), row('b', 'nfl', 'KC', 2), row('c', 'nfl', 'KC', 3)]);
+    db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 1), row('b', 'us', 'KC', 2), row('c', 'us', 'KC', 3)]);
     const got = db
-      .findIn({ sport: 'nfl' }, 'id', ['c', 'a'])
+      .findIn({ region: 'us' }, 'id', ['c', 'a'])
       .map((row) => row.id)
       .sort();
     expect(got).toEqual(['a', 'c']);
-    expect(db.findIn({ sport: 'nfl' }, 'id', [])).toEqual([]);
+    expect(db.findIn({ region: 'us' }, 'id', [])).toEqual([]);
   });
 
   it('upsert replaces by primary key', async () => {
     const db = createMemoryRowTable(schema);
-    await db.upsert([row('a', 'nfl', 'NE', 1)]);
-    await db.upsert([row('a', 'nfl', 'NE', 99)]);
-    await db.upsert([row('a', 'nba', 'BOS', 1)]);
-    expect(db.getOne({ sport: 'nfl', id: 'a' })?.num).toBe(99);
+    await db.upsert([row('a', 'us', 'NE', 1)]);
+    await db.upsert([row('a', 'us', 'NE', 99)]);
+    await db.upsert([row('a', 'eu', 'BOS', 1)]);
+    expect(db.getOne({ region: 'us', id: 'a' })?.num).toBe(99);
     expect(db.find({}).length).toBe(2);
   });
 
   it('has is true immediately after overwrite (even empty), else reflects data', () => {
     const db = createMemoryRowTable(schema);
-    expect(db.has({ sport: 'nfl' })).toBe(false);
-    db.overwrite({ sport: 'nfl' }, []);
-    expect(db.has({ sport: 'nfl' })).toBe(true);
+    expect(db.has({ region: 'us' })).toBe(false);
+    db.overwrite({ region: 'us' }, []);
+    expect(db.has({ region: 'us' })).toBe(true);
   });
 
   it('meta get/set by scope', () => {
     const db = createMemoryRowTable(schema);
-    expect(db.getMeta({ sport: 'nfl' })).toBeUndefined();
-    db.setMeta({ sport: 'nfl' }, 'etag-123');
-    expect(db.getMeta({ sport: 'nfl' })).toBe('etag-123');
-    expect(db.getMeta({ sport: 'nba' })).toBeUndefined();
+    expect(db.getMeta({ region: 'us' })).toBeUndefined();
+    db.setMeta({ region: 'us' }, 'etag-123');
+    expect(db.getMeta({ region: 'us' })).toBe('etag-123');
+    expect(db.getMeta({ region: 'eu' })).toBeUndefined();
   });
 
   it('clears the entry on undefined', () => {
     const db = createMemoryRowTable(schema);
-    db.setMeta({ sport: 'nfl' }, 'etag-123');
-    db.setMeta({ sport: 'nfl' }, undefined);
-    expect(db.getMeta({ sport: 'nfl' })).toBeUndefined();
+    db.setMeta({ region: 'us' }, 'etag-123');
+    db.setMeta({ region: 'us' }, undefined);
+    expect(db.getMeta({ region: 'us' })).toBeUndefined();
   });
 });
 
@@ -142,8 +142,8 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS things');
     expect(sql).toContain('id TEXT NOT NULL');
     expect(sql).toContain('num INTEGER');
-    expect(sql).toContain('PRIMARY KEY (sport, id)');
-    expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_things_team ON things (sport, team)');
+    expect(sql).toContain('PRIMARY KEY (region, id)');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, cohort)');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS things_meta');
   });
 
@@ -187,10 +187,10 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       ['a retyped column', (schema: RowTableSchema<TestRow>) => ({ ...schema, columns: { ...schema.columns, num: { type: 'TEXT' as const } } })],
       [
         'a dropped column',
-        (schema: RowTableSchema<TestRow>) => ({ ...schema, columns: { id: schema.columns.id, sport: schema.columns.sport, team: schema.columns.team } }),
+        (schema: RowTableSchema<TestRow>) => ({ ...schema, columns: { id: schema.columns.id, region: schema.columns.region, cohort: schema.columns.cohort } }),
       ],
       ['a changed primary key', (schema: RowTableSchema<TestRow>) => ({ ...schema, primaryKey: ['id'] })],
-      ['a changed index', (schema: RowTableSchema<TestRow>) => ({ ...schema, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] })],
+      ['a changed index', (schema: RowTableSchema<TestRow>) => ({ ...schema, indexes: [{ name: 'idx_things_cohort', columns: ['region', 'num'] }] })],
       ['a renamed meta table', (schema: RowTableSchema<TestRow>) => ({ ...schema, meta: { ...schema.meta!, table: 'things_etags' } })],
       ['a bumped rebuildVersion', (schema: RowTableSchema<TestRow>) => ({ ...schema, rebuildVersion: 2 })],
     ])('changes on %s', (_label, mutate) => {
@@ -199,38 +199,38 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
     describe('the shred spec is part of it', () => {
       const spec = (op: ShredOp): NativeShredSpec => ({
-        specs: { all: { version: 1, table: 'things', insertVerb: 'INSERT OR REPLACE', columns: ['sport'], ops: [op], deleteWhere: [] } },
+        specs: { all: { version: 1, table: 'things', insertVerb: 'INSERT OR REPLACE', columns: ['region'], ops: [op], deleteWhere: [] } },
         variant: () => 'all',
         binds: () => [],
       });
 
       it('changes when a column is filled from a different path', () => {
-        expect(schemaFingerprint(schema, spec({ op: 'text', path: 'sport' }))).not.toBe(schemaFingerprint(schema, spec({ op: 'text', path: 'league' })));
+        expect(schemaFingerprint(schema, spec({ op: 'text', path: 'region' }))).not.toBe(schemaFingerprint(schema, spec({ op: 'text', path: 'tenant' })));
       });
 
       it('changes when a column is filled by a different op, which is the edit that keeps the column and moves its meaning', () => {
-        expect(schemaFingerprint(schema, spec({ op: 'text', path: 'sport' }))).not.toBe(schemaFingerprint(schema, spec({ op: 'rawJsonField', path: 'sport' })));
+        expect(schemaFingerprint(schema, spec({ op: 'text', path: 'region' }))).not.toBe(schemaFingerprint(schema, spec({ op: 'rawJsonField', path: 'region' })));
       });
 
       it('changes when one variant of many changes, since a scope shreds through exactly one of them', () => {
-        const base = spec({ op: 'text', path: 'sport' });
-        const twoVariants: NativeShredSpec = { ...base, specs: { ...base.specs, nfl: { ...base.specs.all, ops: [{ op: 'int', path: 'sport' }] } } };
-        const edited: NativeShredSpec = { ...base, specs: { ...twoVariants.specs, nfl: { ...base.specs.all, ops: [{ op: 'real', path: 'sport' }] } } };
+        const base = spec({ op: 'text', path: 'region' });
+        const twoVariants: NativeShredSpec = { ...base, specs: { ...base.specs, us: { ...base.specs.all, ops: [{ op: 'int', path: 'region' }] } } };
+        const edited: NativeShredSpec = { ...base, specs: { ...twoVariants.specs, us: { ...base.specs.all, ops: [{ op: 'real', path: 'region' }] } } };
 
         expect(schemaFingerprint(schema, twoVariants)).not.toBe(schemaFingerprint(schema, edited));
       });
 
       it('is insensitive to variant declaration order, which selects the same spec either way', () => {
-        const base = spec({ op: 'text', path: 'sport' });
-        const nfl = { ...base.specs.all, ops: [{ op: 'int' as const, path: 'sport' }] };
-        const oneWay: NativeShredSpec = { ...base, specs: { all: base.specs.all, nfl } };
-        const other: NativeShredSpec = { ...base, specs: { nfl, all: base.specs.all } };
+        const base = spec({ op: 'text', path: 'region' });
+        const us = { ...base.specs.all, ops: [{ op: 'int' as const, path: 'region' }] };
+        const oneWay: NativeShredSpec = { ...base, specs: { all: base.specs.all, us } };
+        const other: NativeShredSpec = { ...base, specs: { us, all: base.specs.all } };
 
         expect(schemaFingerprint(schema, oneWay)).toBe(schemaFingerprint(schema, other));
       });
 
       it('differs from having no spec at all, so adding a native shred is itself a rebuild', () => {
-        expect(schemaFingerprint(schema, spec({ op: 'text', path: 'sport' }))).not.toBe(schemaFingerprint(schema));
+        expect(schemaFingerprint(schema, spec({ op: 'text', path: 'region' }))).not.toBe(schemaFingerprint(schema));
       });
     });
 
@@ -238,8 +238,8 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       const two: RowTableSchema<TestRow> = {
         ...schema,
         indexes: [
-          { name: 'idx_a', columns: ['sport'] },
-          { name: 'idx_b', columns: ['team'] },
+          { name: 'idx_a', columns: ['region'] },
+          { name: 'idx_b', columns: ['cohort'] },
         ],
       };
       const swapped: RowTableSchema<TestRow> = { ...two, indexes: [two.indexes![1], two.indexes![0]] };
@@ -272,21 +272,21 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     });
 
     it('rebuilds an index change, the one case nothing else could detect', () => {
-      const reindexed: RowTableSchema<TestRow> = { ...schema, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] };
+      const reindexed: RowTableSchema<TestRow> = { ...schema, indexes: [{ name: 'idx_things_cohort', columns: ['region', 'num'] }] };
 
       const { conn, calls, setReader } = makeConn();
       setReader(reader(schema) as never);
       createSqliteRowTable(reindexed, conn).init();
       const sql = calls.map((column) => column.sql);
       expect(sql).toContain('DROP TABLE IF EXISTS things;');
-      expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_things_team ON things (sport, num);');
+      expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, num);');
       expect(sql).toContain('DROP TABLE IF EXISTS things_meta;');
       expect(last(calls)?.sql).toBe(`PRAGMA user_version = ${schemaFingerprint(reindexed)};`);
     });
   });
 
   describe('a widening (PRAGMA application_id)', () => {
-    /** The routine edit: a generated column set gains one, which is what a sport publishing a new stat looks like. */
+    /** The routine edit: a generated column set gains one, which is what a region publishing a new metric looks like. */
     const widened: RowTableSchema<TestRow & { extra: string | null }> = { ...schema, columns: { ...schema.columns, extra: { type: 'TEXT' } } };
 
     it('is planned where only the columns grew, and the structure stamp agrees the rest is untouched', () => {
@@ -297,7 +297,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     it.each([
       ['a retyped column', { ...widened, columns: { ...widened.columns, num: { type: 'TEXT' as const } } }],
       ['a column that became NOT NULL', { ...widened, columns: { ...widened.columns, num: { type: 'INTEGER' as const, notNull: true } } }],
-      ['a dropped column', { ...widened, columns: { id: schema.columns.id, sport: schema.columns.sport, extra: { type: 'TEXT' as const } } }],
+      ['a dropped column', { ...widened, columns: { id: schema.columns.id, region: schema.columns.region, extra: { type: 'TEXT' as const } } }],
       ['a new NOT NULL column, which every existing row would violate', { ...widened, columns: { ...widened.columns, extra: { type: 'TEXT' as const, notNull: true } } }],
     ])('falls back to a rebuild on %s, which no ALTER TABLE could apply', (_label, next) => {
       expect(planSchemaMigration(next as RowTableSchema<any>, liveSchema(schema))).toBe('rebuild');
@@ -305,7 +305,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     });
 
     it.each([
-      ['a changed index', { ...widened, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] }],
+      ['a changed index', { ...widened, indexes: [{ name: 'idx_things_cohort', columns: ['region', 'num'] }] }],
       ['a changed primary key', { ...widened, primaryKey: ['id'] }],
       ['a renamed ETag table', { ...widened, meta: { ...schema.meta!, table: 'things_etags' } }],
       ['a bumped rebuildVersion', { ...widened, rebuildVersion: 2 }],
@@ -332,37 +332,37 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       });
 
       /**
-       * The case the whole path exists for: `player_stats` generates its columns from the scoring catalog, so a new
+       * The case the whole path exists for: `leaderboard` generates its columns from the metric catalog, so a new
        * key adds a column *and* the op filling it. Reading that as structural would rebuild every install, which is
-       * what shipping one more scoring key used to cost.
+       * what shipping one more metric key used to cost.
        */
-      it('widens when a new column arrives with the op that fills it, which is what one new scoring key looks like', () => {
-        const before = spec(['team']);
-        const after = spec(['team', 'extra']);
+      it('widens when a new column arrives with the op that fills it, which is what one new metric key looks like', () => {
+        const before = spec(['cohort']);
+        const after = spec(['cohort', 'extra']);
 
         expect(planSchemaMigration(widened, liveSchema(schema, before), after)).toBe('extend');
       });
 
       it('rebuilds when an op repoints a column that already existed, since nothing was added to widen', () => {
-        const before = spec(['team']);
-        const repointed = spec(['team']);
-        repointed.specs.all.ops = [{ op: 'text', path: 'roster_team' }];
+        const before = spec(['cohort']);
+        const repointed = spec(['cohort']);
+        repointed.specs.all.ops = [{ op: 'text', path: 'member_cohort' }];
 
         expect(planSchemaMigration(schema, liveSchema(schema, before), repointed)).toBe('rebuild');
       });
 
       it.each([
-        ['the rows a shred replaces', { deleteWhere: [{ column: 'sport', bindIndex: 0 }] }],
+        ['the rows a shred replaces', { deleteWhere: [{ column: 'region', bindIndex: 0 }] }],
         ['whether a shred replaces at all', { insertVerb: 'INSERT' as const }],
         ['how the payload is walked', { source: 'objectValues' as const }],
-        ['which elements are skipped', { whereGuard: { paths: ['team'] } }],
+        ['which elements are skipped', { whereGuard: { paths: ['cohort'] } }],
       ])('rebuilds when a spec changes %s, even alongside an added column', (_label, overrides) => {
-        expect(planSchemaMigration(widened, liveSchema(schema, spec(['team'])), spec(['team', 'extra'], overrides))).toBe('rebuild');
+        expect(planSchemaMigration(widened, liveSchema(schema, spec(['cohort'])), spec(['cohort', 'extra'], overrides))).toBe('rebuild');
       });
 
-      it('rebuilds when a variant is added, which is a new sport rather than a new field', () => {
-        const before = spec(['team']);
-        const added: NativeShredSpec = { ...before, specs: { ...before.specs, nfl: { ...before.specs.all } } };
+      it('rebuilds when a variant is added, which is a new region rather than a new field', () => {
+        const before = spec(['cohort']);
+        const added: NativeShredSpec = { ...before, specs: { ...before.specs, us: { ...before.specs.all } } };
 
         expect(planSchemaMigration(widened, liveSchema(schema, before), added)).toBe('rebuild');
       });
@@ -403,7 +403,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   describe('pushFed — a rebuild empties rows a fetch will not all bring back', () => {
     const pushSchema: RowTableSchema<TestRow> = { ...schema, table: 'pushy', pushFed: true, meta: undefined };
     /** A rebuild's worth of change: an index the rows are not sorted by, which no widening can apply. */
-    const reindexed: RowTableSchema<TestRow> = { ...pushSchema, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] };
+    const reindexed: RowTableSchema<TestRow> = { ...pushSchema, indexes: [{ name: 'idx_things_cohort', columns: ['region', 'num'] }] };
 
     const withSentry = (assert: (sentry: { captureException: jest.Mock; captureMessage: jest.Mock }) => void): void => {
       const sentry = { captureException: jest.fn(), captureMessage: jest.fn() };
@@ -484,15 +484,15 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   it('overwrite emits DELETE(scope) + one grouped INSERT OR REPLACE in one batch, and marks has()', () => {
     const { conn, batches } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    db.overwrite({ sport: 'nfl' }, [row('a', 'nfl', 'NE', 2), row('b', 'nfl', 'KC', 1)]);
+    db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 2), row('b', 'us', 'KC', 1)]);
     expect(batches).toHaveLength(1);
     const batch = batches[0];
-    expect(batch[0][0]).toBe('DELETE FROM things WHERE sport = ?;');
-    expect(batch[0][1]).toEqual(['nfl']);
+    expect(batch[0][0]).toBe('DELETE FROM things WHERE region = ?;');
+    expect(batch[0][1]).toEqual(['us']);
     expect(batch).toHaveLength(2);
-    expect(batch[1][0]).toBe('INSERT OR REPLACE INTO things (id, sport, team, num) VALUES (?, ?, ?, ?), (?, ?, ?, ?);');
-    expect(batch[1][1]).toEqual(['a', 'nfl', 'NE', 2, 'b', 'nfl', 'KC', 1]);
-    expect(db.has({ sport: 'nfl' })).toBe(true);
+    expect(batch[1][0]).toBe('INSERT OR REPLACE INTO things (id, region, cohort, num) VALUES (?, ?, ?, ?), (?, ?, ?, ?);');
+    expect(batch[1][1]).toEqual(['a', 'us', 'NE', 2, 'b', 'us', 'KC', 1]);
+    expect(db.has({ region: 'us' })).toBe(true);
   });
 
   it('caches a has() miss, and re-probes only once a write could have satisfied it', async () => {
@@ -501,17 +501,17 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const probes = (): number => calls.filter((column) => column.sql.startsWith('SELECT 1 AS one')).length;
     setReader(() => []);
 
-    expect(db.has({ sport: 'nfl' })).toBe(false);
-    expect(db.has({ sport: 'nfl' })).toBe(false);
-    expect(db.has({ sport: 'nfl' })).toBe(false);
+    expect(db.has({ region: 'us' })).toBe(false);
+    expect(db.has({ region: 'us' })).toBe(false);
+    expect(db.has({ region: 'us' })).toBe(false);
     expect(probes()).toBe(1);
 
-    await db.upsert([row('a', 'nfl', 'NE', 1)]);
+    await db.upsert([row('a', 'us', 'NE', 1)]);
     setReader(() => [{ one: 1 }]);
-    expect(db.has({ sport: 'nfl' })).toBe(true);
+    expect(db.has({ region: 'us' })).toBe(true);
     expect(probes()).toBe(2);
 
-    expect(db.has({ sport: 'nfl' })).toBe(true);
+    expect(db.has({ region: 'us' })).toBe(true);
     expect(probes()).toBe(2);
   });
 
@@ -519,9 +519,9 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const { conn, calls, setReader } = makeConn();
     const db = createSqliteRowTable(schema, conn);
     setReader(() => [{ one: 1 }]);
-    expect(db.has({ sport: 'nfl' })).toBe(true);
-    await db.upsert([row('b', 'nfl', 'KC', 2)]);
-    expect(db.has({ sport: 'nfl' })).toBe(true);
+    expect(db.has({ region: 'us' })).toBe(true);
+    await db.upsert([row('b', 'us', 'KC', 2)]);
+    expect(db.has({ region: 'us' })).toBe(true);
     expect(calls.filter((column) => column.sql.startsWith('SELECT 1 AS one'))).toHaveLength(1);
   });
 
@@ -529,32 +529,32 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const { conn, setReader } = makeConn();
     const db = createSqliteRowTable(schema, conn);
     setReader(() => [{ one: 1 }]);
-    expect(db.has({ sport: 'nfl', team: 'NE' })).toBe(true);
+    expect(db.has({ region: 'us', cohort: 'NE' })).toBe(true);
 
     setReader(() => []);
-    db.overwrite({ sport: 'nfl' }, []);
+    db.overwrite({ region: 'us' }, []);
 
-    expect(db.has({ sport: 'nfl', team: 'NE' })).toBe(false);
-    expect(db.has({ sport: 'nfl' })).toBe(true);
+    expect(db.has({ region: 'us', cohort: 'NE' })).toBe(false);
+    expect(db.has({ region: 'us' })).toBe(true);
   });
 
   it('getOne / find / findIn generate the expected SQL and map _array rows', () => {
     const { conn, calls, setReader } = makeConn();
     const db = createSqliteRowTable(schema, conn);
 
-    setReader(() => [row('b', 'nfl', 'NE', 1)]);
-    expect(db.getOne({ sport: 'nfl', id: 'b' })).toEqual(row('b', 'nfl', 'NE', 1));
-    expect(last(calls)?.sql).toBe('SELECT * FROM things WHERE sport = ? AND id = ? LIMIT 1;');
-    expect(last(calls)?.params).toEqual(['nfl', 'b']);
+    setReader(() => [row('b', 'us', 'NE', 1)]);
+    expect(db.getOne({ region: 'us', id: 'b' })).toEqual(row('b', 'us', 'NE', 1));
+    expect(last(calls)?.sql).toBe('SELECT * FROM things WHERE region = ? AND id = ? LIMIT 1;');
+    expect(last(calls)?.params).toEqual(['us', 'b']);
 
-    setReader(() => [row('a', 'nfl', 'NE', 3), row('b', 'nfl', 'NE', 1)]);
-    expect(db.find({ sport: 'nfl', team: 'NE' }, { orderBy: 'num' }).map((row) => row.id)).toEqual(['b', 'a']);
-    expect(last(calls)?.sql).toBe('SELECT * FROM things WHERE sport = ? AND team = ?;');
+    setReader(() => [row('a', 'us', 'NE', 3), row('b', 'us', 'NE', 1)]);
+    expect(db.find({ region: 'us', cohort: 'NE' }, { orderBy: 'num' }).map((row) => row.id)).toEqual(['b', 'a']);
+    expect(last(calls)?.sql).toBe('SELECT * FROM things WHERE region = ? AND cohort = ?;');
 
-    setReader(() => [row('a', 'nfl', 'NE', 1)]);
-    db.findIn({ sport: 'nfl' }, 'id', ['a', 'c']);
-    expect(last(calls)?.sql).toBe('SELECT * FROM things WHERE sport = ? AND id IN (?, ?);');
-    expect(last(calls)?.params).toEqual(['nfl', 'a', 'c']);
+    setReader(() => [row('a', 'us', 'NE', 1)]);
+    db.findIn({ region: 'us' }, 'id', ['a', 'c']);
+    expect(last(calls)?.sql).toBe('SELECT * FROM things WHERE region = ? AND id IN (?, ?);');
+    expect(last(calls)?.params).toEqual(['us', 'a', 'c']);
   });
 
   it('findIn chunks large IN lists under the bind limit', () => {
@@ -570,35 +570,35 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   it('getMeta / setMeta target the meta table', () => {
     const { conn, calls, setReader } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    db.setMeta({ sport: 'nfl' }, 'etag-9');
-    expect(last(calls)?.sql).toBe('INSERT OR REPLACE INTO things_meta (sport, etag) VALUES (?, ?);');
-    expect(last(calls)?.params).toEqual(['nfl', 'etag-9']);
+    db.setMeta({ region: 'us' }, 'etag-9');
+    expect(last(calls)?.sql).toBe('INSERT OR REPLACE INTO things_meta (region, etag) VALUES (?, ?);');
+    expect(last(calls)?.params).toEqual(['us', 'etag-9']);
 
-    setReader((sql) => (sql.startsWith('SELECT sport, etag') ? [{ sport: 'nfl', etag: 'etag-9' }] : []));
-    expect(db.getMeta({ sport: 'nfl' })).toBe('etag-9');
+    setReader((sql) => (sql.startsWith('SELECT region, etag') ? [{ region: 'us', etag: 'etag-9' }] : []));
+    expect(db.getMeta({ region: 'us' })).toBe('etag-9');
   });
 
   it('deletes the meta row on undefined, rather than writing an empty string a fetch would still send', () => {
     const { conn, calls } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    db.setMeta({ sport: 'nfl' }, 'etag-9');
+    db.setMeta({ region: 'us' }, 'etag-9');
 
-    db.setMeta({ sport: 'nfl' }, undefined);
+    db.setMeta({ region: 'us' }, undefined);
 
-    expect(last(calls)?.sql).toBe('DELETE FROM things_meta WHERE sport = ?;');
-    expect(last(calls)?.params).toEqual(['nfl']);
-    expect(db.getMeta({ sport: 'nfl' })).toBeUndefined();
+    expect(last(calls)?.sql).toBe('DELETE FROM things_meta WHERE region = ?;');
+    expect(last(calls)?.params).toEqual(['us']);
+    expect(db.getMeta({ region: 'us' })).toBeUndefined();
   });
 
   it('writes nothing for a clear with no etag to clear, which is every socket flush after the first', () => {
     const { conn, calls } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    db.setMeta({ sport: 'nfl' }, 'etag-9');
-    db.setMeta({ sport: 'nfl' }, undefined);
+    db.setMeta({ region: 'us' }, 'etag-9');
+    db.setMeta({ region: 'us' }, undefined);
     const callsAfterFirstClear = calls.length;
 
-    db.setMeta({ sport: 'nfl' }, undefined);
-    db.setMeta({ sport: 'nba' }, undefined);
+    db.setMeta({ region: 'us' }, undefined);
+    db.setMeta({ region: 'eu' }, undefined);
 
     expect(calls.length).toBe(callsAfterFirstClear);
   });
@@ -606,23 +606,23 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   it('clears an etag it has only ever seen on disk, not one it wrote this session', () => {
     const { conn, calls, setReader } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    setReader((sql) => (sql.startsWith('SELECT sport, etag') ? [{ sport: 'nfl', etag: 'etag-cold' }] : []));
+    setReader((sql) => (sql.startsWith('SELECT region, etag') ? [{ region: 'us', etag: 'etag-cold' }] : []));
 
-    db.setMeta({ sport: 'nfl' }, undefined);
+    db.setMeta({ region: 'us' }, undefined);
 
-    expect(last(calls)?.sql).toBe('DELETE FROM things_meta WHERE sport = ?;');
-    expect(db.getMeta({ sport: 'nfl' })).toBeUndefined();
+    expect(last(calls)?.sql).toBe('DELETE FROM things_meta WHERE region = ?;');
+    expect(db.getMeta({ region: 'us' })).toBeUndefined();
   });
 
   it('getMeta bulk-loads the whole meta table once, then serves every scope from cache', () => {
     const { conn, calls, setReader } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    setReader((sql) => (sql.startsWith('SELECT sport, etag') ? [{ sport: 'nfl', etag: 'etag-cold' }] : []));
-    expect(db.getMeta({ sport: 'nfl' })).toBe('etag-cold');
-    expect(last(calls)?.sql).toBe('SELECT sport, etag FROM things_meta;');
+    setReader((sql) => (sql.startsWith('SELECT region, etag') ? [{ region: 'us', etag: 'etag-cold' }] : []));
+    expect(db.getMeta({ region: 'us' })).toBe('etag-cold');
+    expect(last(calls)?.sql).toBe('SELECT region, etag FROM things_meta;');
     const callsAfterLoad = calls.length;
-    expect(db.getMeta({ sport: 'nba' })).toBeUndefined();
-    expect(db.getMeta({ sport: 'nfl' })).toBe('etag-cold');
+    expect(db.getMeta({ region: 'eu' })).toBeUndefined();
+    expect(db.getMeta({ region: 'us' })).toBe('etag-cold');
     expect(calls.length).toBe(callsAfterLoad);
   });
 
@@ -630,12 +630,12 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     version: 1 as const,
     table: 'things',
     insertVerb: 'INSERT OR REPLACE' as const,
-    columns: ['id', 'sport'],
+    columns: ['id', 'region'],
     ops: [
       { op: 'text' as const, path: 'id' },
       { op: 'bind' as const, index: 0 },
     ],
-    deleteWhere: [{ column: 'sport', bindIndex: 0 }],
+    deleteWhere: [{ column: 'region', bindIndex: 0 }],
   };
 
   it('shred prefers the native shred spec when the connection supports it (no JS object graph)', async () => {
@@ -644,11 +644,11 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const db = createSqliteRowTable(
       schema,
       { ...conn, shredJsonArrayAsync },
-      { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.sport)] },
+      { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.region)] },
     );
     const parseRows = jest.fn(() => [] as TestRow[]);
-    const count = await db.shred({ sport: 'nfl' }, '[{"id":"p1"}]', parseRows);
-    expect(shredJsonArrayAsync).toHaveBeenCalledWith(shredSpec, '[{"id":"p1"}]', ['nfl']);
+    const count = await db.shred({ region: 'us' }, '[{"id":"p1"}]', parseRows);
+    expect(shredJsonArrayAsync).toHaveBeenCalledWith(shredSpec, '[{"id":"p1"}]', ['us']);
     expect(parseRows).not.toHaveBeenCalled();
     expect(count).toBe(2);
   });
@@ -658,7 +658,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       createSqliteRowTable(
         schema,
         { ...conn, shredJsonArrayAsync: shredJsonArrayAsync as SqliteConnection['shredJsonArrayAsync'] },
-        { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.sport)] },
+        { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.region)] },
       );
 
     const ddl = (calls: Array<{ sql: string }>) => calls.map((column) => column.sql).filter((schema) => /DROP INDEX|CREATE INDEX/.test(schema));
@@ -682,15 +682,15 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     it('drops them before the shred and rebuilds them after', async () => {
       const { conn, calls, setReader } = makeConn();
       setReader(() => []); // the emptiness probe finds no rows
-      await makeShredStore(conn).shred({ sport: 'nfl' }, '[{"id":"p1"}]', () => []);
+      await makeShredStore(conn).shred({ region: 'us' }, '[{"id":"p1"}]', () => []);
 
-      expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_team;', 'CREATE INDEX IF NOT EXISTS idx_things_team ON things (sport, team);']);
+      expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_cohort;', 'CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, cohort);']);
     });
 
     it('leaves them alone when the table already holds rows, whose reads would lose the index', async () => {
       const { conn, calls, setReader } = makeConn();
       setReader(() => [{ 1: 1 }]); // the emptiness probe finds a row
-      await makeShredStore(conn).shred({ sport: 'nfl' }, '[{"id":"p1"}]', () => []);
+      await makeShredStore(conn).shred({ region: 'us' }, '[{"id":"p1"}]', () => []);
 
       expect(ddl(calls)).toEqual([]);
     });
@@ -702,15 +702,15 @@ describe('row_table — sqlite backend (generated SQL)', () => {
         throw new Error('shred exploded');
       });
 
-      await table.shred({ sport: 'nfl' }, '[]', () => [row('a', 'nfl', 'NE', 1)]);
+      await table.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
 
-      expect(last(ddl(calls))).toBe('CREATE INDEX IF NOT EXISTS idx_things_team ON things (sport, team);');
+      expect(last(ddl(calls))).toBe('CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, cohort);');
     });
 
     it('probes emptiness once per ingest rather than per row', async () => {
       const { conn, calls, setReader } = makeConn();
       setReader(() => []);
-      await makeShredStore(conn).shred({ sport: 'nfl' }, '[{"id":"p1"}]', () => []);
+      await makeShredStore(conn).shred({ region: 'us' }, '[{"id":"p1"}]', () => []);
 
       expect(calls.filter((column) => column.sql.includes('SELECT 1 FROM things LIMIT 1'))).toHaveLength(1);
     });
@@ -721,12 +721,12 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       const { gates, shred } = gatedShred();
       const table = makeShredStore(conn, shred);
 
-      const ingests = [table.shred({ sport: 'nfl' }, '[{"id":"p1"}]', () => []), table.shred({ sport: 'nba' }, '[{"id":"p2"}]', () => [])];
+      const ingests = [table.shred({ region: 'us' }, '[{"id":"p1"}]', () => []), table.shred({ region: 'eu' }, '[{"id":"p2"}]', () => [])];
       await drain();
       gates.forEach((open) => open());
       await Promise.all(ingests);
 
-      expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_team;', 'CREATE INDEX IF NOT EXISTS idx_things_team ON things (sport, team);']);
+      expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_cohort;', 'CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, cohort);']);
       expect(calls.filter((column) => column.sql.includes('SELECT 1 FROM things LIMIT 1'))).toHaveLength(1);
     });
 
@@ -736,18 +736,18 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       const { gates, shred } = gatedShred();
       const table = makeShredStore(conn, shred);
 
-      const ingests = [table.shred({ sport: 'nfl' }, '[{"id":"p1"}]', () => []), table.shred({ sport: 'nba' }, '[{"id":"p2"}]', () => [])];
+      const ingests = [table.shred({ region: 'us' }, '[{"id":"p1"}]', () => []), table.shred({ region: 'eu' }, '[{"id":"p2"}]', () => [])];
       await drain();
       expect(gates).toHaveLength(2);
 
       gates[0]();
       await drain();
-      expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_team;']);
+      expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_cohort;']);
 
       gates[1]();
       await Promise.all(ingests);
 
-      expect(last(ddl(calls))).toBe('CREATE INDEX IF NOT EXISTS idx_things_team ON things (sport, team);');
+      expect(last(ddl(calls))).toBe('CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, cohort);');
     });
   });
 
@@ -756,10 +756,10 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const shredJsonArrayAsync = jest.fn(async () => {
       throw new Error('unsupported op on this build');
     });
-    const db = createSqliteRowTable(schema, { ...conn, shredJsonArrayAsync }, { specs: { all: shredSpec }, variant: () => 'all', binds: () => ['nfl'] });
-    const count = await db.shred({ sport: 'nfl' }, '[]', () => [row('a', 'nfl', 'NE', 1)]);
+    const db = createSqliteRowTable(schema, { ...conn, shredJsonArrayAsync }, { specs: { all: shredSpec }, variant: () => 'all', binds: () => ['us'] });
+    const count = await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
     expect(count).toBe(1);
-    expect(batches[0][0][0]).toBe('DELETE FROM things WHERE sport = ?;');
+    expect(batches[0][0][0]).toBe('DELETE FROM things WHERE region = ?;');
     expect(batches[0][1][0]).toContain('INSERT OR REPLACE INTO things');
   });
 
@@ -769,10 +769,10 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const db = createSqliteRowTable(
       schema,
       { ...conn, shredJsonArrayAsync },
-      { specs: { all: shredSpec }, variant: () => 'nonexistent', binds: () => ['nfl'] },
+      { specs: { all: shredSpec }, variant: () => 'nonexistent', binds: () => ['us'] },
     );
 
-    const count = await db.shred({ sport: 'nfl' }, '[]', () => [row('a', 'nfl', 'NE', 1)]);
+    const count = await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
 
     expect(shredJsonArrayAsync).not.toHaveBeenCalled();
     expect(count).toBe(1);
@@ -788,8 +788,8 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     const shredJsonArrayAsync = jest.fn(async () => {
       throw new Error('unsupported op on this build');
     });
-    const db = createSqliteRowTable(schema, { ...conn, shredJsonArrayAsync }, { specs: { all: shredSpec }, variant: () => 'all', binds: () => ['nfl'] });
-    await db.shred({ sport: 'nfl' }, '[]', () => [row('a', 'nfl', 'NE', 1)]);
+    const db = createSqliteRowTable(schema, { ...conn, shredJsonArrayAsync }, { specs: { all: shredSpec }, variant: () => 'all', binds: () => ['us'] });
+    await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
 
     expect(captureException).toHaveBeenCalledTimes(1);
     expect(captureException.mock.calls[0][1].tags).toEqual({ off_heap_degradation: 'row_table.native_shred.things' });
@@ -801,9 +801,9 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   it('shred shreds via parseRows + insert when there is no native shred spec', async () => {
     const { conn, batches } = makeConn();
     const db = createSqliteRowTable(schema, conn);
-    const count = await db.shred({ sport: 'nfl' }, 'raw', () => [row('a', 'nfl', 'NE', 1)]);
+    const count = await db.shred({ region: 'us' }, 'raw', () => [row('a', 'us', 'NE', 1)]);
     expect(count).toBe(1);
-    expect(batches[0][0][0]).toBe('DELETE FROM things WHERE sport = ?;');
+    expect(batches[0][0][0]).toBe('DELETE FROM things WHERE region = ?;');
     expect(batches[0][1][0]).toContain('INSERT OR REPLACE INTO things');
   });
 });
@@ -815,7 +815,7 @@ describe('row_table — inserts are grouped into multi-row statements', () => {
 
   /** `schema` has 4 columns, against SQLite's 999-bind ceiling. */
   const ROWS_PER_INSERT = 249;
-  const seed = (count: number) => Array.from({ length: count }, (_, index) => row(`p${index}`, 'nfl', 'NE', index));
+  const seed = (count: number) => Array.from({ length: count }, (_, index) => row(`p${index}`, 'us', 'NE', index));
 
   it('groups rows up to the bind ceiling rather than emitting a statement each', async () => {
     const { conn, batches } = makeConn();
@@ -843,7 +843,7 @@ describe('row_table — inserts are grouped into multi-row statements', () => {
     db.init();
     await db.upsert(seed(600));
 
-    const found = db.find({ sport: 'nfl' }, { orderBy: 'num' });
+    const found = db.find({ region: 'us' }, { orderBy: 'num' });
     expect(found).toHaveLength(600);
     expect(found.map((row) => row.id).slice(0, 3)).toEqual(['p0', 'p1', 'p2']);
     expect(last(found)?.id).toBe('p599');
@@ -854,9 +854,9 @@ describe('row_table — inserts are grouped into multi-row statements', () => {
     const conn = createSqlJsConnection({ capabilities: 'full' });
     const db = createSqliteRowTable(schema, conn);
     db.init();
-    await db.upsert([row('a', 'nfl', 'NE', 1), row('a', 'nfl', 'KC', 2)]);
+    await db.upsert([row('a', 'us', 'NE', 1), row('a', 'us', 'KC', 2)]);
 
-    expect(db.find({ sport: 'nfl' })).toEqual([row('a', 'nfl', 'KC', 2)]);
+    expect(db.find({ region: 'us' })).toEqual([row('a', 'us', 'KC', 2)]);
     conn.close();
   });
 });
@@ -866,46 +866,46 @@ describe('row_table — memory and SQLite answer the same `where`', () => {
     await initSqlJs();
   });
 
-  const seed: TestRow[] = [row('a', 'nfl', 'NE', 2), row('b', 'nfl', null, 1), row('c', 'nfl', 'KC', null)];
+  const seed: TestRow[] = [row('a', 'us', 'NE', 2), row('b', 'us', null, 1), row('c', 'us', 'KC', null)];
 
   const bothBackends = (where: Partial<TestRow>): { memory: string[]; sqlite: string[] } => {
     const memory = createMemoryRowTable(schema);
-    memory.overwrite({ sport: 'nfl' }, seed);
+    memory.overwrite({ region: 'us' }, seed);
 
     const sqlite = createSqliteRowTable(schema, createSqlJsConnection({ capabilities: 'full' }));
     sqlite.init();
-    sqlite.overwrite({ sport: 'nfl' }, seed);
+    sqlite.overwrite({ region: 'us' }, seed);
 
     const ids = (rows: TestRow[]): string[] => rows.map((row) => row.id).sort();
     return { memory: ids(memory.find(where)), sqlite: ids(sqlite.find(where)) };
   };
 
   it('agrees on a plain equality', () => {
-    const { memory, sqlite } = bothBackends({ sport: 'nfl', team: 'NE' });
+    const { memory, sqlite } = bothBackends({ region: 'us', cohort: 'NE' });
     expect(memory).toEqual(['a']);
     expect(sqlite).toEqual(memory);
   });
 
   it('agrees that a null constraint means the rows holding null, not none of them', () => {
-    const { memory, sqlite } = bothBackends({ sport: 'nfl', team: null });
+    const { memory, sqlite } = bothBackends({ region: 'us', cohort: null });
     expect(memory).toEqual(['b']);
     expect(sqlite).toEqual(memory);
   });
 
   it('reads `undefined` as the same constraint as `null`, because SQLite cannot return the difference', () => {
-    const { memory, sqlite } = bothBackends({ sport: 'nfl', team: undefined });
+    const { memory, sqlite } = bothBackends({ region: 'us', cohort: undefined });
     expect(memory).toEqual(['b']);
     expect(sqlite).toEqual(memory);
   });
 
   it('agrees on a null over a numeric column too, so this is not a TEXT-only accident', () => {
-    const { memory, sqlite } = bothBackends({ sport: 'nfl', num: null });
+    const { memory, sqlite } = bothBackends({ region: 'us', num: null });
     expect(memory).toEqual(['c']);
     expect(sqlite).toEqual(memory);
   });
 
   it('never widens to the whole table, which is what dropping the constraint would do to a scoped DELETE', () => {
-    const { memory, sqlite } = bothBackends({ sport: 'nba', team: undefined });
+    const { memory, sqlite } = bothBackends({ region: 'eu', cohort: undefined });
     expect(memory).toEqual([]);
     expect(sqlite).toEqual([]);
   });
@@ -919,7 +919,7 @@ describe('row_table — the shred spec must delete what the scope names', () => 
         table: 'things',
         insertVerb: 'INSERT OR REPLACE',
         // Must be the schema's NOT NULL columns: an insert that violates the constraint degrades to the JS path too.
-        columns: ['id', 'sport'],
+        columns: ['id', 'region'],
         ops: [
           { op: 'text', path: 'id' },
           { op: 'bind', index: 0 },
@@ -928,7 +928,7 @@ describe('row_table — the shred spec must delete what the scope names', () => 
       },
     },
     variant: () => 'all',
-    binds: (scope) => [String(scope.sport ?? '')],
+    binds: (scope) => [String(scope.region ?? '')],
   });
 
   const shredding = (deleteWhere: Array<{ column: string; bindIndex: number }>) => {
@@ -943,31 +943,31 @@ describe('row_table — the shred spec must delete what the scope names', () => 
   });
 
   it('shreds when the spec deletes exactly the scope', async () => {
-    const db = shredding([{ column: 'sport', bindIndex: 0 }]);
+    const db = shredding([{ column: 'region', bindIndex: 0 }]);
 
-    await expect(db.shred({ sport: 'nfl' }, '[{"id":"a"}]', () => [])).resolves.toBe(1);
+    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => [])).resolves.toBe(1);
   });
 
   itDev('rejects a spec that deletes less than the scope, which turns replace into append', async () => {
     const db = shredding([]);
 
-    await expect(db.shred({ sport: 'nfl' }, '[{"id":"a"}]', () => [])).rejects.toThrow(/does not cover `sport`/);
+    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => [])).rejects.toThrow(/does not cover `region`/);
   });
 
   itDev('rejects a spec that deletes more than the scope, which reaches outside the partition', async () => {
     const db = shredding([
-      { column: 'sport', bindIndex: 0 },
-      { column: 'team', bindIndex: 0 },
+      { column: 'region', bindIndex: 0 },
+      { column: 'cohort', bindIndex: 0 },
     ]);
 
-    await expect(db.shred({ sport: 'nfl' }, '[{"id":"a"}]', () => [])).rejects.toThrow(/covers `team`/);
+    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => [])).rejects.toThrow(/covers `cohort`/);
   });
 
   itProd('degrades to the JS path rather than failing ingest, since by release the spec has been exercised', async () => {
     const db = shredding([]);
-    const parsed = [row('a', 'nfl', null, null)];
+    const parsed = [row('a', 'us', null, null)];
 
-    await expect(db.shred({ sport: 'nfl' }, '[{"id":"a"}]', () => parsed)).resolves.toBe(1);
+    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => parsed)).resolves.toBe(1);
   });
 });
 
@@ -976,21 +976,21 @@ describe('row_table — a write must land inside the filter it replaced', () => 
     const db = createMemoryRowTable(schema);
     db.init();
 
-    expect(() => db.overwrite({ sport: 'nfl' }, [row('a', 'nba', 'BOS', 1)])).toThrow(/`sport` is "nba", not "nfl"/);
+    expect(() => db.overwrite({ region: 'us' }, [row('a', 'eu', 'BOS', 1)])).toThrow(/`region` is "eu", not "us"/);
   });
 
   itDev('rejects the same row arriving through the JS half of an ingest', async () => {
     const db = createMemoryRowTable(schema);
     db.init();
 
-    await expect(db.shred({ sport: 'nfl' }, '[]', () => [row('a', 'nba', 'BOS', 1)])).rejects.toThrow(/does not match the filter it replaced/);
+    await expect(db.shred({ region: 'us' }, '[]', () => [row('a', 'eu', 'BOS', 1)])).rejects.toThrow(/does not match the filter it replaced/);
   });
 
   it('allows a row that matches on every column the filter names, whatever else it carries', () => {
     const db = createMemoryRowTable(schema);
     db.init();
 
-    expect(db.overwrite({ sport: 'nfl' }, [row('a', 'nfl', 'SF', 1), row('b', 'nfl', 'KC', 2)])).toBe(2);
+    expect(db.overwrite({ region: 'us' }, [row('a', 'us', 'SF', 1), row('b', 'us', 'KC', 2)])).toBe(2);
   });
 });
 
@@ -1008,8 +1008,8 @@ describe('row_table — a schema change, run against real SQLite', () => {
     const conn = createSqlJsConnection({ capabilities: 'full' });
     const before = createSqliteRowTable(schema, conn);
     before.init();
-    before.overwrite({ sport: 'nfl' }, [row('a', 'nfl', 'NE', 1), row('b', 'nfl', 'KC', 2)]);
-    before.setMeta({ sport: 'nfl' }, 'etag-v1');
+    before.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 1), row('b', 'us', 'KC', 2)]);
+    before.setMeta({ region: 'us' }, 'etag-v1');
 
     const after = createSqliteRowTable(next, conn);
     after.init();
@@ -1019,9 +1019,9 @@ describe('row_table — a schema change, run against real SQLite', () => {
   it('carries the new column, so a read of it is not a SQL error', () => {
     const { after } = upgrade(v2);
 
-    after.overwrite({ sport: 'nfl' }, [{ id: 'c', sport: 'nfl', team: 'SF', num: 3, position: 'QB' }]);
+    after.overwrite({ region: 'us' }, [{ id: 'c', region: 'us', cohort: 'SF', num: 3, position: 'QB' }]);
 
-    expect(after.getOne({ sport: 'nfl', id: 'c' })?.position).toBe('QB');
+    expect(after.getOne({ region: 'us', id: 'c' })?.position).toBe('QB');
   });
 
   it('keeps the rows the old schema wrote, since a column added beside them restates none of them', () => {
@@ -1029,7 +1029,7 @@ describe('row_table — a schema change, run against real SQLite', () => {
 
     expect(
       after
-        .find({ sport: 'nfl' })
+        .find({ region: 'us' })
         .map((row) => row.id)
         .sort(),
     ).toEqual(['a', 'b']);
@@ -1038,13 +1038,13 @@ describe('row_table — a schema change, run against real SQLite', () => {
   it('reads the added column as null on those rows, which is what no value yet has to look like', () => {
     const { after } = upgrade(v2);
 
-    expect(after.getOne({ sport: 'nfl', id: 'a' })?.position ?? null).toBeNull();
+    expect(after.getOne({ region: 'us', id: 'a' })?.position ?? null).toBeNull();
   });
 
   it('drops the etag, or the fetch that fills the added column answers 304 and it stays null', () => {
     const { after } = upgrade(v2);
 
-    expect(after.getMeta({ sport: 'nfl' })).toBeUndefined();
+    expect(after.getMeta({ region: 'us' })).toBeUndefined();
   });
 
   it('leaves the widened table current, so the next launch plans nothing at all', () => {
@@ -1055,7 +1055,7 @@ describe('row_table — a schema change, run against real SQLite', () => {
 
     expect(
       again
-        .find({ sport: 'nfl' })
+        .find({ region: 'us' })
         .map((row) => row.id)
         .sort(),
     ).toEqual(['a', 'b']);
@@ -1068,7 +1068,7 @@ describe('row_table — a schema change, run against real SQLite', () => {
     };
     const { after } = upgrade(notNull);
 
-    expect(after.find({ sport: 'nfl' })).toEqual([]);
+    expect(after.find({ region: 'us' })).toEqual([]);
   });
 
   it('leaves an unchanged schema alone — the same build reopening its own database keeps its rows and its etag', () => {
@@ -1076,22 +1076,22 @@ describe('row_table — a schema change, run against real SQLite', () => {
 
     expect(
       after
-        .find({ sport: 'nfl' })
+        .find({ region: 'us' })
         .map((row) => row.id)
         .sort(),
     ).toEqual(['a', 'b']);
-    expect(after.getMeta({ sport: 'nfl' })).toBe('etag-v1');
+    expect(after.getMeta({ region: 'us' })).toBe('etag-v1');
   });
 
   it('applies an index change, which no column comparison could have detected', () => {
-    const reindexed: RowTableSchema<TestRow> = { ...schema, indexes: [{ name: 'idx_things_team', columns: ['sport', 'num'] }] };
+    const reindexed: RowTableSchema<TestRow> = { ...schema, indexes: [{ name: 'idx_things_cohort', columns: ['region', 'num'] }] };
     const { conn, after } = upgrade(reindexed);
 
     const indexed = readRows<{ name: string }>(conn, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'things';");
-    const columns = readRows<{ name: string }>(conn, 'PRAGMA index_info(idx_things_team);');
+    const columns = readRows<{ name: string }>(conn, 'PRAGMA index_info(idx_things_cohort);');
 
-    expect(indexed.map((row) => row.name)).toContain('idx_things_team');
+    expect(indexed.map((row) => row.name)).toContain('idx_things_cohort');
     expect(columns).toHaveLength(2);
-    expect(after.find({ sport: 'nfl' })).toEqual([]);
+    expect(after.find({ region: 'us' })).toEqual([]);
   });
 });

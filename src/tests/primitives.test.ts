@@ -50,17 +50,17 @@ describe('create_versioned_store', () => {
       return calls;
     };
 
-    expect(cache.read('a', ver('nfl'), compute)).toBe(1);
-    expect(cache.read('a', ver('nfl'), compute)).toBe(1);
+    expect(cache.read('a', ver('us'), compute)).toBe(1);
+    expect(cache.read('a', ver('us'), compute)).toBe(1);
     expect(calls).toBe(1);
 
-    expect(cache.read('b', ver('nba'), compute)).toBe(2);
+    expect(cache.read('b', ver('eu'), compute)).toBe(2);
     expect(calls).toBe(2);
 
-    versions.set('nfl', 1);
-    expect(cache.read('a', ver('nfl'), compute)).toBe(3);
+    versions.set('us', 1);
+    expect(cache.read('a', ver('us'), compute)).toBe(3);
     expect(calls).toBe(3);
-    expect(cache.read('b', ver('nba'), compute)).toBe(2);
+    expect(cache.read('b', ver('eu'), compute)).toBe(2);
     expect(calls).toBe(3);
   });
 
@@ -248,7 +248,7 @@ describe('createVersionedSourceCache', () => {
     expect(second.n).toBe(2);
   });
 
-  it('caches a built undefined, which is what a nullable point read stores for a player with no rows', () => {
+  it('caches a built undefined, which is what a nullable point read stores for a item with no rows', () => {
     const cache = createVersionedSourceCache<{ n: number } | undefined>(16, memoName('test.both'));
     const build = jest.fn(() => undefined);
 
@@ -316,19 +316,19 @@ describe('createVersionedSourceCache', () => {
     });
 
     itDev('reports one that has never once answered from its entry', () => {
-      const { deadWeight } = createMemos('test', onePartition, { deadWeight: byVersion<number>()({ max: 4096, by: ['player'] }) });
+      const { deadWeight } = createMemos('test', onePartition, { deadWeight: byVersion<number>()({ max: 4096, by: ['item'] }) });
 
-      for (let key = 0; key < 512; key += 1) deadWeight.for('nfl').read(`k${key}`, () => key);
+      for (let key = 0; key < 512; key += 1) deadWeight.for('us').read(`k${key}`, () => key);
 
       expect(warnings).toEqual([expect.stringContaining('memo.never_hit.test.deadWeight')]);
       // The report names the key the way the block declared it, so a reader can find the memo it is about.
-      expect(warnings[0]).toContain('partition + player');
+      expect(warnings[0]).toContain('partition + item');
     });
 
     itDev('says nothing about one whose keys come back', () => {
       const { earning } = createMemos('test', onePartition, { earning: bySource<number>()({ max: 4096 }) });
 
-      for (let key = 0; key < 4000; key += 1) earning.for('nfl').put('s', () => key);
+      for (let key = 0; key < 4000; key += 1) earning.for('us').put('s', () => key);
 
       expect(warnings).toEqual([]);
     });
@@ -347,83 +347,83 @@ describe('a memo bound to a partition', () => {
 
   it('derives its own key, so two lookups naming the same thing share an entry', () => {
     const { binding } = bindable();
-    const { values } = createMemos('test', binding, { values: byVersion<number>()({ max: 64, by: ['player'] }) });
+    const { values } = createMemos('test', binding, { values: byVersion<number>()({ max: 64, by: ['item'] }) });
     let built = 0;
     const build = () => {
       built += 1;
       return built;
     };
 
-    expect(values.for('nfl').read('p1', build)).toBe(1);
-    expect(values.for('nfl').read('p1', build)).toBe(1);
-    expect(values.for('nfl').read('p2', build)).toBe(2);
+    expect(values.for('us').read('p1', build)).toBe(1);
+    expect(values.for('us').read('p1', build)).toBe(1);
+    expect(values.for('us').read('p2', build)).toBe(2);
     expect(built).toBe(2);
   });
 
   it('keeps two partitions apart, and keeps a part from reading across the separator', () => {
     const { binding } = bindable();
-    const { values } = createMemos('test', binding, { values: byVersion<string>()({ max: 64, by: ['player'] }) });
+    const { values } = createMemos('test', binding, { values: byVersion<string>()({ max: 64, by: ['item'] }) });
 
-    expect(values.for('nfl').read('p1', () => 'nfl-p1')).toBe('nfl-p1');
-    expect(values.for('nba').read('p1', () => 'nba-p1')).toBe('nba-p1');
-    // Were the parts joined with nothing, `nfl` + `p1` and `nflp` + `1` would be one key.
-    expect(values.for('nflp').read('1', () => 'nflp-1')).toBe('nflp-1');
+    expect(values.for('us').read('p1', () => 'us-p1')).toBe('us-p1');
+    expect(values.for('eu').read('p1', () => 'eu-p1')).toBe('eu-p1');
+    // Were the parts joined with nothing, `us` + `p1` and `usp` + `1` would be one key.
+    expect(values.for('usp').read('1', () => 'usp-1')).toBe('usp-1');
   });
 
   it('looks the version up itself, so a write to the partition drops what it held', () => {
     const { binding, bump } = bindable();
-    const { values } = createMemos('test', binding, { values: byVersion<number>()({ max: 64, by: ['player'] }) });
+    const { values } = createMemos('test', binding, { values: byVersion<number>()({ max: 64, by: ['item'] }) });
     let built = 0;
     const build = () => {
       built += 1;
       return built;
     };
 
-    expect(values.for('nfl').read('p1', build)).toBe(1);
-    bump('nfl');
-    expect(values.for('nfl').read('p1', build)).toBe(2);
+    expect(values.for('us').read('p1', build)).toBe(1);
+    bump('us');
+    expect(values.for('us').read('p1', build)).toBe(2);
     // The write was to another partition, so this one still answers from its entry.
-    bump('nba');
-    expect(values.for('nfl').read('p1', build)).toBe(2);
+    bump('eu');
+    expect(values.for('us').read('p1', build)).toBe(2);
   });
 
   it('keys a structured part by its content, so a caller rebuilding one per call still hits', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'item'] }) });
     let built = 0;
     const build = () => {
       built += 1;
       return built;
     };
 
-    expect(rows.for('nfl').read({ orderBy: 'pts', perGame: true }, 'p1', build)).toBe(1);
-    expect(rows.for('nfl').read({ perGame: true, orderBy: 'pts' }, 'p1', build)).toBe(1);
-    expect(rows.for('nfl').read({ orderBy: 'pts', perGame: false }, 'p1', build)).toBe(2);
+    expect(rows.for('us').read({ orderBy: 'pts', perEvent: true }, 'p1', build)).toBe(1);
+    expect(rows.for('us').read({ perEvent: true, orderBy: 'pts' }, 'p1', build)).toBe(1);
+    expect(rows.for('us').read({ orderBy: 'pts', perEvent: false }, 'p1', build)).toBe(2);
     expect(built).toBe(2);
   });
 
   it('keys a part held across calls the same as an equal one built fresh, since the id still comes from the content', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'item'] }) });
     let built = 0;
     const build = () => {
       built += 1;
       return built;
     };
-    const held = { orderBy: 'pts', perGame: true };
+    const held = { orderBy: 'pts', perEvent: true };
 
-    expect(rows.for('nfl').read(held, 'p1', build)).toBe(1);
-    expect(rows.for('nfl').read({ perGame: true, orderBy: 'pts' }, 'p1', build)).toBe(1);
-    expect(rows.for('nfl').read(held, 'p1', build)).toBe(1);
+    expect(rows.for('us').read(held, 'p1', build)).toBe(1);
+    expect(rows.for('us').read({ perEvent: true, orderBy: 'pts' }, 'p1', build)).toBe(1);
+    expect(rows.for('us').read(held, 'p1', build)).toBe(1);
     expect(built).toBe(1);
   });
 
   it('serializes a structured part once per reference, so a caller re-keying one per row pays for it once', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'item'] }) });
     let reads = 0;
     // A getter counts what the identity walk touched, which no amount of internal caching can fake.
-    const shape = Object.defineProperty({ perGame: true }, 'orderBy', {
+    const shape = Object.defineProperty({ perEvent: true }, 'orderBy', {
       enumerable: true,
       get: () => {
         reads += 1;
@@ -431,9 +431,9 @@ describe('a memo bound to a partition', () => {
       },
     });
 
-    rows.for('nfl').read(shape, 'p0', () => 0);
+    rows.for('us').read(shape, 'p0', () => 0);
     const toIdentify = reads;
-    for (let row = 1; row < 20; row += 1) rows.for('nfl').read(shape, `p${row}`, () => row);
+    for (let row = 1; row < 20; row += 1) rows.for('us').read(shape, `p${row}`, () => row);
 
     expect(toIdentify).toBeGreaterThan(0);
     expect(reads).toBe(toIdentify);
@@ -441,10 +441,10 @@ describe('a memo bound to a partition', () => {
 
   itDev('freezes a structured part, so its content cannot drift from the identity remembered for it', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
-    const shape = { orderBy: 'pts', nested: { perGame: true }, tags: ['starters'] };
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'item'] }) });
+    const shape = { orderBy: 'pts', nested: { perEvent: true }, tags: ['starters'] };
 
-    rows.for('nfl').read(shape, 'p1', () => 1);
+    rows.for('us').read(shape, 'p1', () => 1);
 
     // Deep, because a part is only as settled as everything the identity walk reached through it.
     expect(Object.isFrozen(shape)).toBe(true);
@@ -457,38 +457,38 @@ describe('a memo bound to a partition', () => {
 
   itProd('leaves a part unfrozen in a release build, where the walk buys nothing a test has not already caught', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'player'] }) });
+    const { rows } = createMemos('test', binding, { rows: byVersion<number>()({ max: 64, by: ['shape', 'item'] }) });
     const shape = { orderBy: 'pts' };
 
-    rows.for('nfl').read(shape, 'p1', () => 1);
+    rows.for('us').read(shape, 'p1', () => 1);
 
     expect(Object.isFrozen(shape)).toBe(false);
   });
 
   it('holds a source-keyed value across a write, and rebuilds it when the source moves', () => {
     const { binding, bump } = bindable();
-    const { values } = createMemos('test', binding, { values: bySource<{ n: number }>()({ max: 64, by: ['player'] }) });
+    const { values } = createMemos('test', binding, { values: bySource<{ n: number }>()({ max: 64, by: ['item'] }) });
     let built = 0;
     const build = () => {
       built += 1;
       return { n: built };
     };
 
-    const first = values.for('nfl').put('p1', ['r1', 'r2'], build);
-    bump('nfl');
+    const first = values.for('us').put('p1', ['r1', 'r2'], build);
+    bump('us');
     // A list source is folded by the kernel, so the same rows behind the value keep its reference across the bump.
-    expect(values.for('nfl').put('p1', ['r1', 'r2'], build)).toBe(first);
-    expect(values.for('nfl').put('p1', ['r1', 'r3'], build)).not.toBe(first);
+    expect(values.for('us').put('p1', ['r1', 'r2'], build)).toBe(first);
+    expect(values.for('us').put('p1', ['r1', 'r3'], build)).not.toBe(first);
     expect(built).toBe(2);
   });
 
   it('peeks without building, which is what a read consulting it per item does', () => {
     const { binding } = bindable();
-    const { values } = createMemos('test', binding, { values: byVersion<number>()({ max: 64, by: ['player'] }) });
+    const { values } = createMemos('test', binding, { values: byVersion<number>()({ max: 64, by: ['item'] }) });
 
-    expect(values.for('nfl').peek('p1')).toBeUndefined();
-    values.for('nfl').set('p1', 7);
-    expect(values.for('nfl').peek('p1')?.value).toBe(7);
+    expect(values.for('us').peek('p1')).toBeUndefined();
+    values.for('us').set('p1', 7);
+    expect(values.for('us').peek('p1')?.value).toBe(7);
   });
 });
 
@@ -525,14 +525,14 @@ describe('shallowEqualStruct', () => {
     id: string;
     score: number | null;
     tags: string[] | null;
-    stats: Record<string, number | null>;
+    metrics: Record<string, number | null>;
     detail?: { n: number };
   }
 
-  const row = (over?: Partial<Row>): Row => ({ id: 'p1', score: 1, tags: ['QB'], stats: { pass_yd: 300 }, ...over });
+  const row = (over?: Partial<Row>): Row => ({ id: 'p1', score: 1, tags: ['QB'], metrics: { pass_yd: 300 }, ...over });
   const same = shallowEqualStruct<Row>({
     tags: (left, right) => left === right || (!!left && !!right && shallowEqualArray(left, right)),
-    stats: shallowEqualRecord,
+    metrics: shallowEqualRecord,
   });
 
   it('takes two rebuilt rows with the same contents as unchanged', () => {
@@ -549,7 +549,7 @@ describe('shallowEqualStruct', () => {
     expect(same(row({ tags: ['QB'] }), row({ tags: ['RB'] }))).toBe(false);
     expect(same(row({ tags: null }), row({ tags: null }))).toBe(true);
     expect(same(row({ tags: null }), row({ tags: [] }))).toBe(false);
-    expect(same(row({ stats: { pass_yd: 300 } }), row({ stats: { pass_yd: 301 } }))).toBe(false);
+    expect(same(row({ metrics: { pass_yd: 300 } }), row({ metrics: { pass_yd: 301 } }))).toBe(false);
   });
 
   it('reads a field it holds no check for as changed once it holds an object', () => {

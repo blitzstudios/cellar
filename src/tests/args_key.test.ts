@@ -20,12 +20,12 @@ describe('stableKey', () => {
   });
 
   it('is insensitive to key order, so two callers building the same options differently share one entry', () => {
-    expect(stableKey({ limit: 5, team: 'KC' })).toBe(stableKey({ team: 'KC', limit: 5 }));
+    expect(stableKey({ limit: 5, cohort: 'KC' })).toBe(stableKey({ cohort: 'KC', limit: 5 }));
     expect(stableKey([{ rush_yd: 1, pts_ppr: 2 }, {}])).toBe(stableKey([{ pts_ppr: 2, rush_yd: 1 }, {}]));
   });
 
   it('takes an absent field and an explicit undefined as the same value', () => {
-    expect(stableKey({ team: undefined })).toBe(stableKey({}));
+    expect(stableKey({ cohort: undefined })).toBe(stableKey({}));
   });
 
   it('keeps a nested key from reading as part of its own value', () => {
@@ -73,28 +73,28 @@ describe('stableKey', () => {
 
 describe('cacheKey', () => {
   it('keeps parts apart, including where a part holds the character a reader would have joined on', () => {
-    expect(cacheKey('nfl', 'p1')).not.toBe(cacheKey('nflp', '1'));
-    // The separator is a control character precisely so a part like `clubsoccer:epl` cannot split a key.
-    expect(cacheKey('clubsoccer:epl', 'p1')).not.toBe(cacheKey('clubsoccer', 'epl:p1'));
+    expect(cacheKey('us', 'p1')).not.toBe(cacheKey('usp', '1'));
+    // The separator is a control character precisely so a part like `region:us-west` cannot split a key.
+    expect(cacheKey('region:us-west', 'p1')).not.toBe(cacheKey('region', 'epl:p1'));
   });
 });
 
 describe('varyKey', () => {
   it('keys by the partition and every vary value, so one partition read two ways holds two entries', () => {
-    expect(varyKey(['nfl'], ['KC'])).not.toBe(varyKey(['nfl'], ['SF']));
-    expect(varyKey(['nfl'], ['KC'])).not.toBe(varyKey(['nba'], ['KC']));
-    expect(varyKey(['nfl'], [])).not.toBe(varyKey(['nfl'], ['KC']));
+    expect(varyKey(['us'], ['KC'])).not.toBe(varyKey(['us'], ['SF']));
+    expect(varyKey(['us'], ['KC'])).not.toBe(varyKey(['eu'], ['KC']));
+    expect(varyKey(['us'], [])).not.toBe(varyKey(['us'], ['KC']));
   });
 
   it('keys an object vary value by its content, so a caller rebuilding one per render still hits', () => {
-    expect(varyKey(['nfl'], [{ limit: 5, team: 'KC' }])).toBe(varyKey(['nfl'], [{ team: 'KC', limit: 5 }]));
+    expect(varyKey(['us'], [{ limit: 5, cohort: 'KC' }])).toBe(varyKey(['us'], [{ cohort: 'KC', limit: 5 }]));
   });
 });
 
 describe('partitionsKey', () => {
   it('makes the same partitions named in a different order, or grouped differently, a different set', () => {
-    expect(partitionsKey([['nfl'], ['nba']])).not.toBe(partitionsKey([['nba'], ['nfl']]));
-    expect(partitionsKey([['nfl', 'nba']])).not.toBe(partitionsKey([['nfl'], ['nba']]));
+    expect(partitionsKey([['us'], ['eu']])).not.toBe(partitionsKey([['eu'], ['us']]));
+    expect(partitionsKey([['us', 'eu']])).not.toBe(partitionsKey([['us'], ['eu']]));
   });
 });
 

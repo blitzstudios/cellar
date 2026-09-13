@@ -13,7 +13,7 @@ import { runSubscribed, runTracked } from '../../reactivity/tracking';
 /* global globalThis */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const NFL = ['nfl'];
+const US = ['us'];
 
 let warn: jest.SpyInstance;
 
@@ -89,7 +89,7 @@ describeDev('the unsubscribed-read guard', () => {
   it('warns once, naming the partition and the component, when a render read has no subscription', () => {
     const atom = createVersionAtom('guard_bare');
     function StaleReader(): null {
-      atom.get(NFL);
+      atom.get(US);
       return null;
     }
     act(() => {
@@ -98,17 +98,17 @@ describeDev('the unsubscribed-read guard', () => {
 
     const warnings = guardWarnings();
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('guard_bare:nfl');
+    expect(warnings[0]).toContain('guard_bare:us');
     expect(warnings[0]).toContain('StaleReader');
     expect(warnings[0]).toContain('useTrackedStores');
   });
 
   it('catches the read through a versioned getter, which is how consumers actually reach a store', () => {
     const atom = createVersionAtom('guard_getter');
-    const cache = createVersionedCache<{ playerId: string }>(16);
-    const getPlayer = (playerId: string) => cache.read(playerId, atom.get(NFL), () => ({ playerId }));
+    const cache = createVersionedCache<{ itemId: string }>(16);
+    const getItem = (itemId: string) => cache.read(itemId, atom.get(US), () => ({ itemId }));
     renderOnce(() => {
-      getPlayer('nfl_1234');
+      getItem('us_1234');
     });
 
     expect(guardWarnings()).toHaveLength(1);
@@ -117,7 +117,7 @@ describeDev('the unsubscribed-read guard', () => {
   it('stays quiet for the same read inside a tracking scope, since useTrackedStores subscribes what it collects', () => {
     const atom = createVersionAtom('guard_tracked');
     renderOnce(() => {
-      runTracked(() => atom.get(NFL));
+      runTracked(() => atom.get(US));
     });
 
     expect(guardWarnings()).toEqual([]);
@@ -126,7 +126,7 @@ describeDev('the unsubscribed-read guard', () => {
   it('stays quiet inside runSubscribed, the marker for a read the caller subscribed by hand', () => {
     const atom = createVersionAtom('guard_marked');
     renderOnce(() => {
-      runSubscribed(() => atom.get(NFL));
+      runSubscribed(() => atom.get(US));
     });
 
     expect(guardWarnings()).toEqual([]);
@@ -135,7 +135,7 @@ describeDev('the unsubscribed-read guard', () => {
   it('stays quiet for a reactive useValue-style read, which useSelect marks as subscribed for us', () => {
     const atom = createVersionAtom('guard_reactive');
     function ReactiveReader(): null {
-      atom.useSelect<number>(NFL, true, ['nfl'], () => atom.get(NFL), Object.is, 0);
+      atom.useSelect<number>(US, true, ['us'], () => atom.get(US), Object.is, 0);
       return null;
     }
     act(() => {
@@ -149,17 +149,17 @@ describeDev('the unsubscribed-read guard', () => {
     const atom = createVersionAtom('guard_read_surface');
     const surface = createReadSurface<string>({
       version: atom,
-      toParts: (sport) => [sport],
+      toParts: (region) => [region],
       has: () => true,
       ingest: { usePrime: () => PRIME_IDLE, usePrimeMany: () => PRIME_IDLE, ensure: () => {}, refetch: () => {} },
     });
-    const PlayerRow = surface.read<{ sport: string }, number>()({
-      partition: (args) => args.sport,
+    const ItemRow = surface.read<{ region: string }, number>()({
+      partition: (args) => args.region,
       select: () => 1,
       empty: 0,
     });
     function SurfaceReader(): null {
-      PlayerRow.useValue({ sport: 'nfl' });
+      ItemRow.useValue({ region: 'us' });
       return null;
     }
     act(() => {
@@ -173,17 +173,17 @@ describeDev('the unsubscribed-read guard', () => {
     const atom = createVersionAtom('guard_read_surface_get');
     const surface = createReadSurface<string>({
       version: atom,
-      toParts: (sport) => [sport],
+      toParts: (region) => [region],
       has: () => true,
       ingest: { usePrime: () => PRIME_IDLE, usePrimeMany: () => PRIME_IDLE, ensure: () => {}, refetch: () => {} },
     });
-    const PlayerRow = surface.read<{ sport: string }, number>()({
-      partition: (args) => args.sport,
+    const ItemRow = surface.read<{ region: string }, number>()({
+      partition: (args) => args.region,
       select: () => 1,
       empty: 0,
     });
     function GetReader(): null {
-      PlayerRow.getValue({ sport: 'nfl' });
+      ItemRow.getValue({ region: 'us' });
       return null;
     }
     act(() => {
@@ -196,7 +196,7 @@ describeDev('the unsubscribed-read guard', () => {
 
   it('stays quiet outside render — a callback, thunk or socket handler reads imperatively on purpose', () => {
     const atom = createVersionAtom('guard_callback');
-    atom.get(NFL);
+    atom.get(US);
 
     expect(guardWarnings()).toEqual([]);
   });
@@ -204,7 +204,7 @@ describeDev('the unsubscribed-read guard', () => {
   it('reports a call site once, so a component that re-renders every frame does not flood the console', () => {
     const atom = createVersionAtom('guard_repeat');
     function StaleReader(_props: { tick: number }): null {
-      atom.get(NFL);
+      atom.get(US);
       return null;
     }
     let renderer: TestRenderer.ReactTestRenderer;
@@ -224,11 +224,11 @@ describeDev('the unsubscribed-read guard', () => {
   it('still reports a second component reading the same partition, so one known site cannot mask another', () => {
     const atom = createVersionAtom('guard_two_sites');
     function FirstReader(): null {
-      atom.get(NFL);
+      atom.get(US);
       return null;
     }
     function SecondReader(): null {
-      atom.get(NFL);
+      atom.get(US);
       return null;
     }
     act(() => {

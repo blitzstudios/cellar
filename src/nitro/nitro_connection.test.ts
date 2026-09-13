@@ -222,7 +222,7 @@ describe('binding a store', () => {
       throw new Error('no such file or directory');
     };
 
-    expect(() => bindSqliteBackend('player_stats', boom)).not.toThrow();
+    expect(() => bindSqliteBackend('leaderboard', boom)).not.toThrow();
     expect(lastReport().context).toContain('stays on its in-memory backend');
   });
 
@@ -232,9 +232,9 @@ describe('binding a store', () => {
     const setBackend = jest.fn();
     const createBackend = jest.fn(() => 'backend');
 
-    bindSqliteStore('player_stats', 'stats.db', setBackend, createBackend, { dedicatedReader: true });
+    bindSqliteStore('leaderboard', 'metrics.db', setBackend, createBackend, { dedicatedReader: true });
 
-    expect(mockOpen).toHaveBeenCalledWith({ name: 'stats.db' });
+    expect(mockOpen).toHaveBeenCalledWith({ name: 'metrics.db' });
     expect(mockOpenSecondary).toHaveBeenCalled();
     expect(createBackend).toHaveBeenCalledWith(expect.objectContaining({ execute: expect.any(Function) }));
     expect(setBackend).toHaveBeenCalledWith('backend');
@@ -258,7 +258,7 @@ describe('binding a store — the handles a failure opened', () => {
   const failingBind = (name: string, writer: FakeHandle, reader: FakeHandle) => {
     mockOpen.mockReturnValue(writer as never);
     mockOpenSecondary.mockReturnValue(reader as never);
-    bindSqliteBackend('stats', () => {
+    bindSqliteBackend('metrics', () => {
       openNitroConnection(name, { dedicatedReader: true });
       throw new Error('a schema change forces a rebuild');
     });
@@ -268,22 +268,22 @@ describe('binding a store — the handles a failure opened', () => {
     const writer = fakeHandle();
     const reader = fakeHandle();
 
-    failingBind('stats.db', writer, reader);
+    failingBind('metrics.db', writer, reader);
 
     expect(writer.close).toHaveBeenCalledTimes(1);
     expect(reader.close).toHaveBeenCalledTimes(1);
   });
 
   it('forgets the connection, so nothing later reads through a handle that is closed', () => {
-    failingBind('stats.db', fakeHandle(), fakeHandle());
+    failingBind('metrics.db', fakeHandle(), fakeHandle());
 
-    expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain('stats.db');
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain('metrics.db');
   });
 
   it('still reports the failure that started it, which is the one worth reading', () => {
-    failingBind('stats.db', fakeHandle(), fakeHandle());
+    failingBind('metrics.db', fakeHandle(), fakeHandle());
 
-    expect(lastReport().scope).toBe('nitro_connection.bind.stats');
+    expect(lastReport().scope).toBe('nitro_connection.bind.metrics');
     expect(lastReport().context).toContain('stays on its in-memory backend');
   });
 
@@ -292,7 +292,7 @@ describe('binding a store — the handles a failure opened', () => {
     mockOpen.mockReturnValue(other as never);
     openNitroConnection('schedule.db');
 
-    failingBind('stats.db', fakeHandle(), fakeHandle());
+    failingBind('metrics.db', fakeHandle(), fakeHandle());
 
     expect(other.close).not.toHaveBeenCalled();
     expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('schedule.db');
@@ -316,7 +316,7 @@ describe('binding a store — the handles a failure opened', () => {
     const writer = fakeHandle();
     mockOpen.mockReturnValue(writer as never);
 
-    bindSqliteBackend('stats', () => {
+    bindSqliteBackend('metrics', () => {
       openNitroConnection('kept.db');
     });
 

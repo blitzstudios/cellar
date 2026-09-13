@@ -5,7 +5,7 @@ import { createTrackedSelector } from '../../reactivity/tracked_selector';
 type State = { round: number };
 
 const round = (state: State, _id: string): number => state.round;
-const id = (_state: State, playerId: string): string => playerId;
+const id = (_state: State, itemId: string): string => itemId;
 
 export const ok = createTrackedSelector([round, id], (round, ids) => `${round}:${ids.length}`);
 

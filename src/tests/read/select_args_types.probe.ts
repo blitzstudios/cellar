@@ -5,34 +5,34 @@ import { createMemoryRowTable } from '../../table/memory';
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { RowTableSchema } from '../../table/types';
 
-type Row = { sport: string; team: string; id: string };
-type Args = { sport: string; team?: string | null; ids?: readonly string[] };
+type Row = { region: string; cohort: string; id: string };
+type Args = { region: string; cohort?: string | null; ids?: readonly string[] };
 
 const schema: RowTableSchema<Row> = {
   table: 'rows',
-  columns: { sport: { type: 'TEXT' }, team: { type: 'TEXT' }, id: { type: 'TEXT' } },
+  columns: { region: { type: 'TEXT' }, cohort: { type: 'TEXT' }, id: { type: 'TEXT' } },
   primaryKey: ['id'],
 };
 
-const rows = definePartitions<Row, { sport: string }, Args>({
+const rows = definePartitions<Row, { region: string }, Args>({
   name: 'select_args_probe',
   table: createMemoryRowTable(schema),
   version: createVersionAtom('select_args_probe_version'),
-  key: { fields: ['sport'], where: ({ sport }) => ({ sport }) },
+  key: { fields: ['region'], where: ({ region }) => ({ region }) },
 });
 
 /** A field named in `varyBy` arrives non-null, since the read is off until it does — so no cast at the call. */
 export const declaredFieldsArrive = () =>
   rows.read<Args, string>()({
-    varyBy: ['team'],
-    select: (args) => args.team.toUpperCase(),
+    varyBy: ['cohort'],
+    select: (args) => args.cohort.toUpperCase(),
     empty: '',
   });
 
 /** Everything else is out of reach: reading it is what would serve one caller's value to another. */
 export const undeclaredFieldIsUnreachable = () =>
   rows.read<Args, string>()({
-    varyBy: ['team'],
+    varyBy: ['cohort'],
     // @ts-expect-error `ids` is not one of the fields this read declared it varies by
     select: (args) => args.ids.join(),
     empty: '',
@@ -42,7 +42,7 @@ export const undeclaredFieldIsUnreachable = () =>
 export const noVaryByReachesNothing = () =>
   rows.read<Args, string>()({
     // @ts-expect-error a read declaring no `varyBy` may read only its key
-    select: (args) => args.team,
+    select: (args) => args.cohort,
     empty: '',
   });
 
@@ -50,13 +50,13 @@ export const noVaryByReachesNothing = () =>
 export const setReadsNarrowToo = () => {
   rows.readMany<Args, string>()({
     varyBy: ['ids'],
-    partitions: (args) => [{ sport: args.sport }],
+    partitions: (args) => [{ region: args.region }],
     select: (args, keys) => `${args.ids.length}:${keys.length}`,
     empty: '',
   });
   rows.readGrouped<Args, string>()({
-    varyBy: ['team'],
-    groups: (args) => [[{ sport: args.sport }]],
+    varyBy: ['cohort'],
+    groups: (args) => [[{ region: args.region }]],
     // @ts-expect-error `ids` is not one of the fields this read declared it varies by
     select: (args, groups) => `${args.ids.length}:${groups.length}`,
     empty: '',
@@ -66,7 +66,7 @@ export const setReadsNarrowToo = () => {
 /** A read computing its own vary values names no fields to narrow to, so it answers for the whole args itself. */
 export const computedVaryByKeepsTheArgs = () =>
   rows.read<Args, string>()({
-    varyBy: (args: Args) => [args.team, args.ids],
-    select: (args) => `${args.sport}${args.team ?? ''}${args.ids?.length ?? 0}`,
+    varyBy: (args: Args) => [args.cohort, args.ids],
+    select: (args) => `${args.region}${args.cohort ?? ''}${args.ids?.length ?? 0}`,
     empty: '',
   });

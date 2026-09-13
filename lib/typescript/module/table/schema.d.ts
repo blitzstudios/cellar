@@ -44,7 +44,7 @@ export declare function schemaStructureStamp<Row extends RowShape>(schema: RowTa
  * Chooses between creating, keeping, widening, and rebuilding the table.
  *
  * A widening is the cheap case worth detecting, because it is the routine one: a schema whose columns are generated
- * from a catalog — the scoring keys a sport publishes, say — gains a column every time that catalog does, and dropping
+ * from a catalog — the metric keys a category publishes, say — gains a column every time that catalog does, and dropping
  * every row to add one costs a user their whole table for nothing. Anything else changes what the rows on disk mean —
  * an index they are not sorted by, a key they were not deduped on, a shred op that fills a column they already have
  * from a different path — and dropping them is the honest repair, since no `ALTER TABLE` can restate them.

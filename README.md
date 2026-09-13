@@ -1,14 +1,15 @@
 # `@sleeperhq-private/react-data-kernel`
 
-The kernel behind Sleeper's off-heap accessor stores (`schedule`, `player`, `player_stats`), which live in the
-app. It exists so large reference datasets stay **off the JS heap** — in SQLite on mobile — and only the
-on-screen slice is ever materialized in JS.
+The kernel behind an app's off-heap accessor stores, which live in the app. It exists so large reference
+datasets stay **off the JS heap** — in SQLite on mobile — and only the on-screen slice is ever materialized in
+JS.
 
-If you're here to **add or edit a store**, read this first. For the "why", the concepts, and the API feature code
-calls, see [`docs/data-layer-proposal.md`](https://github.com/blitzstudios/sleeperbot/blob/master/clients/docs/data-layer-proposal.md);
-for one store traced end to end in real code, see
-[`docs/data-layer-example-schedule.md`](https://github.com/blitzstudios/sleeperbot/blob/master/clients/docs/data-layer-example-schedule.md),
-which walks the store this doc points you at as the template.
+If you're here to **add or edit a store**, read this first.
+
+Three stores run through this doc as examples, in increasing order of weight: **`catalog`**, the small
+template; **`directory`**, the same shape over a much larger payload; and **`leaderboard`**, which is both
+fetch-fed and socket-fed and ranks a whole collection inside SQLite. Where the doc says to copy one, it means
+copy that shape.
 
 ## Installing and wiring it up
 
@@ -53,7 +54,7 @@ They nest, and mixing them up is the fastest way to misread any file here:
 
 - a **table** (`RowTable`) is the rows themselves — SQLite on mobile, a `Map` on web and in tests;
 - a **partition** is one addressable slice of a table: the unit a fetch replaces, a version tracks, and an ETag
-  belongs to. A store has as many as its callers ask for — `player` has one per sport, `player_stats` thousands;
+  belongs to. A store has as many as its callers ask for — `directory` has one per region, `leaderboard` thousands;
 - a **store** is the feature module wrapping both, declared by `defineSqliteStore` and exported from `store.ts`.
 
 `definePartitions` is the middle layer: one table, divided into partitions, that a backend reads and
@@ -67,15 +68,15 @@ They differ enough in size that picking the wrong one is the most expensive mist
 
 | kind                                | what it does                                                                                                                             | example                             | you write                                                                                                  |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| **Normal store**                    | Fetch a dataset, keep it off-heap, read a **bounded slice** and select it into a VM in JS.                                               | `schedule` (the small template) | a schema, VM types, mappers, a backend that composes the kernel.                                           |
-| **Native-compute store** (advanced) | Everything above **plus** a whole-collection compute (rank/score ~9k rows) done _inside SQLite_ so the collection never crosses into JS. | `player_stats` **only**       | all of the above **plus** a bespoke SQL compute engine (`ranking/native_ranker.ts`, `ranking/score_sql.ts`). |
+| **Normal store**                    | Fetch a dataset, keep it off-heap, read a **bounded slice** and select it into a VM in JS.                                               | `catalog` (the small template) | a schema, VM types, mappers, a backend that composes the kernel.                                           |
+| **Native-compute store** (advanced) | Everything above **plus** a whole-collection compute (rank/score ~9k rows) done _inside SQLite_ so the collection never crosses into JS. | `leaderboard` **only**       | all of the above **plus** a bespoke SQL compute engine (`ranking/native_ranker.ts`, `ranking/score_sql.ts`). |
 
-**Copy `schedule`, not `player_stats`.** `player_stats` is by far the largest backend, and its extra weight is a
-second layer of ranking SQL serving one hard problem: rank a 9k-player list without pulling 9k objects across the
+**Copy `catalog`, not `leaderboard`.** `leaderboard` is by far the largest backend, and its extra weight is a
+second layer of ranking SQL serving one hard problem: rank a 9k-row list without pulling 9k objects across the
 bridge.
 
 The native-compute tier is for a read that reduces a whole collection — rank, sum, top-N over _everything_. If
-your read is "give me this team's games" / "this roster's scores" — a bounded slice — you never touch it.
+your read is "give me this region's items" / "this group's scores" — a bounded slice — you never touch it.
 
 ---
 
@@ -108,7 +109,7 @@ store is reaching past its entry point; import it from its own module only if yo
 
   - **A widening**, where the declaration only *added* columns. The table is kept and each new column arrives by
     `ALTER TABLE ADD COLUMN`, so not one row is lost. This is the case worth having: a schema whose columns are
-    generated from a catalog — the scoring keys a sport publishes — gains a column every time the catalog does, and
+    generated from a catalog — the metric keys a category publishes — gains a column every time the catalog does, and
     dropping a user's whole table to add one costs them a refetch for nothing. The added columns are `NULL` in every
     row that predates them, so the ETags go even though the rows stay: keeping one would answer the fetch that fills
     them with a 304.
@@ -133,7 +134,7 @@ store is reaching past its entry point; import it from its own module only if yo
     someone shipped on purpose. Catch the edit where the edit happens, by pinning the store's column set in a test.
   - `rebuildVersion` — bump to force a rebuild for something the stamps can't see, and it is part of the structure
     stamp, so bumping it is never mistaken for a widening. Two things need it. One is a row builder written in JS with
-    no spec beside it (`schedule`): a change there leaves rows stale rather than malformed, and the stored ETag will
+    no spec beside it (`catalog`): a change there leaves rows stale rather than malformed, and the stored ETag will
     304 the correction away. The other is repointing a shred op on a column that already exists *in the same release
     that adds a column* — alone that rebuilds (a plan with nothing to add is a rebuild), but alongside an addition it
     reads as a widening and the old values under the repointed column stay. Bumping this drops the ETags with the
@@ -141,25 +142,25 @@ store is reaching past its entry point; import it from its own module only if yo
 
   **The shred spec is part of the fingerprint, which is why `NativeShredSpec` holds a `specs` map keyed by
   variant.** The fingerprint has to hash every spec a store can shred through, so the specs have to be
-  enumerable. If your spec varies — `player_stats` shreds different
-  scoring columns per sport — enumerate the variants and give `variant(scope)` the job of picking one. Naming a
+  enumerable. If your spec varies — `leaderboard` shreds different
+  metric columns per category — enumerate the variants and give `variant(scope)` the job of picking one. Naming a
   variant that isn't in the map falls back to the JS parse path rather than shredding through `undefined`.
 - **`definePartitions`** — **how your rows are divided into fetchable units, and the thing you actually write.**
   It asks one question — *where does one partition's rows live?* — and derives the rest of the plumbing from the
   answer:
 
   ```ts
-  const schedule = definePartitions<ScheduleSqlRow, ScheduleKey>({
-    name: 'schedule',
+  const catalog = definePartitions<CatalogSqlRow, CatalogKey>({
+    name: 'catalog',
     table,
     version,
     key: {
-      fields: ['sport', 'season', 'seasonType'],
-      where: ({ sport, season, seasonType }) => ({ sport, season, season_type: seasonType }),
+      fields: ['region', 'year', 'itemType'],
+      where: ({ region, year, itemType }) => ({ region, year, item_type: itemType }),
     },
     fetch: {
-      query: (key, etag) => getScheduleRawQuery(key, etag),
-      parse: (key, rawJson) => buildScheduleRows(key.sport, key.season, key.seasonType, JSON.parse(rawJson)),
+      query: (key, etag) => getCatalogRawQuery(key, etag),
+      parse: (key, rawJson) => buildCatalogRows(key.region, key.year, key.itemType, JSON.parse(rawJson)),
     },
   });
   ```
@@ -174,7 +175,7 @@ store is reaching past its entry point; import it from its own module only if yo
   read's `select` — is handed the **key**, your own type.
 
   Use `key.of` + `key.id` instead of `fields` when your partition is a **record** too big to be a key, which is
-  what `player_stats` has: a `StatPartition` addresses its rows by the string `partitionKey` hashes it to, and
+  what `leaderboard` has: a `MetricPartition` addresses its rows by the string `partitionKey` hashes it to, and
   the fetch needs the record back to build a URL from. `of` says how a read's args reach the record, `id` says
   what it hashes to, and declaring them hands the record⇄key table to this module. Every path that names a
   partition files it away on the way through, so the entry backing anything on screen stays warm, and your
@@ -193,8 +194,8 @@ store is reaching past its entry point; import it from its own module only if yo
   writes need (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`), and a ready-made **`lifecycle`**
   group — `usePrime`, `usePrimeMany`, `usePrimeAndVersion`, `has`, `getVersion`, `getFetchedAt`, `fetch`,
   `refetch`, `invalidate`, `forget`. Every member takes the same **args** a read does, in the `(args, options?)`
-  call shape a backend publishes, so both `player` and `player_stats` publish the group unchanged
-  (`lifecycle: players.lifecycle`) rather than restating it. `usePrime` and `usePrimeAndVersion` take those args
+  call shape a backend publishes, so both `directory` and `leaderboard` publish the group unchanged
+  (`lifecycle: items.lifecycle`) rather than restating it. `usePrime` and `usePrimeAndVersion` take those args
   loosely, so a screen calls them with what it has, exactly as it calls a read: a field that has not arrived leaves
   the key unaddressable, and `key.of` answers `null` for args that name no partition, so neither primes anything.
 - **`createFetchIngest`** — the fetch engine `definePartitions` composes: React Query orchestrates a raw-text fetch
@@ -207,7 +208,7 @@ store is reaching past its entry point; import it from its own module only if yo
   `idOf`, writes in bounded chunks off the render path, requeues a failed chunk without overwriting anything
   newer, and lets a partition be **held** for the length of a fetch. Give it `idOf`, `toRows`, `bump` and
   `onWrite`; you get `queue` and `hold`. The `hold` is what `definePartitions`'s
-  `fetch.holdWrites` wants. Only `player_stats` is push-fed today.
+  `fetch.holdWrites` wants. Of the three, only `leaderboard` is push-fed.
 - **`rowsOf(table)`** (`row_shaping.ts`) — a hydration's whole read side: ask it for rows, then say what shape you
   want them in. `rows.where(filter, opts)` and `rows.in(filter, column, values)` are the two queries, `.given(rows)`
   wraps rows you already hold, and each hands back something with `.rows`, `.map(fn, empty)`, `.indexed(column)`,
@@ -216,7 +217,7 @@ store is reaching past its entry point; import it from its own module only if yo
   `findIn` chunks on top of that, so a caller treating rows as parallel to the ids it asked for needs them reordered
   — which is why it hangs off `.in` alone and cannot be reached from a query that has no ids.
 - **`partitionLabel(parts)`** (`args_key.ts`) — a partition's parts joined on `:` for a log line or a telemetry
-  field. Never a key: `:` occurs inside a part (`clubsoccer:epl`), which is why keys don't use it. Keys themselves
+  field. Never a key: `:` occurs inside a part (`region:us-west`), which is why keys don't use it. Keys themselves
   are not the caller's to build — a read's is the engine's, and a memo's comes from the partition it is bound to.
 - **`chunkList` / `getOrCreate`** (`collections.ts`) — bounded batches, and the `Map` entry that may not exist
   yet.
@@ -236,17 +237,17 @@ store is reaching past its entry point; import it from its own module only if yo
   `read` descriptors.
 
   `partition` **defaults to the store's `key.fields`, or to `key.of` for a record partition**, so a read
-  declares no partition at all — which is most reads in `schedule` and every read in `player` and `player_stats`.
+  declares no partition at all — which is most reads in `catalog` and every read in `directory` and `leaderboard`.
   Give it explicitly only for an address one read computes differently from its siblings. `readMany` always names
   its own `partitions`, since the set is the read's. `varyBy` is everything else `select` reads — named as args
-  fields (`varyBy: ['playerId']`) or computed — and it is both the read's cache key and its gate: the read is off
+  fields (`varyBy: ['itemId']`) or computed — and it is both the read's cache key and its gate: the read is off
   while any of those values is absent.
 
   Prefer the field names, which is the form that carries its own guarantee: `select` is handed those fields and
   nothing else, each non-null, so a cast at the call is unnecessary and reaching an arg the read never declared —
   the mistake that would serve one caller's value to the next — does not compile. A computed `varyBy` names no
   fields to narrow to, so such a read is handed the whole args and answers for them itself;
-  `sleeper/no_undeclared_select_arg` is what holds it to the same rule.
+  `no_undeclared_select_arg`, a lint rule in the consuming app, is what holds it to the same rule.
 
   Three variations cover the rest of the stores: `readMany({ partitions, … })` for a read spanning a variable set
   of partitions (it observes the same fetches through `usePrimeMany`, so it reports loading like any other read);
@@ -258,13 +259,13 @@ store is reaching past its entry point; import it from its own module only if yo
 - **`partitions.memos`** — every memo a store holds, in one block, and the only way it builds one:
 
   ```ts
-  const memos = schedule.memos({
-    summaryMap: byVersion<ScheduleSummaryMap>()({ max: 2048 }),
-    playerRow: bySource<PlayerRowVM>()({ max: 4096, by: ['playerId'] }),
+  const memos = catalog.memos({
+    summaryMap: byVersion<CatalogSummaryMap>()({ max: 2048 }),
+    itemRow: bySource<ItemRowVM>()({ max: 4096, by: ['itemId'] }),
   });
 
   memos.summaryMap.for(key).read(() => deriveSummaryMap(rows.where(where(key)).rows));
-  memos.playerRow.for(key).put(playerId, row.data_json, () => toVM(row));
+  memos.itemRow.for(key).put(itemId, row.data_json, () => toVM(row));
   ```
 
   The block is reached off the store's partitions, which is what makes `.for(key)` possible: the memo takes both
@@ -287,11 +288,11 @@ store is reaching past its entry point; import it from its own module only if yo
 - **`bySource`** — the other of the two, and the one a hydration reaches for. A version
   alone skips the **SQL round-trip** for a read no write invalidated, but it misses for every entry in a partition
   the moment anything in it changes. A source — the `data_json` the value was built from — survives that miss and
-  hands back the same reference, which is what keeps one socket flush rewriting one player's row from repainting
+  hands back the same reference, which is what keeps one socket flush rewriting one item's row from repainting
   every reader of every other row in the partition. This carries both in one entry: `peek(…parts)` answers
   with no query at all, and `put(…parts, source, build)` rebuilds only when the source really moved.
   **If a read's value feeds a downstream identity comparison — and every `isEqual` on a read descriptor is one —
-  hydrate it through this.** All three of `player_stats`' hydrations do.
+  hydrate it through this.** All three of `leaderboard`' hydrations do.
 
   Two rules when you add one. Name the filter that produced the entry in `by` as well as the entity, or two
   reads holding different rows for the same entity re-hydrate each other on every call. And leave
@@ -327,10 +328,10 @@ and stay silent.
 
 ---
 
-## The recipe for a normal store (copy `schedule`)
+## The recipe for a normal store (copy `catalog`)
 
-A store is ~9 small files grouped by the direction data travels, and all three existing stores have the same
-layout. Mirror `schedule`:
+A store is ~9 small files grouped by the direction data travels, and all three examples have the same
+layout. Mirror `catalog`:
 
 ```
 <store>/
@@ -358,15 +359,15 @@ layout. Mirror `schedule`:
    `reads` table of one descriptor per read, each declared with that partition's own `<partition>.read(...)`
    (each gives a `{ getValue, useValue }` pair). A read is declared ONCE here: `export type XBackend =
    ReturnType<typeof buildXBackend>` infers the interface, and the `reads` table itself is the public read
-   surface. This is the only "logic" file, and in `schedule` it is still small.
+   surface. This is the only "logic" file, and in `catalog` it is still small.
 8. **`store.ts` + `index.ts`** — `defineSqliteStore(...)` and the imperative `XStore` handle (for
    `mapStateToProps` / non-React callers). The `<name>_service` facade publishes each read with `pairRead`,
    which hands back the `use`/`get` pair from one declaration — see **the facade** below.
 
-A store with more to say adds to these folders rather than to the root: `player_stats` puts its socket writer
+A store with more to say adds to these folders rather than to the root: `leaderboard` puts its socket writer
 in `write/live_ingest.ts` and its SQL-filtered reads in `read/filtered_reads.ts`, and keeps its ranking
 subsystem in `ranking/`. That store is also the one exception to "every column is declared in `schema.ts`": its
-`s_*`/`d_*` columns are generated per sport from the scoring keyspace, so they are declared in
+`s_*`/`d_*` columns are generated per category from the metric keyspace, so they are declared in
 `ranking/score_sql.ts` and merged into the schema — `schema.ts` says so at the top.
 
 ### What the backend returns: `{ reads, push?, lifecycle? }`
@@ -376,18 +377,18 @@ Three groups, and which one a new function belongs in is decided by who calls it
 | group | holds | who has one |
 | --- | --- | --- |
 | `reads` | one `read`/`readMany` descriptor per read. Required — a store with nothing to read is not a store. | all three |
-| `push` | a caller handing rows **in** | `player_stats` |
+| `push` | a caller handing rows **in** | `leaderboard` |
 | `lifecycle` | partition-level operations that neither read rows nor write them: priming, freshness, invalidation | all three |
 
 **A fetch-fed store's ingest belongs to the partition's `fetch`, and the only way rows arrive is a fetch the read
 surface already triggers — the common case.** You add `push` when rows arrive from
 somewhere the kernel doesn't own (a socket). `lifecycle` is where a caller outside the read path primes, checks
-freshness or invalidates a partition; `schedule` needs only `forget` there, while `player` and `player_stats` also
-prime. `player_stats` is the store to read when you want all three groups in one file, being the only one that is
+freshness or invalidates a partition; `catalog` needs only `forget` there, while `directory` and `leaderboard` also
+prime. `leaderboard` is the store to read when you want all three groups in one file, being the only one that is
 both push-fed *and* fetch-fed.
 
 A group with no members is left off rather than declared empty, so a backend's shape tells you what kind of store
-it is at a glance. `StoreBackendShape` requires `reads`, and the app's own `stores/tests/backend_shape.test.ts`
+it is at a glance. `StoreBackendShape` requires `reads`, and a backend-shape guard test in the consuming app
 fails on a fourth group name, which keeps the grouping exhaustive enough to rely on when reading an unfamiliar
 store.
 
@@ -398,27 +399,27 @@ halves, with params typed as `Loose<Args>` so a caller may pass what it has:
 
 ```ts
 const Reads = {
-  TeamSchedule: pairRead(() => getScheduleStoreBackend().reads.TeamSchedule),
+  RegionCatalog: pairRead(() => getCatalogStoreBackend().reads.RegionCatalog),
 };
 
-export const Hooks = { useTeamSchedule: Reads.TeamSchedule.useValue };
-export const Get = { getTeamSchedule: Reads.TeamSchedule.getValue };
+export const Hooks = { useRegionCatalog: Reads.RegionCatalog.useValue };
+export const Get = { getRegionCatalog: Reads.RegionCatalog.getValue };
 ```
 
 The read supplies its own gate. `read({ … })` publishes `requires` — its partition's fields plus its `varyBy`
 fields — and the pair holds the read inert until a caller has every one of them, so the facade restates nothing the
 store already declared. A field counts as in hand unless it is `undefined`, `null` or `''`; `[]`, `0` and `false`
 are answers, and what a read does with an empty list is its `varyBy`'s business. A read naming its partitions with a
-function, where there are no fields to read them off, declares `requires` itself — `player_stats`' `LocatedRow`
-takes a stat key it parses into candidate partitions, and requires that key.
+function, where there are no fields to read them off, declares `requires` itself — `leaderboard`' `LocatedRow`
+takes a metric key it parses into candidate partitions, and requires that key.
 
 A facade read's params are the store read's own args, so a service names no vocabulary of its own and translates
 nothing: `pairRead` takes the read and nothing else. `pairRead` throws on a read that publishes no `requires`, since
 it has been asked to gate on nothing.
 
 Both halves resolve the backend per call, so the SQLite bind at startup is picked up by callers that ran before
-it. Publishing only one half is what pushes a Redux selector into a loop of point reads, so a guard test in the app
-(`stores/tests/read_pairing.test.ts`) fails on a read that ships without its twin.
+it. Publishing only one half is what pushes a Redux selector into a loop of point reads, so a read-pairing guard
+test in the consuming app fails on a read that ships without its twin.
 
 The wiring itself (step 6) is one descriptor — `defineSqliteStore` folds the version atom, the swappable
 backend registry, the in-memory web/test default, and the SQLite bind builder:
@@ -449,21 +450,21 @@ built on first read, so a platform that binds SQLite first never constructs one 
 
 ---
 
-## Taking rows from a socket (copy `player_stats/write/live_ingest.ts`)
+## Taking rows from a socket (copy `leaderboard/write/live_ingest.ts`)
 
-Rows that arrive over the socket rather than from a fetch. `player_stats` takes both, which is the shape to copy:
+Rows that arrive over the socket rather than from a fetch. `leaderboard` takes both, which is the shape to copy:
 a fetch fills a partition, and live frames keep it current.
 
-1. **A `push` group.** `push.ingestStats(stats)` is how frames get in, beside the `lifecycle` group the fetch
+1. **A `push` group.** `push.ingestMetrics(metrics)` is how frames get in, beside the `lifecycle` group the fetch
    half needs.
 2. **A buffered flush behind that write** (see below).
-3. **A decision about frames for partitions nothing has fetched.** `player_stats` creates the partitions a stat
-   names rather than dropping it, because live scoring is the only source for a game no screen asked the API
+3. **A decision about frames for partitions nothing has fetched.** `leaderboard` creates the partitions a metric
+   names rather than dropping it, because live updates are the only source for an entity no screen asked the API
    for. Make this choice explicitly: it decides whether a score can appear at all.
 
 A store fed *only* by a socket leaves `definePartitions`'s `fetch` off, so its reads report `success` over
 an empty value, and sets `pushFed: true` on the schema so a rebuild of a table no fetch can refill says so out
-loud. No store is push-only today.
+loud. None of the three is push-only.
 
 ### The buffered flush
 
@@ -471,7 +472,7 @@ A bulk completion carries thousands of rows at once, and writing them inline fro
 writes: it stages rows and returns, and a scheduled task does the work. Five properties carry that, and each one
 is load-bearing:
 
-- **Stage into a `Map` keyed by row identity.** Two frames for the same stat inside one flush window collapse to
+- **Stage into a `Map` keyed by row identity.** Two frames for the same metric inside one flush window collapse to
   the last, which is what makes a burst cost one write per *row* rather than one per *frame*.
 - **Flush on a macrotask, chunked, yielding between chunks.** `setTimeout(0)` gets it off the current frame;
   `upsert` in chunks of 250 with a yield between them keeps a long flush from becoming the same block in a
@@ -483,7 +484,7 @@ is load-bearing:
   failure in here that reaches the screen as wrong data rather than as jank.
 - **Clear the partition's ETag on every socket write** (`onSocketWrite`). The ETag describes the last body the
   *fetch* ingested, not the socket's writes over it, and the rows outlive the process — so the next launch would
-  304 and keep a game frozen where the socket left it. Costs nothing while the game is live, since a body the
+  304 and keep an entity frozen where the socket left it. Costs nothing while the entity is live, since a body the
   socket is tracking is changing and would not have matched anyway.
 
 ---
@@ -494,7 +495,7 @@ is load-bearing:
 write a store. Being generic is not the bar, and neither is having more than one caller: a mechanism belongs here
 when a *store author* reaches for it. So `read/windowed_list.ts` lives here with a single
 consumer today, because "windowed list read" is one of the read shapes you choose between when writing a store;
-whereas `native_ranker.ts`'s compute-table LRU is just as generic and stays inside `player_stats`, because no
+whereas `native_ranker.ts`'s compute-table LRU is just as generic and stays inside `leaderboard`, because no
 store author picks it — it's how that one store's ranked scan happens to work. A per-store mechanism moves here
 when a second *store* needs it, which is also the point at which its shape has been checked against more than
 one caller.
@@ -564,8 +565,8 @@ rather than a whole backend), and `dev_mode.ts` (the wrappers pinning a case to 
 handful of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement`
 to check a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
 
-Bespoke per store (the domain half you write, in the app): `schedule` is the small template, `player` is the same shape over
-a much larger payload (a native shred, and a `lifecycle` group), and `player_stats` is by far the largest — a
+Bespoke per store (the domain half you write, in the app): `catalog` is the small template, `directory` is the same shape over
+a much larger payload (a native shred, and a `lifecycle` group), and `leaderboard` is by far the largest — a
 fetch ingest, a buffered socket ingest, its backend **plus** the
 native-compute tier (`ranking/native_ranker.ts`, `ranking/score_sql.ts`), which is advanced, opt-in, and
 used by that one store.

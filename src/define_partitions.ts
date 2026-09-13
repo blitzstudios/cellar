@@ -55,7 +55,7 @@ export interface PartitionFetchSpec<Row extends RowShape, Key, Descriptor> {
 /**
  * One store's declaration of its partitions: the table they divide, the version atom they bump, where a key's rows
  * live, and how a body becomes them. `onChanged` is the hook for a store holding a rollup derived from a partition —
- * `player_stats`' rankings — which new rows invalidate.
+ * `leaderboard`' rankings — which new rows invalidate.
  */
 export interface PartitionsConfig<Row extends RowShape, Key, Args, Descriptor> {
   name: string;

@@ -10,52 +10,52 @@ jest.mock('../diagnostics/telemetry', () => ({ reportStoreDegradation: jest.fn()
 const invalidateMock = installTestRuntime().invalidateQueries;
 const degradeMock = reportStoreDegradation as jest.Mock;
 
-type GameRow = { sport: string; season: string; season_type: string; game_id: string };
-type GameKey = { sport: string; season: string; seasonType: string };
+type EventRow = { region: string; year: string; item_type: string; event_id: string };
+type EventKey = { region: string; year: string; itemType: string };
 
-const SCHEMA: RowTableSchema<GameRow> = {
-  table: 'games',
+const SCHEMA: RowTableSchema<EventRow> = {
+  table: 'events',
   columns: {
-    sport: { type: 'TEXT' },
-    season: { type: 'TEXT' },
-    season_type: { type: 'TEXT' },
-    game_id: { type: 'TEXT' },
+    region: { type: 'TEXT' },
+    year: { type: 'TEXT' },
+    item_type: { type: 'TEXT' },
+    event_id: { type: 'TEXT' },
   },
-  primaryKey: ['sport', 'season', 'season_type', 'game_id'],
-  meta: { table: 'games_meta', keyColumns: ['sport', 'season', 'season_type'], column: 'etag' },
+  primaryKey: ['region', 'year', 'item_type', 'event_id'],
+  meta: { table: 'events_meta', keyColumns: ['region', 'year', 'item_type'], column: 'etag' },
 };
 
-const NFL: GameKey = { sport: 'nfl', season: '2025', seasonType: 'regular' };
-const OTHER: GameKey = { ...NFL, season: '2024' };
+const US: EventKey = { region: 'us', year: '2025', itemType: 'regular' };
+const OTHER: EventKey = { ...US, year: '2024' };
 
-function makeGames(over: { table?: RowTable<GameRow>; parse?: (key: GameKey, raw: string) => GameRow[]; body?: string; internMax?: number } = {}) {
+function makeEvents(over: { table?: RowTable<EventRow>; parse?: (key: EventKey, raw: string) => EventRow[]; body?: string; internMax?: number } = {}) {
   const table = over.table ?? createMemoryRowTable(SCHEMA);
   table.init();
   const version = createVersionAtom('define_partitions_test');
-  const changed: { key: GameKey; version: number }[] = [];
+  const changed: { key: EventKey; version: number }[] = [];
   const body = over.body ?? '["g1","g2"]';
   // Typed loosely: the assertions below inspect the arity of each call, which a tuple type hides.
   const query = jest.fn((..._args: unknown[]) => ({ queryFn: async () => ({ data: body, etag: 'W/"v1"' }) }));
 
-  const games = definePartitions<GameRow, GameKey>({
-    name: 'games',
+  const events = definePartitions<EventRow, EventKey>({
+    name: 'events',
     table,
     version,
     key: {
-      fields: ['sport', 'season', 'seasonType'],
-      where: ({ sport, season, seasonType }) => ({ sport, season, season_type: seasonType }),
+      fields: ['region', 'year', 'itemType'],
+      where: ({ region, year, itemType }) => ({ region, year, item_type: itemType }),
     },
     fetch: {
       query,
       parse:
         over.parse ??
-        ((key, raw) => (JSON.parse(raw) as string[]).map((id) => ({ sport: key.sport, season: key.season, season_type: key.seasonType, game_id: id }))),
+        ((key, raw) => (JSON.parse(raw) as string[]).map((id) => ({ region: key.region, year: key.year, item_type: key.itemType, event_id: id }))),
     },
     onChanged: (key, version) => changed.push({ key, version: version }),
     internMax: over.internMax,
   });
 
-  return { games, table, version, changed, query };
+  return { events, table, version, changed, query };
 }
 
 beforeEach(() => {
@@ -65,79 +65,79 @@ beforeEach(() => {
 
 describe('definePartitions — `key.where` is the one fact the rest is derived from', () => {
   it('keeps the ETag under the partition it belongs to, so a second partition still fetches cold', async () => {
-    const harness = makeGames();
+    const harness = makeEvents();
 
-    await harness.games.lifecycle.fetch(NFL);
+    await harness.events.lifecycle.fetch(US);
 
-    expect(harness.table.getMeta({ sport: 'nfl', season: '2025', season_type: 'regular' })).toBe('W/"v1"');
-    expect(harness.table.getMeta({ sport: 'nfl', season: '2024', season_type: 'regular' })).toBeUndefined();
+    expect(harness.table.getMeta({ region: 'us', year: '2025', item_type: 'regular' })).toBe('W/"v1"');
+    expect(harness.table.getMeta({ region: 'us', year: '2024', item_type: 'regular' })).toBeUndefined();
   });
 
   it('sends the stored ETag back on the next fetch, which is what makes a 304 possible', async () => {
-    const harness = makeGames();
+    const harness = makeEvents();
 
-    await harness.games.lifecycle.fetch(NFL);
-    await harness.games.lifecycle.fetch(NFL);
+    await harness.events.lifecycle.fetch(US);
+    await harness.events.lifecycle.fetch(US);
 
     // `query` is also consulted for its staleTime with one argument; the fetching calls are the two-argument ones.
     const etags = harness.query.mock.calls.filter((call) => call.length === 2).map((call) => call[1]);
     expect(etags).toEqual([undefined, 'W/"v1"']);
-    harness.query.mock.calls.forEach((call) => expect(call[0]).toEqual(NFL));
+    harness.query.mock.calls.forEach((call) => expect(call[0]).toEqual(US));
   });
 
   it('answers `has` from the same rows, so presence and ingest cannot disagree', async () => {
-    const harness = makeGames();
+    const harness = makeEvents();
 
-    expect(harness.games.has(NFL)).toBe(false);
-    await harness.games.lifecycle.fetch(NFL);
-    expect(harness.games.has(NFL)).toBe(true);
-    expect(harness.games.has({ ...NFL, season: '2024' })).toBe(false);
+    expect(harness.events.has(US)).toBe(false);
+    await harness.events.lifecycle.fetch(US);
+    expect(harness.events.has(US)).toBe(true);
+    expect(harness.events.has({ ...US, year: '2024' })).toBe(false);
   });
 
   it('replaces only its own partition, leaving a sibling in place', async () => {
-    const harness = makeGames();
-    await harness.games.lifecycle.fetch(NFL);
-    await harness.games.lifecycle.fetch(OTHER);
+    const harness = makeEvents();
+    await harness.events.lifecycle.fetch(US);
+    await harness.events.lifecycle.fetch(OTHER);
 
-    expect(harness.table.find(harness.games.where(NFL))).toHaveLength(2);
-    expect(harness.table.find(harness.games.where(OTHER))).toHaveLength(2);
+    expect(harness.table.find(harness.events.where(US))).toHaveLength(2);
+    expect(harness.table.find(harness.events.where(OTHER))).toHaveLength(2);
   });
 
   it('clears the ETag on request, so the next fetch is a real one rather than a 304', async () => {
-    const harness = makeGames();
-    await harness.games.lifecycle.fetch(NFL);
+    const harness = makeEvents();
+    await harness.events.lifecycle.fetch(US);
 
-    harness.games.clearEtag(NFL);
+    harness.events.clearEtag(US);
 
-    expect(harness.table.getMeta(harness.games.where(NFL))).toBeUndefined();
+    expect(harness.table.getMeta(harness.events.where(US))).toBeUndefined();
   });
 });
 
 describe('definePartitions — bumping', () => {
   it('raises the version once rows land and tells `onChanged`, for a store holding a derived rollup', async () => {
-    const harness = makeGames();
+    const harness = makeEvents();
 
-    await harness.games.lifecycle.fetch(NFL);
+    await harness.events.lifecycle.fetch(US);
 
-    expect(harness.games.versionOf(NFL)).toBe(1);
-    expect(harness.changed).toEqual([{ key: NFL, version: 1 }]);
+    expect(harness.events.versionOf(US)).toBe(1);
+    expect(harness.changed).toEqual([{ key: US, version: 1 }]);
   });
 
   it('bumps a partition a writer filled itself, which is how a socket frame wakes readers', () => {
-    const harness = makeGames();
+    const harness = makeEvents();
 
-    expect(harness.games.bump(NFL)).toBe(1);
-    expect(harness.games.versionOf(NFL)).toBe(1);
+    expect(harness.events.bump(US)).toBe(1);
+    expect(harness.events.versionOf(US)).toBe(1);
     expect(harness.changed).toHaveLength(1);
   });
 
   it('keys the version by the field order it declared, so two partitions never share one', () => {
-    const harness = makeGames();
+    const harness = makeEvents();
 
-    harness.games.bump(NFL);
+    harness.events.bump(US);
 
-    expect(harness.games.versionOf(NFL)).toBe(1);
-    expect(harness.games.versionOf({ ...NFL, seasonType: 'post' })).toBe(0);
+    expect(harness.events.versionOf(US)).toBe(1);
+    expect(harness.events.versionOf({ ...US, itemType: 'post' })).toBe(0);
   });
 });
 
@@ -145,40 +145,40 @@ describe('definePartitions — the shred, and what happens when it cannot run', 
   it('re-parses in JS and reports a degradation when the raw shred throws, rather than losing the partition', async () => {
     const memory = createMemoryRowTable(SCHEMA);
     memory.init();
-    const table: RowTable<GameRow> = {
+    const table: RowTable<EventRow> = {
       ...memory,
       shred: jest.fn(async () => {
         throw new Error('native shred failed');
       }),
       overwrite: jest.fn(memory.overwrite),
     };
-    const harness = makeGames({ table });
+    const harness = makeEvents({ table });
 
-    await harness.games.lifecycle.fetch(NFL);
+    await harness.events.lifecycle.fetch(US);
 
     expect(table.overwrite).toHaveBeenCalled();
-    expect(memory.find(harness.games.where(NFL))).toHaveLength(2);
-    expect(degradeMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'games_store.raw_ingest' }));
+    expect(memory.find(harness.events.where(US))).toHaveLength(2);
+    expect(degradeMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'events_store.raw_ingest' }));
   });
 
   it('skips the raw shred entirely for a body it is told cannot be iterated', async () => {
     const memory = createMemoryRowTable(SCHEMA);
     memory.init();
-    const table: RowTable<GameRow> = { ...memory, shred: jest.fn(memory.shred), overwrite: jest.fn(memory.overwrite) };
+    const table: RowTable<EventRow> = { ...memory, shred: jest.fn(memory.shred), overwrite: jest.fn(memory.overwrite) };
     const version = createVersionAtom('define_partitions_no_shred');
-    const games = definePartitions<GameRow, GameKey>({
-      name: 'games',
+    const events = definePartitions<EventRow, EventKey>({
+      name: 'events',
       table,
       version,
-      key: { fields: ['sport', 'season', 'seasonType'], where: ({ sport, season, seasonType }) => ({ sport, season, season_type: seasonType }) },
+      key: { fields: ['region', 'year', 'itemType'], where: ({ region, year, itemType }) => ({ region, year, item_type: itemType }) },
       fetch: {
         query: () => ({ queryFn: async () => ({ data: '{"only":"one"}' }) }),
-        parse: (key) => [{ sport: key.sport, season: key.season, season_type: key.seasonType, game_id: 'one' }],
+        parse: (key) => [{ region: key.region, year: key.year, item_type: key.itemType, event_id: 'one' }],
         canShredNatively: () => false,
       },
     });
 
-    await games.lifecycle.fetch(NFL);
+    await events.lifecycle.fetch(US);
 
     expect(table.shred).not.toHaveBeenCalled();
     expect(table.overwrite).toHaveBeenCalled();
@@ -186,77 +186,77 @@ describe('definePartitions — the shred, and what happens when it cannot run', 
   });
 
   it('records when rows landed, so a store needs no fetch bookkeeping of its own', async () => {
-    const harness = makeGames();
-    expect(harness.games.lifecycle.getFetchedAt(NFL)).toBe(0);
+    const harness = makeEvents();
+    expect(harness.events.lifecycle.getFetchedAt(US)).toBe(0);
 
-    await harness.games.lifecycle.fetch(NFL);
+    await harness.events.lifecycle.fetch(US);
 
-    expect(harness.games.lifecycle.getFetchedAt(NFL)).toBeGreaterThan(0);
-    expect(harness.games.lifecycle.getFetchedAt(OTHER)).toBe(0);
+    expect(harness.events.lifecycle.getFetchedAt(US)).toBeGreaterThan(0);
+    expect(harness.events.lifecycle.getFetchedAt(OTHER)).toBe(0);
   });
 
   it('forgets the oldest fetch record past its bound, which reads as never fetched', async () => {
-    const harness = makeGames({ internMax: 2 });
-    const third: GameKey = { ...NFL, season: '2023' };
+    const harness = makeEvents({ internMax: 2 });
+    const third: EventKey = { ...US, year: '2023' };
 
-    await harness.games.lifecycle.fetch(NFL);
-    await harness.games.lifecycle.fetch(OTHER);
-    await harness.games.lifecycle.fetch(third);
+    await harness.events.lifecycle.fetch(US);
+    await harness.events.lifecycle.fetch(OTHER);
+    await harness.events.lifecycle.fetch(third);
 
-    expect(harness.games.lifecycle.getFetchedAt(NFL)).toBe(0);
-    expect(harness.games.lifecycle.getFetchedAt(OTHER)).toBeGreaterThan(0);
-    expect(harness.games.lifecycle.getFetchedAt(third)).toBeGreaterThan(0);
+    expect(harness.events.lifecycle.getFetchedAt(US)).toBe(0);
+    expect(harness.events.lifecycle.getFetchedAt(OTHER)).toBeGreaterThan(0);
+    expect(harness.events.lifecycle.getFetchedAt(third)).toBeGreaterThan(0);
   });
 
   it('leaves `getFetchedAt` where it was on a 304, since a matched ETag lands no rows', async () => {
-    const harness = makeGames();
-    await harness.games.lifecycle.fetch(NFL);
-    const first = harness.games.lifecycle.getFetchedAt(NFL);
+    const harness = makeEvents();
+    await harness.events.lifecycle.fetch(US);
+    const first = harness.events.lifecycle.getFetchedAt(US);
 
     harness.query.mockReturnValue({ queryFn: async () => ({ __etagMatch: true } as unknown as { data: string; etag: string }) });
-    harness.games.lifecycle.invalidate(NFL);
-    await harness.games.lifecycle.fetch(NFL);
+    harness.events.lifecycle.invalidate(US);
+    await harness.events.lifecycle.fetch(US);
 
-    expect(harness.games.lifecycle.getFetchedAt(NFL)).toBe(first);
+    expect(harness.events.lifecycle.getFetchedAt(US)).toBe(first);
   });
 });
 
 describe('definePartitions — reads take the key rather than a positional array', () => {
   it('defaults a read to the key fields, so a read whose args include them declares no partition', async () => {
-    const harness = makeGames();
-    const ids = harness.games.read<GameKey, string[]>()({
-      select: (_args, key) => harness.table.find(harness.games.where(key)).map((row) => row.game_id),
+    const harness = makeEvents();
+    const ids = harness.events.read<EventKey, string[]>()({
+      select: (_args, key) => harness.table.find(harness.events.where(key)).map((row) => row.event_id),
       empty: [],
     });
-    await harness.games.lifecycle.fetch(NFL);
+    await harness.events.lifecycle.fetch(US);
 
-    // `team` sits outside the key's fields, so it is dropped and the read still addresses the one partition.
-    expect(ids.getValue({ ...NFL, team: 'SF' } as GameKey)).toEqual(['g1', 'g2']);
+    // `cohort` sits outside the key's fields, so it is dropped and the read still addresses the one partition.
+    expect(ids.getValue({ ...US, cohort: 'SF' } as EventKey)).toEqual(['g1', 'g2']);
   });
 
   it('gates a read on the partition holding rows, so `select` never runs against an empty one', () => {
-    const harness = makeGames();
+    const harness = makeEvents();
     const select = jest.fn(() => ['x']);
-    const ids = harness.games.read<GameKey, string[]>()({ select, empty: [] });
+    const ids = harness.events.read<EventKey, string[]>()({ select, empty: [] });
 
-    expect(ids.getValue(NFL)).toEqual([]);
+    expect(ids.getValue(US)).toEqual([]);
     expect(select).not.toHaveBeenCalled();
   });
 
   it('hands `select` the same key `where` is written against', async () => {
-    const harness = makeGames();
-    const seen: GameKey[] = [];
-    const ids = harness.games.read<GameKey, string[]>()({
+    const harness = makeEvents();
+    const seen: EventKey[] = [];
+    const ids = harness.events.read<EventKey, string[]>()({
       select: (_args, key) => {
         seen.push(key);
         return [];
       },
       empty: [],
     });
-    await harness.games.lifecycle.fetch(NFL);
-    ids.getValue(NFL);
+    await harness.events.lifecycle.fetch(US);
+    ids.getValue(US);
 
-    expect(seen).toEqual([NFL]);
+    expect(seen).toEqual([US]);
   });
 });
 
@@ -289,11 +289,11 @@ describe('definePartitions — a store whose key is an opaque string', () => {
   it('needs no `fields`: the key is already one part, and everything derives from it as usual', async () => {
     const harness = makeBlobs();
 
-    await harness.blobs.lifecycle.fetch('season|nfl|2025');
+    await harness.blobs.lifecycle.fetch('year|us|2025');
 
-    expect(harness.table.getMeta({ partition_key: 'season|nfl|2025' })).toBe('W/"b"');
-    expect(harness.blobs.has('season|nfl|2025')).toBe(true);
-    expect(harness.blobs.versionOf('season|nfl|2025')).toBe(1);
+    expect(harness.table.getMeta({ partition_key: 'year|us|2025' })).toBe('W/"b"');
+    expect(harness.blobs.has('year|us|2025')).toBe(true);
+    expect(harness.blobs.versionOf('year|us|2025')).toBe(1);
   });
 
   it('addresses nothing with an empty key, so nothing is fetched for a partition that does not exist', async () => {
@@ -307,36 +307,36 @@ describe('definePartitions — a store whose key is an opaque string', () => {
   it('invalidates one partition by its key, without touching the store\u2019s others', () => {
     const harness = makeBlobs();
 
-    harness.blobs.lifecycle.invalidate('season|nfl|2025');
+    harness.blobs.lifecycle.invalidate('year|us|2025');
 
-    expect(invalidateMock).toHaveBeenCalledWith({ queryKey: ['blobs_store_ingest', 'season|nfl|2025'], exact: true });
+    expect(invalidateMock).toHaveBeenCalledWith({ queryKey: ['blobs_store_ingest', 'year|us|2025'], exact: true });
   });
 });
 
 describe('definePartitions — a store whose partition is a record, interned to a key', () => {
-  type StatRow = { partition_key: string; id: string };
-  type Spec = { request: 'week' | 'game'; sport: string; week?: number };
+  type MetricRow = { partition_key: string; id: string };
+  type Spec = { request: 'week' | 'event'; region: string; week?: number };
   type Args = { partition: Spec };
 
-  const STAT_SCHEMA: RowTableSchema<StatRow> = {
-    table: 'stats',
+  const METRIC_SCHEMA: RowTableSchema<MetricRow> = {
+    table: 'metrics',
     columns: { partition_key: { type: 'TEXT' }, id: { type: 'TEXT' } },
     primaryKey: ['partition_key', 'id'],
-    meta: { table: 'stats_meta', keyColumns: ['partition_key'], column: 'etag' },
+    meta: { table: 'metrics_meta', keyColumns: ['partition_key'], column: 'etag' },
   };
 
-  const specKey = (spec: Spec): string => `${spec.request}:${spec.sport}:${spec.week ?? ''}`;
-  const WEEK1: Spec = { request: 'week', sport: 'nfl', week: 1 };
+  const specKey = (spec: Spec): string => `${spec.request}:${spec.region}:${spec.week ?? ''}`;
+  const WEEK1: Spec = { request: 'week', region: 'us', week: 1 };
 
-  function makeStats() {
-    const table = createMemoryRowTable(STAT_SCHEMA);
+  function makeMetrics() {
+    const table = createMemoryRowTable(METRIC_SCHEMA);
     table.init();
     // Deduped: the ingest also consults `query` for staleTime, so a fetch reaches it more than once.
     const byKey = new Map<string, Spec>();
     const queried = { records: [] as Spec[] };
     const shredAsked: Spec[] = [];
-    const stats = definePartitions<StatRow, string, Args, Spec>({
-      name: 'stats',
+    const metrics = definePartitions<MetricRow, string, Args, Spec>({
+      name: 'metrics',
       table,
       version: createVersionAtom(`define_partitions_intern_${Math.random()}`),
       key: { of: (args) => args.partition, id: specKey, where: (key) => ({ partition_key: key }) },
@@ -355,74 +355,74 @@ describe('definePartitions — a store whose partition is a record, interned to 
         },
       },
     });
-    return { stats, table, queried: queried.records, shredAsked };
+    return { metrics, table, queried: queried.records, shredAsked };
   }
 
   it('hands the fetch the record, so a store keeps no record-to-key table of its own', async () => {
-    const harness = makeStats();
+    const harness = makeMetrics();
 
-    await harness.stats.lifecycle.fetch({ partition: WEEK1 });
+    await harness.metrics.lifecycle.fetch({ partition: WEEK1 });
 
     expect(harness.queried).toEqual([WEEK1]);
     expect(harness.shredAsked).toEqual([WEEK1]);
   });
 
   it('addresses rows by the key the record hashes to', async () => {
-    const harness = makeStats();
+    const harness = makeMetrics();
 
-    await harness.stats.lifecycle.fetch({ partition: WEEK1 });
+    await harness.metrics.lifecycle.fetch({ partition: WEEK1 });
 
-    expect(harness.table.find({ partition_key: 'week:nfl:1' }).map((row) => row.id)).toEqual(['a', 'b']);
+    expect(harness.table.find({ partition_key: 'week:us:1' }).map((row) => row.id)).toEqual(['a', 'b']);
   });
 
   it('reaches the key through `key.of`, so a read over the record declares no partition', async () => {
-    const harness = makeStats();
-    const ids = harness.stats.read<Args, string[]>()({
+    const harness = makeMetrics();
+    const ids = harness.metrics.read<Args, string[]>()({
       select: (_args, key) => harness.table.find({ partition_key: key }).map((row) => row.id),
       empty: [],
     });
 
-    await harness.stats.lifecycle.fetch({ partition: WEEK1 });
+    await harness.metrics.lifecycle.fetch({ partition: WEEK1 });
 
     // A fresh object equal to `WEEK1`: the record's hash is what addresses the partition.
-    expect(ids.getValue({ partition: { request: 'week', sport: 'nfl', week: 1 } })).toEqual(['a', 'b']);
+    expect(ids.getValue({ partition: { request: 'week', region: 'us', week: 1 } })).toEqual(['a', 'b']);
   });
 
   it('interns the records a read names, so the read names partitions rather than keys', async () => {
-    const harness = makeStats();
-    const game: Spec = { request: 'game', sport: 'nfl' };
-    const ids = harness.stats.readMany<{ specs: Spec[] }, string[]>()({
+    const harness = makeMetrics();
+    const event: Spec = { request: 'event', region: 'us' };
+    const ids = harness.metrics.readMany<{ specs: Spec[] }, string[]>()({
       partitions: (args) => args.specs,
       select: (_args, keys) => keys.flatMap((key) => harness.table.find({ partition_key: key }).map((row) => row.id)),
       empty: [],
     });
 
-    ids.getValue({ specs: [WEEK1, game] });
+    ids.getValue({ specs: [WEEK1, event] });
 
-    expect(harness.queried).toEqual([WEEK1, game]);
+    expect(harness.queried).toEqual([WEEK1, event]);
   });
 
   it('takes the partitions off args named `partitions`, so a read that spans the ones it was handed says nothing', async () => {
-    const harness = makeStats();
-    const ids = harness.stats.readMany<{ partitions: Spec[] }, string[]>()({
+    const harness = makeMetrics();
+    const ids = harness.metrics.readMany<{ partitions: Spec[] }, string[]>()({
       select: (_args, keys) => keys.flatMap((key) => harness.table.find({ partition_key: key }).map((row) => row.id)),
       empty: [],
     });
 
-    await harness.stats.lifecycle.fetch({ partition: WEEK1 });
+    await harness.metrics.lifecycle.fetch({ partition: WEEK1 });
 
     expect(ids.getValue({ partitions: [WEEK1] })).toEqual(['a', 'b']);
   });
 
   it('keeps an absent partition as a gap, so a result stays parallel to the list the caller named', async () => {
-    const harness = makeStats();
-    const seen = harness.stats.readMany<{ specs: (Spec | null)[] }, boolean[]>()({
+    const harness = makeMetrics();
+    const seen = harness.metrics.readMany<{ specs: (Spec | null)[] }, boolean[]>()({
       partitions: (args) => args.specs,
       select: (_args, keys) => keys.map(Boolean),
       empty: [],
     });
 
-    await harness.stats.lifecycle.fetch({ partition: WEEK1 });
+    await harness.metrics.lifecycle.fetch({ partition: WEEK1 });
     harness.queried.length = 0;
 
     expect(seen.getValue({ specs: [WEEK1, null] })).toEqual([true, false]);
@@ -430,52 +430,52 @@ describe('definePartitions — a store whose partition is a record, interned to 
   });
 
   it('groups partitions parallel to what the caller asked about, so `select` does no index arithmetic', async () => {
-    const harness = makeStats();
-    const game: Spec = { request: 'game', sport: 'nfl' };
-    const perPlayer = harness.stats.readGrouped<{ players: { candidates: Spec[] }[] }, number[]>()({
-      groups: (args) => args.players.map((player) => player.candidates),
+    const harness = makeMetrics();
+    const event: Spec = { request: 'event', region: 'us' };
+    const perItem = harness.metrics.readGrouped<{ items: { candidates: Spec[] }[] }, number[]>()({
+      groups: (args) => args.items.map((item) => item.candidates),
       select: (_args, groups) => groups.map((keys) => keys.reduce((total, key) => total + harness.table.find({ partition_key: key }).length, 0)),
       empty: [],
     });
 
-    await harness.stats.lifecycle.fetch({ partition: WEEK1 });
+    await harness.metrics.lifecycle.fetch({ partition: WEEK1 });
 
-    expect(perPlayer.getValue({ players: [{ candidates: [WEEK1, game] }, { candidates: [game] }] })).toEqual([2, 0]);
+    expect(perItem.getValue({ items: [{ candidates: [WEEK1, event] }, { candidates: [event] }] })).toEqual([2, 0]);
   });
 
   it('keeps a partition warm by re-interning it on every path that names it, rather than only at declaration', () => {
-    const harness = makeStats();
-    const game: Spec = { request: 'game', sport: 'nfl' };
-    const ids = harness.stats.read<Args, string[]>()({ select: () => [], empty: [] });
+    const harness = makeMetrics();
+    const event: Spec = { request: 'event', region: 'us' };
+    const ids = harness.metrics.read<Args, string[]>()({ select: () => [], empty: [] });
 
     ids.getValue({ partition: WEEK1 });
-    ids.getValue({ partition: game });
+    ids.getValue({ partition: event });
     ids.getValue({ partition: WEEK1 });
 
-    expect(() => harness.stats.lifecycle.getVersion({ partition: WEEK1 })).not.toThrow();
-    expect(() => harness.stats.lifecycle.getVersion({ partition: game })).not.toThrow();
+    expect(() => harness.metrics.lifecycle.getVersion({ partition: WEEK1 })).not.toThrow();
+    expect(() => harness.metrics.lifecycle.getVersion({ partition: event })).not.toThrow();
   });
 
   it('takes args, not keys, throughout `lifecycle`, so a backend publishes the group as-is', async () => {
-    const harness = makeStats();
+    const harness = makeMetrics();
     const args: Args = { partition: WEEK1 };
 
-    expect(harness.stats.lifecycle.has(args)).toBe(false);
-    await harness.stats.lifecycle.fetch(args);
+    expect(harness.metrics.lifecycle.has(args)).toBe(false);
+    await harness.metrics.lifecycle.fetch(args);
 
-    expect(harness.stats.lifecycle.has(args)).toBe(true);
-    expect(harness.stats.lifecycle.getVersion(args)).toBe(1);
-    expect(harness.stats.lifecycle.getFetchedAt(args)).toBeGreaterThan(0);
+    expect(harness.metrics.lifecycle.has(args)).toBe(true);
+    expect(harness.metrics.lifecycle.getVersion(args)).toBe(1);
+    expect(harness.metrics.lifecycle.getFetchedAt(args)).toBeGreaterThan(0);
   });
 });
 
 describe('definePartitions — args that resolve to no partition at all', () => {
-  type StatRow = { partition_key: string; id: string };
-  type Spec = { sport: string; week: number };
+  type MetricRow = { partition_key: string; id: string };
+  type Spec = { region: string; week: number };
   /** Args as a screen holds them, before the values that name a partition have arrived. */
-  type Args = { sport?: string; week?: number };
+  type Args = { region?: string; week?: number };
 
-  const SCHEMA: RowTableSchema<StatRow> = {
+  const SCHEMA: RowTableSchema<MetricRow> = {
     table: 'loose',
     columns: { partition_key: { type: 'TEXT' }, id: { type: 'TEXT' } },
     primaryKey: ['partition_key', 'id'],
@@ -486,13 +486,13 @@ describe('definePartitions — args that resolve to no partition at all', () => 
     const table = createMemoryRowTable(SCHEMA);
     table.init();
     const queried: Spec[] = [];
-    const loose = definePartitions<StatRow, string, Args, Spec>({
+    const loose = definePartitions<MetricRow, string, Args, Spec>({
       name: 'loose',
       table,
       version: createVersionAtom(`define_partitions_loose_${Math.random()}`),
       key: {
-        of: (args) => (args.sport && args.week ? { sport: args.sport, week: args.week } : null),
-        id: (spec) => `${spec.sport}:${spec.week}`,
+        of: (args) => (args.region && args.week ? { region: args.region, week: args.week } : null),
+        id: (spec) => `${spec.region}:${spec.week}`,
         where: (key) => ({ partition_key: key }),
       },
       fetch: {
@@ -514,22 +514,22 @@ describe('definePartitions — args that resolve to no partition at all', () => 
   it('reads as empty and fetches nothing while a value that names the partition is missing', () => {
     const harness = makeLoose();
 
-    expect(harness.ids.getValue({ sport: 'nfl' })).toEqual([]);
+    expect(harness.ids.getValue({ region: 'us' })).toEqual([]);
     expect(harness.queried).toEqual([]);
   });
 
   it('reads the partition once the missing value arrives, so the same args resolve when they are complete', async () => {
     const harness = makeLoose();
 
-    await harness.loose.lifecycle.fetch({ sport: 'nfl', week: 1 });
+    await harness.loose.lifecycle.fetch({ region: 'us', week: 1 });
 
-    expect(harness.ids.getValue({ sport: 'nfl', week: 1 })).toEqual(['a']);
-    expect(harness.queried).toContainEqual({ sport: 'nfl', week: 1 });
+    expect(harness.ids.getValue({ region: 'us', week: 1 })).toEqual(['a']);
+    expect(harness.queried).toContainEqual({ region: 'us', week: 1 });
   });
 
   it('leaves every lifecycle member inert, rather than asking about a partition that has no address', async () => {
     const harness = makeLoose();
-    const partial: Args = { sport: 'nfl' };
+    const partial: Args = { region: 'us' };
     invalidateMock.mockClear();
 
     await harness.loose.lifecycle.fetch(partial);

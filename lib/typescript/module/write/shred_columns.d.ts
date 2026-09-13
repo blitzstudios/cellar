@@ -54,7 +54,7 @@ interface NativeShredColumns {
 /**
  * Whether every column carries an `op`. A table one column short of a native shred cannot produce a bind order that
  * matches its columns, so it offers neither member rather than throwing when something reaches for one — which means
- * a store like `schedule`, whose payload is small enough to shred in JS, never declares an `op` it has no use for.
+ * a store like `catalog`, whose payload is small enough to shred in JS, never declares an `op` it has no use for.
  */
 type EveryColumnShreds<Columns extends readonly ShredColumn<never, never>[]> = Columns[number] extends {
     op: ShredOp;
@@ -66,7 +66,7 @@ export type ShredColumns<Columns extends readonly ShredColumn<never, never>[], S
  * second, matching how a read is declared:
  *
  * ```ts
- * const playerShred = defineShredColumns<Player, PlayerShredCtx>()(PLAYER_SHRED_COLUMNS);
+ * const itemShred = defineShredColumns<Item, ItemShredCtx>()(ITEM_SHRED_COLUMNS);
  * ```
  */
 export declare function defineShredColumns<Src, Ctx = void>(): <const Columns extends readonly ShredColumn<Src, Ctx>[]>(columns: Columns) => ShredColumns<Columns, Src, Ctx>;

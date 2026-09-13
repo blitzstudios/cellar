@@ -55,7 +55,7 @@ export interface WindowedList<Params, Row extends object, Detail> {
 export declare function useWindowedDetail<D>(prehydrated: D | undefined, id: string, blockIds: readonly string[] | undefined, useDetailByIds: (ids: readonly string[], enabled: boolean) => Record<string, D> | undefined): D | undefined;
 /**
  * Builds one, for a virtualized list too long to hydrate whole whose rows still need detail the list itself does not
- * carry — a ranked player list, where the rows on screen are a few dozen out of thousands. The alternative is a read
+ * carry — a ranked row list, where the rows on screen are a few dozen out of thousands. The alternative is a read
  * per row, which is one subscription and one hydration per row on screen: the fan-out the read surface warns about.
  */
 export declare function createWindowedList<Params, Row extends object, Detail>(spec: WindowedListSpec<Params, Row, Detail>): WindowedList<Params, Row, Detail>;

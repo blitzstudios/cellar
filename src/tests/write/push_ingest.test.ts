@@ -78,70 +78,70 @@ describe('create_push_ingest', () => {
 
   it('coalesces a burst into one write per partition and wakes each reader once', async () => {
     const harness = setup({ chunk: 10 });
-    harness.push.queue('nfl:1', { id: 'a', value: 1 });
-    harness.push.queue('nfl:1', { id: 'b', value: 2 });
-    harness.push.queue('nfl:2', { id: 'c', value: 3 });
+    harness.push.queue('us:1', { id: 'a', value: 1 });
+    harness.push.queue('us:1', { id: 'b', value: 2 });
+    harness.push.queue('us:2', { id: 'c', value: 3 });
 
     expect(harness.upsert).not.toHaveBeenCalled();
     await flush();
 
     expect(harness.batches).toEqual([
       [
-        { id: 'a', partition_key: 'nfl:1', value: 1 },
-        { id: 'b', partition_key: 'nfl:1', value: 2 },
+        { id: 'a', partition_key: 'us:1', value: 1 },
+        { id: 'b', partition_key: 'us:1', value: 2 },
       ],
-      [{ id: 'c', partition_key: 'nfl:2', value: 3 }],
+      [{ id: 'c', partition_key: 'us:2', value: 3 }],
     ]);
-    expect(harness.bumps).toEqual(['nfl:1', 'nfl:2']);
-    expect(harness.writes).toEqual(['nfl:1', 'nfl:2']);
+    expect(harness.bumps).toEqual(['us:1', 'us:2']);
+    expect(harness.writes).toEqual(['us:1', 'us:2']);
   });
 
   it('keeps the last item under an id, so a burst repeating one thing is still one row', async () => {
     const harness = setup();
-    harness.push.queue('nfl:1', { id: 'a', value: 1 });
-    harness.push.queue('nfl:1', { id: 'a', value: 9 });
+    harness.push.queue('us:1', { id: 'a', value: 1 });
+    harness.push.queue('us:1', { id: 'a', value: 9 });
     await flush();
 
-    expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'nfl:1', value: 9 }]]);
+    expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'us:1', value: 9 }]]);
   });
 
   it('splits a partition into chunks of the configured size', async () => {
     const harness = setup({ chunk: 2 });
-    for (const id of ['a', 'b', 'c']) harness.push.queue('nfl:1', { id, value: 1 });
+    for (const id of ['a', 'b', 'c']) harness.push.queue('us:1', { id, value: 1 });
     await flush();
 
     expect(harness.batches.map((batch) => batch.length)).toEqual([2, 1]);
-    expect(harness.bumps).toEqual(['nfl:1']);
+    expect(harness.bumps).toEqual(['us:1']);
   });
 
   describe('holds', () => {
     it('buffers a held partition and writes it on release', async () => {
       const harness = setup();
-      const release = harness.push.hold('nfl:1');
-      harness.push.queue('nfl:1', { id: 'a', value: 1 });
+      const release = harness.push.hold('us:1');
+      harness.push.queue('us:1', { id: 'a', value: 1 });
       await flush();
       expect(harness.upsert).not.toHaveBeenCalled();
 
       release();
       await flush();
-      expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'nfl:1', value: 1 }]]);
+      expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'us:1', value: 1 }]]);
     });
 
     it('does not hold up a partition nobody is fetching', async () => {
       const harness = setup();
-      harness.push.hold('nfl:1');
-      harness.push.queue('nfl:1', { id: 'a', value: 1 });
-      harness.push.queue('nfl:2', { id: 'b', value: 2 });
+      harness.push.hold('us:1');
+      harness.push.queue('us:1', { id: 'a', value: 1 });
+      harness.push.queue('us:2', { id: 'b', value: 2 });
       await flush();
 
-      expect(harness.bumps).toEqual(['nfl:2']);
+      expect(harness.bumps).toEqual(['us:2']);
     });
 
     it('is reference-counted, so overlapping fetches both have to finish', async () => {
       const harness = setup();
-      const first = harness.push.hold('nfl:1');
-      const second = harness.push.hold('nfl:1');
-      harness.push.queue('nfl:1', { id: 'a', value: 1 });
+      const first = harness.push.hold('us:1');
+      const second = harness.push.hold('us:1');
+      harness.push.queue('us:1', { id: 'a', value: 1 });
 
       first();
       await flush();
@@ -149,14 +149,14 @@ describe('create_push_ingest', () => {
 
       second();
       await flush();
-      expect(harness.bumps).toEqual(['nfl:1']);
+      expect(harness.bumps).toEqual(['us:1']);
     });
 
     it('ignores a release called twice, so one fetch cannot unhold another', async () => {
       const harness = setup();
-      const first = harness.push.hold('nfl:1');
-      harness.push.hold('nfl:1');
-      harness.push.queue('nfl:1', { id: 'a', value: 1 });
+      const first = harness.push.hold('us:1');
+      harness.push.hold('us:1');
+      harness.push.queue('us:1', { id: 'a', value: 1 });
 
       first();
       first();
@@ -179,27 +179,27 @@ describe('create_push_ingest', () => {
     it('requeues a failed batch and retries it after the delay', async () => {
       const harness = setup({ chunk: 10, retryDelayMs: 1000 });
       harness.failNext(1);
-      harness.push.queue('nfl:1', { id: 'a', value: 1 });
+      harness.push.queue('us:1', { id: 'a', value: 1 });
 
       await flush();
       expect(harness.batches).toEqual([]);
       expect(harness.bumps).toEqual([]);
 
       await flush(1000);
-      expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'nfl:1', value: 1 }]]);
-      expect(harness.bumps).toEqual(['nfl:1']);
+      expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'us:1', value: 1 }]]);
+      expect(harness.bumps).toEqual(['us:1']);
     });
 
     it('lets a newer push win over the one being retried', async () => {
       const harness = setup({ chunk: 10, retryDelayMs: 1000 });
       harness.failNext(1);
-      harness.push.queue('nfl:1', { id: 'a', value: 1 });
+      harness.push.queue('us:1', { id: 'a', value: 1 });
       await flush();
 
-      harness.push.queue('nfl:1', { id: 'a', value: 99 });
+      harness.push.queue('us:1', { id: 'a', value: 99 });
       await flush(1000);
 
-      expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'nfl:1', value: 99 }]]);
+      expect(harness.batches).toEqual([[{ id: 'a', partition_key: 'us:1', value: 99 }]]);
     });
   });
 });

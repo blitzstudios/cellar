@@ -3,10 +3,10 @@ import { pairRead } from '../../read/facade';
 import { makeResult } from '../../store_result';
 
 describe('pairRead', () => {
-  type Args = { sport: string; team: string; ids: readonly string[] };
+  type Args = { region: string; cohort: string; ids: readonly string[] };
 
   /** A read as `definePartitions` publishes one: it carries the fields it waits on, which is the pair's whole gate. */
-  const fakeRead = (requires: readonly string[] = ['sport', 'team']) => {
+  const fakeRead = (requires: readonly string[] = ['region', 'cohort']) => {
     const calls: { get: unknown[]; use: unknown[] } = { get: [], use: [] };
     const read: Read<Args, string> = {
       getValue: (args) => {
@@ -26,20 +26,20 @@ describe('pairRead', () => {
     const { read, calls } = fakeRead();
     const pair = pairRead(() => read);
 
-    pair.getValue({ params: { sport: 'nfl', team: 'PHI' } });
-    pair.useValue({ params: { sport: 'nfl', team: 'PHI' } });
+    pair.getValue({ params: { region: 'us', cohort: 'PHI' } });
+    pair.useValue({ params: { region: 'us', cohort: 'PHI' } });
 
-    expect(calls.get).toEqual([{ sport: 'nfl', team: 'PHI' }]);
-    expect(calls.use).toEqual([[{ sport: 'nfl', team: 'PHI' }, undefined]]);
+    expect(calls.get).toEqual([{ region: 'us', cohort: 'PHI' }]);
+    expect(calls.use).toEqual([[{ region: 'us', cohort: 'PHI' }, undefined]]);
   });
 
   it('passes `options` to the hook half', () => {
     const { read, calls } = fakeRead();
     const pair = pairRead(() => read);
 
-    pair.useValue({ params: { sport: 'nfl', team: 'PHI' }, options: { enabled: false } });
+    pair.useValue({ params: { region: 'us', cohort: 'PHI' }, options: { enabled: false } });
 
-    expect(calls.use).toEqual([[{ sport: 'nfl', team: 'PHI' }, { enabled: false }]]);
+    expect(calls.use).toEqual([[{ region: 'us', cohort: 'PHI' }, { enabled: false }]]);
   });
 
   it.each([
@@ -50,8 +50,8 @@ describe('pairRead', () => {
     const { read, calls } = fakeRead();
     const pair = pairRead(() => read);
 
-    pair.getValue({ params: { sport: 'nfl', team: absent } });
-    pair.useValue({ params: { sport: 'nfl', team: absent } });
+    pair.getValue({ params: { region: 'us', cohort: absent } });
+    pair.useValue({ params: { region: 'us', cohort: absent } });
 
     expect(calls.get).toEqual([undefined]);
     expect(calls.use).toEqual([[undefined, undefined]]);
@@ -74,7 +74,7 @@ describe('pairRead', () => {
     const { read } = fakeRead();
     const pair = pairRead(() => ({ ...read, requires: undefined }));
 
-    expect(() => pair.getValue({ params: { sport: 'nfl', team: 'PHI' } })).toThrow(/gate on nothing/);
+    expect(() => pair.getValue({ params: { region: 'us', cohort: 'PHI' } })).toThrow(/gate on nothing/);
   });
 
   it('resolves the read per call, so a backend swapped at runtime is picked up', () => {
@@ -83,11 +83,11 @@ describe('pairRead', () => {
     let current = first;
     const pair = pairRead(() => current.read);
 
-    pair.getValue({ params: { sport: 'nfl', team: '1' } });
+    pair.getValue({ params: { region: 'us', cohort: '1' } });
     current = second;
-    pair.getValue({ params: { sport: 'nfl', team: '2' } });
+    pair.getValue({ params: { region: 'us', cohort: '2' } });
 
-    expect(first.calls.get).toEqual([{ sport: 'nfl', team: '1' }]);
-    expect(second.calls.get).toEqual([{ sport: 'nfl', team: '2' }]);
+    expect(first.calls.get).toEqual([{ region: 'us', cohort: '1' }]);
+    expect(second.calls.get).toEqual([{ region: 'us', cohort: '2' }]);
   });
 });

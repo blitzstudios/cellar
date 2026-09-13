@@ -6,11 +6,11 @@ import { itDev, itProd } from '../../testing/dev_mode';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { guardedConnection, readRows, runBatch, SqliteConnection } from '../../table/connection';
 
-type Thing = { id: string; sport: string };
+type Thing = { id: string; region: string };
 
 const schema: RowTableSchema<Thing> = {
   table: 'things',
-  columns: { id: { type: 'TEXT' }, sport: { type: 'TEXT' } },
+  columns: { id: { type: 'TEXT' }, region: { type: 'TEXT' } },
   primaryKey: ['id'],
 };
 
@@ -131,8 +131,8 @@ describe('kernel degradation', () => {
       buildBackend: () => ({ reads: { tag: 'memory' } }),
     });
     kernel.setBackend({ reads: { tag: 'sqlite' } });
-    kernel.version.subscribe(['nfl'], bumped);
-    kernel.version.bump(['nfl']);
+    kernel.version.subscribe(['us'], bumped);
+    kernel.version.bump(['us']);
     bumped.mockClear();
 
     kernel.degrade({ context: 'disk went away' });
@@ -237,11 +237,11 @@ describe('a native shred the driver refuses', () => {
     const table = createSqliteRowTable(schema, guardedConnection(conn, onFatal), {
       specs: { all: {} as never },
       variant: () => 'all',
-      binds: (scope) => [String(scope.sport)],
+      binds: (scope) => [String(scope.region)],
     });
-    const parseRows = jest.fn(() => [{ id: 'a', sport: 'nfl' }]);
+    const parseRows = jest.fn(() => [{ id: 'a', region: 'us' }]);
 
-    const count = await table.shred({ sport: 'nfl' }, '[{"id":"a"}]', parseRows);
+    const count = await table.shred({ region: 'us' }, '[{"id":"a"}]', parseRows);
 
     expect(parseRows).toHaveBeenCalled();
     expect(count).toBe(1);
@@ -259,8 +259,8 @@ describe('a degraded store still answers', () => {
     );
     rowTable.init();
 
-    expect(rowTable.find({ sport: 'nfl' })).toEqual([]);
+    expect(rowTable.find({ region: 'us' })).toEqual([]);
     expect(rowTable.getOne({ id: 'a' })).toBeUndefined();
-    expect(rowTable.has({ sport: 'nfl' })).toBe(false);
+    expect(rowTable.has({ region: 'us' })).toBe(false);
   });
 });

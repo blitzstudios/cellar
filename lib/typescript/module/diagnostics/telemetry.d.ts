@@ -5,7 +5,7 @@
  */
 /** Files one degradation, at most once per `scope` per session. */
 export declare function reportStoreDegradation(args: {
-    /** Stable, queryable site identifier, e.g. `row_table.native_shred.player_stats`. */
+    /** Stable, queryable site identifier, e.g. `row_table.native_shred.leaderboard`. */
     scope: string;
     context: string;
     error?: unknown;
