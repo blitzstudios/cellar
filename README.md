@@ -34,7 +34,7 @@ in-memory row table, which is what web and tests use.
 
 ```jsonc
 // package.json
-"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.6.0-gitpkg"
+"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.6.1-gitpkg"
 ```
 
 ## Quick start
