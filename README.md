@@ -1,523 +1,310 @@
 # `@sleeperhq-private/react-data-kernel`
 
-The kernel behind an app's off-heap accessor stores. It exists so large reference datasets stay **off the JS
-heap** — in SQLite on mobile — and only the on-screen slice is ever materialized in JS.
+A SQLite-backed data layer for React. Large datasets live in the database instead of on the JS heap, and only
+the slice that is on screen is ever materialized in JS.
 
-The stores themselves live in the consuming app; this package is the vocabulary they are written in. So what
-follows describes the pieces and the rules they impose, and stops there. How a given app lays a store out across
-files, and which of its stores to copy when adding another, belongs to that app's own store guide — where the
-stores are real and can be read.
+Underneath, that is all this is: a reactive wrapper around a SQLite database. You declare a table, how a slice of
+it is fetched, and what each read hands back. The kernel owns the SQL, the conditional fetch, the caching and the
+re-render.
 
-## Installing and wiring it up
+```ts
+const { data: items, isLoading } = GroupItems.useValue({ params: { groupId } });
+```
+
+That read is subscribed to one slice of one table. It fetches the slice if the database doesn't have it yet,
+re-renders when a row in it changes, and re-renders nothing when a row outside it does.
+
+## Why
+
+A reference dataset held in JS costs heap for as long as the process lives — every object, on every launch,
+whether or not anything is on screen, plus whatever the garbage collector spends walking it. Held in SQLite, the
+resident cost is the slice being looked at.
+
+Doing that one dataset at a time by hand means re-solving the same problems each time: a schema and its
+migrations, a conditional fetch, rows back into view models, invalidation, and getting React to re-render the
+components that care and no others. That is what this package is.
+
+## Requirements
+
+React 17 or newer and `@tanstack/query-core` 4 or newer. SQLite comes from `react-native-nitro-sqlite` and is
+reached through the `./nitro` entry point; with no native database the kernel runs the same stores over an
+in-memory row table, which is what web and tests use.
+
+## Install
 
 ```jsonc
 // package.json
 "@sleeperhq-private/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.5.8-gitpkg"
 ```
 
-Three entry points:
+## Quick start
 
-| entry | holds | imported by |
-| --- | --- | --- |
-| `@sleeperhq-private/react-data-kernel` | everything a store, a service or a screen writes against | stores, services, screens |
-| `…/nitro` | `openNitroConnection` and `bindSqliteStore`, over `react-native-nitro-sqlite` | the app's startup, on device |
-| `…/testing` | a real SQLite engine off-device, a test version atom, the host services as spies, and the kernel internals only a test reaches for | a store's own tests |
+A store is a table, a key that divides it into fetchable slices, and one or more reads. The store below holds
+items belonging to a group, fetched one group at a time.
 
-The core entry runs anywhere React does; only `./nitro` touches native code. Each subpath is declared twice — in
-`exports`, and as a stub `package.json` beside `lib/` — because the app's TypeScript and Metro still resolve the
-way Node did before `exports` existed.
+### 1. Declare the columns
 
-**The host installs two services before it binds any backend**, and until it does the kernel stays inert — a
-store reads the rows it already holds, and nothing fetches:
+One entry per persisted column. The row type and the `CREATE TABLE` are both generated from this, so adding a
+field means adding a column here and nothing else.
 
 ```ts
-configureDataKernel({
-  errors: { captureException, captureMessage },  // where a degradation report goes
-  query: { client: () => queryClient, useQuery, useQueries },  // the React Query runtime an ingest mounts on
-});
+import { defineShredColumns, RowOf, RowTableSchema, ShredColumn } from '@sleeperhq-private/react-data-kernel';
+
+type RawItem = { id: string; name?: string; rank?: number };
+/** Values that belong to the slice rather than to the payload. */
+type ItemCtx = { groupId: string };
+
+export const ITEM_COLUMNS = [
+  { name: 'group_id', type: 'TEXT', notNull: true, js: (_item: RawItem, ctx: ItemCtx): string => ctx.groupId },
+  { name: 'item_id', type: 'TEXT', notNull: true, js: (item: RawItem): string => item.id },
+  { name: 'name', type: 'TEXT', js: (item: RawItem) => item.name ?? null },
+  { name: 'rank', type: 'INTEGER', js: (item: RawItem) => item.rank ?? null },
+] as const satisfies readonly ShredColumn<RawItem, ItemCtx>[];
+
+export type ItemRow = RowOf<typeof ITEM_COLUMNS>;
+export const itemShred = defineShredColumns<RawItem, ItemCtx>()(ITEM_COLUMNS);
+
+export const itemSchema: RowTableSchema<ItemRow> = {
+  table: 'items',
+  columns: itemShred.columnDefs,
+  primaryKey: ['group_id', 'item_id'],
+  indexes: [{ name: 'idx_items_group', columns: ['group_id'] }],
+  // Where the per-slice ETag is kept, so a refetch can come back 304.
+  meta: { table: 'items_meta', keyColumns: ['group_id'], column: 'etag' },
+};
 ```
 
-`useQuery` and `useQueries` are hooks, so an app passes its own focus-gated drop-ins and keeps that policy.
+### 2. Define the slices and the reads
 
-**`lib/` is committed.** The workspace that consumes this installs with `enableScripts: false`, so a gitpkg
-install never runs `prepare`; a change to `src/` is not published until `yarn build` runs and the output is
-committed and tagged.
+`definePartitions` asks one question — where does one slice's rows live? — and derives the rest from the answer:
+presence, what a fetch replaces, where the ETag goes, what a write bumps. `read` then turns a slice of rows into
+whatever the screen actually wants.
 
----
+```ts
+import { definePartitions, rowsOf, RowTable, VersionAtom } from '@sleeperhq-private/react-data-kernel';
 
-## Three words, kept apart
+export type ItemKey = { groupId: string };
+export type ItemVM = { id: string; name: string };
 
-They nest, and mixing them up is the fastest way to misread any file here:
+const NO_ITEMS: ItemVM[] = [];
+const toVM = (row: ItemRow): ItemVM => ({ id: row.item_id, name: row.name ?? '' });
 
-- a **table** (`RowTable`) is the rows themselves — SQLite on mobile, a `Map` on web and in tests;
-- a **partition** is one addressable slice of a table: the unit a fetch replaces, a version tracks, and an ETag
-  belongs to. A store has as many as its callers ask for — one per region, or thousands, one per entity;
-- a **store** is the feature module wrapping both, declared by `defineSqliteStore`.
+export type ItemBackend = ReturnType<typeof buildItemBackend>;
 
-`definePartitions` is the middle layer: one table, divided into partitions, that a backend reads and
-fetches through.
+export function buildItemBackend(table: RowTable<ItemRow>, version: VersionAtom) {
+  table.init();
+  const rows = rowsOf(table);
 
----
-
-## Two kinds of store
-
-They differ enough in size that picking the wrong one is the most expensive mistake available here:
-
-| kind | what it does | you write |
-| --- | --- | --- |
-| **Normal store** | Fetch a dataset, keep it off-heap, read a **bounded slice** and select it into a VM in JS. | a schema, VM types, mappers, a backend that composes the kernel. |
-| **Native-compute store** (advanced) | Everything above **plus** a whole-collection compute — rank, sum, top-N over _everything_ — done _inside SQLite_, so the collection never crosses into JS. | all of the above **plus** a bespoke SQL compute engine, which this package does not supply. |
-
-The native-compute tier exists for one problem: a read whose answer depends on the whole collection, where
-materializing that collection in JS to compute it would cost more than the read is worth. It is a second layer
-of SQL, and a store that adopts it without that problem pays for it and gets nothing. If your read is "give me
-this region's items" — a bounded slice — you never touch it.
-
-Everything below is the normal store. The kernel's one concession to the other tier is `sqliteCapabilities`,
-which hands an accelerator the live connection.
-
----
-
-## What the kernel gives you (the reusable half)
-
-Everything in this folder is shared and already tested. You compose these; you don't reimplement them.
-
-A note on reach: `index.ts` exports what a store, a service or a screen writes against. The pieces `definePartitions`
-and `defineSqliteStore` are themselves built out of — the spine, the read surface, the fetch ingest, the SQL batch and
-migration helpers — are described below but deliberately absent from it. Wanting one of them by name usually means a
-store is reaching past its entry point; import it from its own module only if you are working on the kernel itself.
-
-- **`defineSqliteStore`** — a store's whole spine in one descriptor: the version atom, the one slot holding the
-  active backend, the in-memory default for web and tests, the SQLite builder startup binds, and the degrade
-  path back to that default when a statement fails mid-session.
-- **`createRowTable` (`createSqliteRowTable` / `createMemoryRowTable`)** — the off-heap row engine from a
-  schema: `find` / `findIn` (indexed slice reads), `has`, `getMeta` / `setMeta` (ETags), and three writes.
-  SQLite on mobile, in-memory on web/test — same interface.
-
-  **The three writes.** `upsert(rows)` merges by primary key and removes nothing, chunked off-thread — what a
-  socket delta wants. `overwrite(where, rows)` makes the slice matching `where` be exactly `rows`, deleting first
-  in one transaction. `shred(where, rawJson, parse)` is that same replacement from an undecoded body, shredded in
-  C++ so the payload never becomes a JS object graph. Only `overwrite` and `shred` name a slice, because only they
-  delete; and in DEV every row they write is checked against the filter it was written under.
-
-  **Changing a schema.** Edit the schema and ship it; there is no migration to write. `init` stamps a fingerprint
-  of everything it builds — columns, primary key, indexes, the ETag side-table, the shred spec — into
-  `PRAGMA user_version`, and a database whose stamp doesn't match is migrated on the spot. There are two ways that
-  can go, and which one you get is worth knowing before you edit:
-
-  - **A widening**, where the declaration only *added* columns. The table is kept and each new column arrives by
-    `ALTER TABLE ADD COLUMN`, so not one row is lost. This is the case worth having: a schema whose columns are
-    generated from a catalog — the metric keys a category publishes — gains a column every time the catalog does, and
-    dropping a user's whole table to add one costs them a refetch for nothing. The added columns are `NULL` in every
-    row that predates them, so the ETags go even though the rows stay: keeping one would answer the fetch that fills
-    them with a 304.
-  - **A rebuild**, for everything else — a changed key, a changed index, a renamed ETag table, a shred op that now
-    fills a column it already had from a different path. Each of those restates rows already on disk, and no
-    `ALTER TABLE` can restate them, so the table is dropped and refilled from the next fetch. A half-migrated table
-    fails silently instead (a stale primary key turns ingest's `INSERT OR REPLACE` back into `INSERT`).
-
-  Telling those apart takes two stamps, because a fingerprint that no longer matches can't say *what* moved:
-  `PRAGMA user_version` holds the whole declaration's, and `PRAGMA application_id` holds the same hash with the
-  columns left out — the table's, and the shred spec's `columns`/`ops` with them, since a spec is index-aligned with
-  the table and a generated column arrives together with the op that fills it. Structure stamp equal and columns only
-  added ⇒ widen; anything else ⇒ rebuild. A database built before the second stamp existed reads it as `0`, so its
-  next schema change is one last rebuild, and every widening after that is free. The stamps are also what make an
-  index edit take effect at all: `CREATE INDEX IF NOT EXISTS` is a no-op against an index of the same name over
-  different columns, and `PRAGMA table_info` doesn't report indexes. Two fields on the schema go with them:
-
-  - `pushFed: true` — for a store fed by socket as well as fetch. A rebuild there loses whatever arrived by push
-    since the last fetch, so one files a sampled `info` notice naming the table. It does **not** throw, in `__DEV__`
-    or anywhere else: `init` stamps the schema last, so refusing the rebuild would leave the stale stamp on disk and
-    bind the in-memory backend on every launch after — permanently slower than the heap it replaced, over a change
-    someone shipped on purpose. Catch the edit where the edit happens, by pinning the store's column set in a test.
-  - `rebuildVersion` — bump to force a rebuild for something the stamps can't see, and it is part of the structure
-    stamp, so bumping it is never mistaken for a widening. Two things need it. One is a row builder written in JS
-    with no shred spec beside it: a change there leaves rows stale rather than malformed, and the stored ETag will
-    304 the correction away. The other is repointing a shred op on a column that already exists *in the same release
-    that adds a column* — alone that rebuilds (a plan with nothing to add is a rebuild), but alongside an addition it
-    reads as a widening and the old values under the repointed column stay. Bumping this drops the ETags with the
-    rows, which makes the next fetch a real one.
-
-  **The shred spec is part of the fingerprint, which is why `NativeShredSpec` holds a `specs` map keyed by
-  variant.** The fingerprint has to hash every spec a store can shred through, so the specs have to be
-  enumerable. If your spec varies — different columns per category, say — enumerate the variants and give
-  `variant(scope)` the job of picking one. Naming a variant that isn't in the map falls back to the JS parse path
-  rather than shredding through `undefined`.
-- **`definePartitions`** — **how your rows are divided into fetchable units, and the thing you actually write.**
-  It asks one question — *where does one partition's rows live?* — and derives the rest of the plumbing from the
-  answer:
-
-  ```ts
-  const myPartitions = definePartitions<MyRow, MyKey>({
-    name: 'my_store',
+  const items = definePartitions<ItemRow, ItemKey>({
+    name: 'items',
     table,
     version,
     key: {
-      fields: ['groupId', 'itemType'],
-      where: ({ groupId, itemType }) => ({ group_id: groupId, item_type: itemType }),
+      fields: ['groupId'],
+      where: ({ groupId }) => ({ group_id: groupId }),
     },
     fetch: {
-      query: (key, etag) => buildMyRawQuery(key, etag),
-      parse: (key, rawJson) => buildMyRows(key, JSON.parse(rawJson)),
+      query: ({ groupId }, etag) => ({
+        queryFn: async () => {
+          const response = await fetch(`/groups/${groupId}/items`, { headers: etag ? { 'If-None-Match': etag } : {} });
+          return { data: await response.text(), etag: response.headers.get('etag') ?? undefined };
+        },
+      }),
+      parse: ({ groupId }, rawJson) => (JSON.parse(rawJson) as RawItem[]).map((item) => itemShred.row(item, { groupId })),
     },
   });
-  ```
 
-  `key.where` is a `WHERE` over your table — the same shape `table.find` takes — and it locates the partition for
-  every operation the kernel runs on your behalf: reading and writing its ETag (`table.getMeta`/`setMeta`),
-  testing whether it holds rows yet (`table.has`), replacing its rows on ingest, and bumping its version on a
-  write.
-
-  `key.fields` names the key's fields in the order they are spelled into the version and query keys, and that
-  ordering is the only place a partition is ever positional. Everything you write — every `fetch` callback, every
-  read's `select` — is handed the **key**, your own type.
-
-  Use `key.of` + `key.id` instead of `fields` when your partition is a **record** too big to be a key: the record
-  addresses its rows by the string it hashes to, while the fetch needs the whole record back to build a request
-  from. `of` says how a read's args reach the record, `id` says
-  what it hashes to, and declaring them hands the record⇄key table to this module. Every path that names a
-  partition files it away on the way through, so the entry backing anything on screen stays warm, and your
-  `fetch` callbacks are handed the record itself. The interning is this module's. `of` may answer `null` for args
-  that address no partition — a locator a screen is still filling in — and such a read is off, primes nothing, and
-  returns its `empty`, the same as a field that has not arrived.
-
-  `fetch` is the store's real fetch behaviour and nothing else: the request, and how a body becomes rows.
-  Everything mechanical around it belongs here — trying the native shred, falling back to a JS parse and
-  reporting the degradation when it can't run, holding the ETag, recording when rows landed, bumping. Two
-  optional members cover the cases that vary: `canShredNatively` for a body the native pass can't iterate, and
-  `holdWrites` for a store that also takes socket writes. Leave `fetch` off entirely for a push-fed store.
-  `onChanged` sits beside it, for a store holding a derived rollup that a partition's new rows invalidate.
-
-  Back you get the read surface (`read`, `readMany`, `readGrouped`), the row-filter primitives your hydration and
-  writes need (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`), and a ready-made **`lifecycle`**
-  group — `usePrime`, `usePrimeMany`, `usePrimeAndVersion`, `has`, `getVersion`, `getFetchedAt`, `fetch`,
-  `refetch`, `invalidate`, `forget`. Every member takes the same **args** a read does, in the `(args, options?)`
-  call shape a backend publishes, so a backend hands the group straight out
-  (`lifecycle: myPartitions.lifecycle`) rather than restating it. `usePrime` and `usePrimeAndVersion` take those args
-  loosely, so a screen calls them with what it has, exactly as it calls a read: a field that has not arrived leaves
-  the key unaddressable, and `key.of` answers `null` for args that name no partition, so neither primes anything.
-- **`createFetchIngest`** — the fetch engine `definePartitions` composes: React Query orchestrates a raw-text fetch
-  (ETag-conditional), `ingestRaw` shreds it into the row table, the version bumps. Gives you `usePrime` /
-  `usePrimeMany` (reactive, one partition or a variable set) and `ensure` (imperative self-heal). Generic over
-  your key, with `toParts` the one place it is spelled positionally. You should not need to call this directly.
-- **`createPushIngest`** — the same job for rows that arrive by socket rather than by fetch. Pushes come in far
-  faster than they need to be persisted, one item at a time rather than one partition, and they can land on a
-  partition a fetch is midway through deleting and rewriting — so this buffers per partition, dedupes by
-  `idOf`, writes in bounded chunks off the render path, requeues a failed chunk without overwriting anything
-  newer, and lets a partition be **held** for the length of a fetch. Give it `idOf`, `toRows`, `bump` and
-  `onWrite`; you get `queue` and `hold`. The `hold` is what `definePartitions`'s
-  `fetch.holdWrites` wants. What it does inside, and why each part of it is load-bearing, is
-  [below](#the-buffered-flush-behind-createpushingest).
-- **`rowsOf(table)`** (`row_shaping.ts`) — a hydration's whole read side: ask it for rows, then say what shape you
-  want them in. `rows.where(filter, opts)` and `rows.in(filter, column, values)` are the two queries, `.given(rows)`
-  wraps rows you already hold, and each hands back something with `.rows`, `.map(fn, empty)`, `.indexed(column)`,
-  `.grouped(column)` and — for `.in` — `.ordered(mapper, empty)`. Every shape returns the caller's **stable empty**
-  when nothing survives. `ordered` is for an index-parallel result: SQL `IN` does not preserve argument order and
-  `findIn` chunks on top of that, so a caller treating rows as parallel to the ids it asked for needs them reordered
-  — which is why it hangs off `.in` alone and cannot be reached from a query that has no ids.
-- **`partitionLabel(parts)`** (`args_key.ts`) — a partition's parts joined on `:` for a log line or a telemetry
-  field. Never a key: `:` occurs inside a part (`region:us-west`), which is why keys don't use it. Keys themselves
-  are not the caller's to build — a read's is the engine's, and a memo's comes from the partition it is bound to.
-- **`chunkList` / `getOrCreate`** (`collections.ts`) — bounded batches, and the `Map` entry that may not exist
-  yet.
-- **`createVersionAtom`** — per-partition integer reactivity (a module-level `useSyncExternalStore`). `bump`
-  on write; `useVersion` to subscribe; `useSelect` to subscribe + read a value with a bail-out; `get` for
-  imperative reads.
-- **`createReadSurface`** — **the read engine, reached through `definePartitions`'s `read` / `readMany`.** A read is
-  one identical five-part shape — locate the partition, prime it, subscribe its version, select a bounded
-  subset, wrap in an envelope. You declare it once as a `read<Args, Value>()({ partition, varyBy, select, empty })`
-  descriptor — two calls, the first naming what the read takes and returns and the second taking the read, which is
-  what leaves TypeScript free to infer `varyBy` from the list itself — and
-  the engine generates both halves: `read.getValue` (imperative, self-priming, reference-stable) and
-  `read.useValue` (reactive `DataResult<T>`; named `useValue` so React Compiler treats it as a normal hook,
-  not React's `use()` API). Your
-  only job is `select(args, key)` — the SQL subset → VM — everything mechanical is the engine, including skipping
-  `select` entirely while the partition is still empty. A store's read surface becomes a small table of
-  `read` descriptors.
-
-  `partition` **defaults to the store's `key.fields`, or to `key.of` for a record partition**, so a read
-  declares no partition at all, which is the common case.
-  Give it explicitly only for an address one read computes differently from its siblings. `readMany` always names
-  its own `partitions`, since the set is the read's. `varyBy` is everything else `select` reads — named as args
-  fields (`varyBy: ['itemId']`) or computed — and it is both the read's cache key and its gate: the read is off
-  while any of those values is absent.
-
-  Prefer the field names, which is the form that carries its own guarantee: `select` is handed those fields and
-  nothing else, each non-null, so a cast at the call is unnecessary and reaching an arg the read never declared —
-  the mistake that would serve one caller's value to the next — does not compile. A computed `varyBy` names no
-  fields to narrow to, so such a read is handed the whole args and answers for them itself;
-  `no_undeclared_select_arg`, a lint rule in the consuming app, is what holds it to the same rule.
-
-  Three variations cover the rest: `readMany({ partitions, … })` for a read spanning a variable set
-  of partitions (it observes the same fetches through `usePrimeMany`, so it reports loading like any other read);
-  `readGrouped({ groups, … })` when the caller is asking about several things at once and each has its own
-  candidate partitions — `select` gets the groups back in the order it named them, so a read never flattens a list
-  and then re-slices it by index; and, for a push-fed table, leaving `fetch` off, so its reads report `success`
-  over an empty value. The kernel takes the fetch half as one value: the priming hooks and the refetch that goes
-  with them are supplied together or not at all.
-- **`partitions.memos`** — every memo a store holds, in one block, and the only way it builds one:
-
-  ```ts
-  const memos = myPartitions.memos({
-    summaryMap: byVersion<MySummaryMap>()({ max: 2048 }),
-    itemRow: bySource<MyItemVM>()({ max: 4096, by: ['itemId'] }),
-  });
-
-  memos.summaryMap.for(key).read(() => deriveSummaryMap(rows.where(where(key)).rows));
-  memos.itemRow.for(key).put(itemId, row.data_json, () => toVM(row));
-  ```
-
-  The block is reached off the store's partitions, which is what makes `.for(key)` possible: the memo takes both
-  the partition's key and its current version from there, so **no store builds a memo key or looks up a version**.
-  What a store still names is `max`, which bounds what it derives onto the heap, and `by`, which is what the key
-  holds beyond the partition — one argument to `.for(…)`'s methods per name, in order, each either a scalar or a
-  structured value the kernel interns. So the block stays a complete, reviewable account of the store's heap, which
-  is the point: the judgment below is made by reading the keys. Each memo carries a dev-time watch that reports
-  itself too small for the keys it keeps being asked for again, and reports itself if it has never once answered
-  from its entry.
-- **`byVersion`** — a memo dropped by every write to its partition, with optional content-stable reference reuse: on
-  a bump that didn't change an entry, hand back the _same reference_ so downstream shallow-equal bails.
-  `read(…parts, compute)` is the whole memo in one call; `peek`/`set` are its batched half, for a caller that
-  gathers its misses and computes them in one round-trip.
-
-  Reach for it when **several reads** derive the same value from a partition's rows, or when **one read consults it
-  per item**. Both mean the key is not the read's key, which is the whole test: the read surface already memoizes
-  `select` per `(partition + varyBy, version)`, so a memo one read owns, keyed as that read is keyed, is the same
-  cache twice at two sizes — the pair performs as whichever is smaller. Reach for `getCacheMax` instead.
-- **`bySource`** — the other of the two, and the one a hydration reaches for. A version
-  alone skips the **SQL round-trip** for a read no write invalidated, but it misses for every entry in a partition
-  the moment anything in it changes. A source — the `data_json` the value was built from — survives that miss and
-  hands back the same reference, which is what keeps one socket flush rewriting one item's row from repainting
-  every reader of every other row in the partition. This carries both in one entry: `peek(…parts)` answers
-  with no query at all, and `put(…parts, source, build)` rebuilds only when the source really moved.
-  **If a read's value feeds a downstream identity comparison — and every `isEqual` on a read descriptor is one —
-  hydrate it through this.**
-
-  Two rules when you add one. Name the filter that produced the entry in `by` as well as the entity, or two
-  reads holding different rows for the same entity re-hydrate each other on every call. And leave
-  whole-collection reads out of it: one of those evicts the bounded reads' entries and costs more than the
-  repaints it saves.
-
-  The name a report points at is the one the block gave it. This is the cache where too small is
-  worth catching at runtime, since a rebuilt value is a new reference and so a repaint no `isEqual` can bail
-  out of — a cost that lands spread across React's render phase, where a profile has nothing to point at. A
-  versioned cache that is too small costs a recompute instead, pooled under one function, so it is left to
-  the profile and carries no name.
-- **`offHeapStatus`** — the loading-status rule (`loading` while a cold fetch is in flight, else `success`).
-  The engine calls this for you; bespoke batch reads call it directly.
-- **`shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct`** — the `isEqual` family. A
-  read that names none gets `shallowEqualValue`, which is one level the way a store would have written it by hand: a
-  list by its elements, a record by its values, anything else by identity — so a hydration rebuilding a list or a map
-  out of unchanged parts bails its readers out without being asked to. Name one only where a level is not enough,
-  which in practice means `shallowEqualStruct` for a struct: it takes a check per field for the fields holding a
-  record or a list and compares the rest with `Object.is`, so a scalar field added later is covered without touching
-  the call. `shallowEqualRecord` and `shallowEqualArray` are the two it composes, for a memo handing one over.
-
-**Declare reads through the engine; no store here hand-writes one.** If you ever need to, two rules apply:
-every imperative getter must call `version.get(parts)` on **every** call, cache hit included, or its reads
-become invisible to both the tracking scope and the DEV guard below; and if the hook reads during render while
-subscribing itself, wrap the read in **`runSubscribed(() => …)`** so the guard knows the subscription exists.
-`createReadSurface` and `useSelect`/`useSelectMany` already do both for you.
-
-**The guard:** in `__DEV__`, a read that happens during render with nothing subscribing it logs a warning
-naming the partition and the component (`reactivity/tracking.ts` + `reactivity/render_phase.ts`). That failure is invisible on
-screen — the value is correct on first paint and then frozen — so it is checked at the single choke point every
-read passes through. Reads outside render (callbacks, reducers, socket handlers) are deliberately unsubscribed
-and stay silent.
-
----
-
-## What the backend returns: `{ reads, push?, lifecycle? }`
-
-Three groups, and which one a new function belongs in is decided by who calls it, not by what it does:
-
-| group | holds |
-| --- | --- |
-| `reads` | one `read`/`readMany` descriptor per read. Required — a store with nothing to read is not a store. |
-| `push` | a caller handing rows **in** |
-| `lifecycle` | partition-level operations that neither read rows nor write them: priming, freshness, invalidation |
-
-**A fetch-fed store's ingest belongs to the partition's `fetch`, and the only way rows arrive is a fetch the read
-surface already triggers — the common case.** You add `push` when rows arrive from
-somewhere the kernel doesn't own (a socket). `lifecycle` is where a caller outside the read path primes, checks
-freshness or invalidates a partition.
-
-A group with no members is left off rather than declared empty, so a backend's shape tells you what kind of store
-it is at a glance. `StoreBackendShape` requires `reads`, and a backend-shape guard test in the consuming app
-fails on a fourth group name, which keeps the grouping exhaustive enough to rely on when reading an unfamiliar
-store.
-
----
-
-## The facade
-
-The service facade publishes reads; it does not re-implement them. `pairRead` takes the read and returns both
-halves, with params typed as `Loose<Args>` so a caller may pass what it has:
-
-```ts
-const Reads = {
-  GroupItems: pairRead(() => getMyBackend().reads.GroupItems),
-};
-
-export const Hooks = { useGroupItems: Reads.GroupItems.useValue };
-export const Get = { getGroupItems: Reads.GroupItems.getValue };
+  return {
+    reads: {
+      GroupItems: items.read<ItemKey, ItemVM[]>()({
+        select: (_args, key) => rows.where(items.where(key), { orderBy: 'rank' }).map(toVM, NO_ITEMS),
+        empty: NO_ITEMS,
+      }),
+    },
+    lifecycle: items.lifecycle,
+  };
+}
 ```
 
-The read supplies its own gate. `read({ … })` publishes `requires` — its partition's fields plus its `varyBy`
-fields — and the pair holds the read inert until a caller has every one of them, so the facade restates nothing the
-store already declared. A field counts as in hand unless it is `undefined`, `null` or `''`; `[]`, `0` and `false`
-are answers, and what a read does with an empty list is its `varyBy`'s business. A read naming its partitions with a
-function, where there are no fields to read them off, declares `requires` itself: a read that parses one arg into
-a set of candidate partitions has no field the pair could gate on, so it names that arg.
+`select` runs only once the slice holds rows, and only when its version changes. `empty` is what callers get
+before that, so it has to be a stable reference.
 
-A facade read's params are the store read's own args, so a service names no vocabulary of its own and translates
-nothing: `pairRead` takes the read and nothing else. `pairRead` throws on a read that publishes no `requires`, since
-it has been asked to gate on nothing.
-
-Both halves resolve the backend per call, so the SQLite bind at startup is picked up by callers that ran before
-it. Publishing only one half is what pushes a Redux selector into a loop of point reads, so a read-pairing guard
-test in the consuming app fails on a read that ships without its twin.
-
----
-
-## Declaring the store itself
-
-The wiring is one descriptor — `defineSqliteStore` folds the version atom, the swappable
-backend registry, the in-memory web/test default, and the SQLite bind builder:
+### 3. Declare the store
 
 ```ts
-const myStore = defineSqliteStore<MyRow, MyBackend>({
-  name: 'my_store',
-  schema: mySchema,
-  buildBackend: buildMyBackend, // (rowTable, version, caps) => backend
+import { defineSqliteStore } from '@sleeperhq-private/react-data-kernel';
+
+const itemStore = defineSqliteStore<ItemRow, ItemBackend>({
+  name: 'item_store',
+  schema: itemSchema,
+  buildBackend: buildItemBackend,
 });
-export const getMyBackend = myStore.getBackend;
-export const setMyBackend = myStore.setBackend;
-export const createSqliteMyBackend = myStore.createSqliteBackend;
+
+export const getItemBackend = itemStore.getBackend;
+export const setItemBackend = itemStore.setBackend;
+export const createSqliteItemBackend = itemStore.createSqliteBackend;
 ```
 
-…and mobile binds it in one line, from wherever the app runs its startup:
+What comes back already runs on an in-memory row table, so web and tests need nothing further.
+
+### 4. Publish a read, and call it
+
+`pairRead` publishes each read as both halves at once: a hook for components, and an imperative getter for
+everything else. A read declares which args it waits on, so the pair stays inert until a caller has them.
 
 ```ts
-export const initMyStore = () => bindSqliteStore('initMyStore', 'my.db', setMyBackend, createSqliteMyBackend);
+import { pairRead } from '@sleeperhq-private/react-data-kernel';
+
+export const GroupItems = pairRead(() => getItemBackend().reads.GroupItems);
 ```
 
-Caching, reactivity and fetch orchestration are the kernel's; a store does not write its own.
+```tsx
+function ItemList({ groupId }: { groupId?: string }) {
+  const { data: items, isLoading } = GroupItems.useValue({ params: { groupId } });
 
-Two optional fields, and nothing else: `nativeShredSpec` for a native (simdjson) ingest shred, and
-`sqliteCapabilities` for an accelerator that needs the live connection. Every store falls back to the same
-backend over an in-memory row table, so the two platforms can only differ in where the rows live. The fallback is
-built on first read, so a platform that binds SQLite first never constructs one at all.
+  if (isLoading) return <Spinner />;
+  return <List data={items} renderItem={({ item }) => <Row name={item.name} />} />;
+}
+```
 
----
+Calling it with no `groupId` is fine: the read addresses nothing, fetches nothing, and hands back `empty`.
 
-## The buffered flush behind `createPushIngest`
+### 5. Wire it up at startup
 
-Two rules for the shape of a push-fed store first. A store fed *only* by a socket leaves `definePartitions`'s
-`fetch` off, so its reads report `success` over an empty value, and sets `pushFed: true` on the schema, so a
-rebuild of a table no fetch can refill says so out loud. A store fed by *both* has one decision to make
-explicitly: what a frame naming a partition nothing has fetched should do. Creating the partition is what lets
-rows appear for an entity no screen asked the API for — the only way they can appear at all, when the socket is
-their only source; dropping the frame means they never do.
+The host installs two services, and binds SQLite where the platform has it.
 
-A bulk completion carries thousands of rows at once, and writing them inline froze JS for ~2s. So `ingest` never
-writes: it stages rows and returns, and a scheduled task does the work. Five properties carry that, and each one
-is load-bearing:
+```ts
+import { configureDataKernel } from '@sleeperhq-private/react-data-kernel';
+import { bindSqliteStore } from '@sleeperhq-private/react-data-kernel/nitro';
 
-- **Stage into a `Map` keyed by row identity.** Two frames touching the same row inside one flush window collapse
-  to the last, which is what makes a burst cost one write per *row* rather than one per *frame*.
-- **Flush on a macrotask, chunked, yielding between chunks.** `setTimeout(0)` gets it off the current frame;
-  `upsert` in chunks of 250 with a yield between them keeps a long flush from becoming the same block in a
-  different place. Reactivity lands a frame after the write resolves, which is the deliberate trade.
-- **Bump every touched partition once, inside `notifyManager.batch`.** The flush collects the distinct partitions
-  it wrote and bumps them together, so a thousand rows across four partitions is four bumps in one React commit.
-- **On failure, requeue only what no newer write replaced** (`if (!pending.has(key))`) and retry after a delay.
-  The guard is what keeps a retry from putting a superseded row back over a fresher one, which is the one
-  failure in here that reaches the screen as wrong data rather than as jank.
-- **Clear the partition's ETag on every socket write** (`onSocketWrite`). The ETag describes the last body the
-  *fetch* ingested, not the socket's writes over it, and the rows outlive the process — so the next launch would
-  304 and keep an entity frozen where the socket left it. Costs nothing while the entity is live, since a body the
-  socket is tracking is changing and would not have matched anyway.
+configureDataKernel({
+  errors: { captureException, captureMessage },
+  query: { client: () => queryClient, useQuery, useQueries },
+});
 
----
+bindSqliteStore('initItemStore', 'items.db', setItemBackend, createSqliteItemBackend);
+```
 
-## Map of the files here
+`useQuery` and `useQueries` are passed in rather than imported, so an app keeps its own fetch policy — focus
+gating, retries, whatever it already does. Until `configureDataKernel` runs the kernel is inert: reads answer
+from rows already stored, and nothing fetches.
 
-**What earns a place in this package:** the kernel is the store-authoring vocabulary — the pieces you compose to
-write a store. Being generic is not the bar, and neither is having more than one caller: a mechanism belongs here
-when a *store author* reaches for it. So `read/windowed_list.ts` lives here with a single
-consumer today, because "windowed list read" is one of the read shapes you choose between when writing a store;
-whereas the compute-table LRU inside a native-compute store's ranker is just as generic and stays in that store,
-because no store author picks it — it's how that one store's ranked scan happens to work. A per-store mechanism moves here
-when a second *store* needs it, which is also the point at which its shape has been checked against more than
-one caller.
+## Concepts
 
-Reusable kernel (you use, never fork):
+Three words, and they nest:
 
-The root holds what a store declares itself with, plus the primitives every folder below needs. The folders
-follow the trip a row takes: it lands in a `table/`, gets there through `write/`, comes back out through
-`read/`, and the component that asked hears about it through `reactivity/`.
+| term | what it is |
+| --- | --- |
+| **table** | the rows themselves — SQLite on device, a `Map` on web and in tests, behind one `RowTable` interface |
+| **partition** | one addressable slice of a table: the unit a fetch replaces, a version tracks, and an ETag belongs to |
+| **store** | the module wrapping both, declared with `defineSqliteStore` |
 
-| file                                             | role                                                                     |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `define_sqlite_store.ts`                         | the SQLite-or-memory descriptor a store declares itself with, and the spine it builds: version atom, backend slot, degrade path |
-| `define_partitions.ts`                    | one table's partitions: their keys, their fetch, and the lifecycle over them |
-| `store_result.ts`                                | the `DataResult` envelope, and the `offHeapStatus` rule that fills one     |
-| `prime_state.ts`                                 | what a read knows about the fetch behind its partition — the contract between the two, so neither imports the other |
-| `key.ts`                                         | how a key's parts are joined, on a separator no part can contain; imports nothing, so anything may have it |
-| `args_key.ts`                                    | what a read's key is derived from: a value by its content, a partition, a vary list |
-| `caches.ts`                                      | bounded LRU, the two memos and the block that binds them to a store's partitions, and the `isEqual` family |
-| `collections.ts`                                 | `chunkList` and `getOrCreate`                                             |
-| `runtime.ts`                                     | the host's two services — where a report goes, and the query runtime an ingest mounts on — and the inert defaults until one is installed |
+A store has as many partitions as its callers ask for — one per group, or thousands, one per entity.
 
-| `table/` — where rows live                       |                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `types.ts`                                       | the schema types and the `RowTable` contract both backends implement      |
-| `sqlite.ts`, `memory.ts`                         | the two backends behind that contract; `query.ts` holds the `where`/order semantics they must answer identically |
-| `schema.ts`                                      | what `init` builds, and the two stamps that decide between widening it and rebuilding it |
-| `presence.ts`                              | whether a row filter holds rows, cached — a read asks far more often than it changes |
-| `connection.ts`                                  | batch/read helpers over the native binding; routes reads to the reader handle (`pinnedReader` opts out, for `TEMP`-table readers) |
+## What you get without writing it
 
-| `write/` — how rows get in                       |                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `fetch_ingest.ts`                                | write-through fetch → shred → bump                                       |
-| `push_ingest.ts`                                 | the push counterpart: buffer → dedupe → chunked write → bump, with per-partition holds for an in-flight fetch |
-| `shred_columns.ts`                               | co-located shred column table (each column's `sql` + its `js` twin), and `defineShredColumns`, which binds it to everything derived from it — `names`, `columnDefs`, `row`, and, once every column declares an `op`, `namedOps` and `ops` |
-| `shred_spec.ts`                                  | the native shred op language + its JS reference interpreter              |
+- **Conditional fetch.** Each slice keeps its own ETag, so a refetch that hasn't changed costs a 304 and no
+  write. Fetches are orchestrated through the host's React Query, deduped and shared between readers.
+- **JSON that never becomes objects.** A response body can be shredded from text straight into columns in C++,
+  so a large payload is never a JS object graph. Declaring a `NativeShredSpec` is optional; without one the same
+  columns are filled by their JS builders.
+- **Schema migration with no migration to write.** `init` fingerprints the schema it built. A database whose
+  fingerprint no longer matches is migrated on the spot — widened by `ALTER TABLE ADD COLUMN` when the change
+  only added columns, rebuilt from the next fetch otherwise.
+- **Reactivity per slice, not per store.** Each partition carries a version, and a read subscribes to the
+  versions it touches. A write to one slice repaints its readers and nobody else's.
+- **A fallback that keeps the app running.** Every store also runs over an in-memory row table. That is the web
+  and test path, and it is where a store lands if SQLite fails mid-session, so a database error degrades
+  performance instead of breaking reads.
+- **Dev-only guards.** Reading off-heap during render without subscribing is correct on first paint and frozen
+  after, which is invisible on screen — so in `__DEV__` it warns, naming the partition and the component. Other
+  guards catch a backend bound too late, a memo sized too small, and a read fanning out across a list.
 
-| `read/` — how rows come out                      |                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `surface.ts`                                     | the read engine — `read({ … })` → `{ getValue, useValue }`               |
-| `partition_fields.ts`                            | the field specs a read names its partition and its vary key with          |
-| `row_shaping.ts`                                 | `rowsOf`: a query, then rows → list / ordered list / record / groups, each with the stable empty |
-| `facade.ts`                                      | what a service is written against: `pairRead`, so it exposes the hook and the imperative read together, plus the types its methods are spelled in (`ReadOptions`, `MaybeId`, `Loose`) |
-| `windowed_list.ts`                               | windowed list reads (fetch a page, keep the rest off-heap), and the per-row `useWindowedDetail` that indexes back into one |
+## API
 
-| `reactivity/` — how a write reaches a component  |                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `version_atom.ts`                                | per-partition reactivity                                                 |
-| `tracked_selector.ts`, `tracking.ts`             | off-heap-aware reselect, for reads reached from Redux selectors; also the DEV guard that catches an unsubscribed render read (`render_phase.ts` is its phase probe) |
+Everything below is exported from the package root.
 
-| `diagnostics/` — how the layer reports on itself |                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `telemetry.ts`                                   | reports silent perf degradation (a native fallback that stayed correct)  |
-| `ingest_timing.ts`                               | per-ingest timings, rolled up for the dev overlay — the `./diagnostics` entry, which no shipping screen reads |
-| `once_guard.ts`                                  | warn-once guards that a test can reset                                   |
+### Declaring a store
 
-| `nitro/` — the device                            |                                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `nitro_connection.ts`                            | the `SqliteConnection` over `react-native-nitro-sqlite`: pragmas, param coercion, the native shred sentinel, and the binds that degrade rather than throw |
+| export | what it gives you |
+| --- | --- |
+| `defineSqliteStore(config)` | the store's spine: the version atom, the slot holding the active backend, the in-memory default, the SQLite builder for startup, and the degrade path back to memory |
+| `definePartitions(config)` | from `key.where` and an optional `fetch`: the read constructors, `lifecycle`, `memos`, and the row/version primitives (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`) |
+| `defineShredColumns<Src, Ctx>()(columns)` | one column table bound to everything derived from it: `names`, `columnDefs`, `row`, and `ops` once every column declares one |
 
-Two more entries ship beside the core one. `./diagnostics` holds what a developer surface dumps —
-`getIngestTimings` and `rollupIngestTimings` — kept out of the core entry because a shipping screen has no
-business reading them. `./testing` is what a store's tests are written against: `sqljs_connection.ts` (a real
-SQLite engine for parity tests), `version_atom.ts` (in-process version atom with working `subscribe`),
-`runtime.ts` (the host services as spies), `memos.ts` (a store's `memos` for a suite that builds one module
-rather than a whole backend), and `dev_mode.ts` (the wrappers pinning a case to one build). It also re-exports the
-handful of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement`
-to check a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
+### Rows
 
-Bespoke per store, and staying in the app: the schema, the payload types, the row builders and the shred spec
-beside them, the view models and the hydrations that build them, and the backend that composes all of the above
-out of the pieces here. A native-compute store adds the SQL engine behind its whole-collection read, which is
-advanced, opt-in, and no part of this package.
+| export | what it gives you |
+| --- | --- |
+| `createSqliteRowTable`, `createMemoryRowTable` | the two `RowTable` backends; same interface, different storage |
+| `RowTable` | `init`, three writes (`upsert`, `overwrite`, `shred`), reads (`getOne`, `find`, `findIn`, `has`) and the ETag pair (`getMeta`, `setMeta`) |
+| `readRows`, `pinnedReader` | batch reads over a connection, and the opt-out that pins one to a single handle |
+
+The three writes differ in what they delete. `upsert` merges by primary key and removes nothing, which is what a
+socket delta wants. `overwrite(where, rows)` makes the slice matching `where` be exactly `rows`. `shred` is that
+same replacement from an undecoded response body.
+
+### Getting rows in
+
+| export | what it gives you |
+| --- | --- |
+| a partition's `fetch` | `query` and `parse`, plus `canShredNatively` and `holdWrites`; leave it off for a store fed only by pushes |
+| `createPushIngest(config)` | rows arriving by socket: buffered per partition, deduped, written in bounded chunks off the render path, with per-partition holds for an in-flight fetch |
+| `NativeShredSpec`, `ShredOp` | the native shred language, for filling columns without decoding in JS |
+| `RAW_TEXT_RESPONSE_TRANSFORM` | keeps a client from `JSON.parse`-ing a body the kernel wants as text |
+
+### Reading
+
+| export | what it gives you |
+| --- | --- |
+| `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about |
+| `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares |
+| `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
+| `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |
+| `DataResult<T>`, `makeResult` | the envelope a read hands back, and the builder for a bespoke read the surface can't express |
+
+### Reactivity
+
+| export | what it gives you |
+| --- | --- |
+| `runTracked`, `runSubscribed` | the tracking scopes an imperative read runs inside |
+| `createTrackedSelector` | off-heap-aware reselect, for reads reached from a Redux selector |
+
+### Memoizing derived values
+
+| export | what it gives you |
+| --- | --- |
+| `partitions.memos({ … })` | every value a store derives onto the heap, declared in one reviewable block and keyed by the partition for you |
+| `byVersion` | dropped by every write to its partition; for a value several reads share |
+| `bySource` | keyed by the row it was built from, so one row changing doesn't re-derive its neighbours |
+| `shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct` | the `isEqual` family a read compares its value with |
+
+### Host services and diagnostics
+
+| export | what it gives you |
+| --- | --- |
+| `configureDataKernel(services)` | where an error report goes, and the React Query runtime an ingest mounts on |
+| `reportStoreDegradation`, `createOnceGuard` | how the kernel reports a silent slowdown, and warn-once guards a test can reset |
+
+## Entry points
+
+| entry | holds |
+| --- | --- |
+| `@sleeperhq-private/react-data-kernel` | everything above: what a store, a service or a screen writes against |
+| `…/nitro` | `openNitroConnection` and `bindSqliteStore`, over `react-native-nitro-sqlite` — the only part that touches native code |
+| `…/testing` | a real SQLite engine off-device, an in-process version atom, the host services as spies, and the internals only a test reaches for |
+| `…/diagnostics` | `getIngestTimings` and `rollupIngestTimings`, for a developer surface; no shipping screen reads these |
+
+The core entry runs anywhere React does. Each subpath is declared twice — in `exports`, and as a stub
+`package.json` beside `lib/` — because TypeScript and Metro still resolve the way Node did before `exports`
+existed.
+
+**`lib/` is committed.** Consumers install with `enableScripts: false`, so a gitpkg install never runs `prepare`;
+a change to `src/` is not published until `yarn build` runs and the output is committed and tagged.
+
+## Internals
+
+[`docs/internals.md`](docs/internals.md) is the long form: every export in detail, the rules each one imposes,
+the two schema fingerprints and how they decide between widening and rebuilding, what the push buffer does and
+why each property of it is load-bearing, and a map of every file in `src/`. Read it when you need to know why a
+piece behaves the way it does, or when you are changing the kernel itself.
