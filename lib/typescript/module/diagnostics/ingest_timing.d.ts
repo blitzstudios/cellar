@@ -10,7 +10,7 @@ export interface IngestTiming {
     fetchMs: number;
     ingestMs: number;
     chars: number | null;
-    /** `-1` when the fetch 304'd. */
+    /** `-1` when the fetch 304'd, `-2` when it brought back a body identical to the one already shredded. */
     rows: number;
     at: number;
 }

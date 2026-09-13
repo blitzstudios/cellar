@@ -89,6 +89,101 @@ beforeEach(() => {
   clearIngestTimings();
 });
 
+describe('createFetchIngest — unchanged body short-circuit', () => {
+  it('shreds the first body it sees and bumps, since nothing is known about the partition yet', async () => {
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"id":"a","pts":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+
+    const out = await ingest.prefetch('week');
+
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledTimes(1);
+    expect(harness.version.bump).toHaveBeenCalledTimes(1);
+    expect(out.count).toBe(5);
+  });
+
+  it('skips the shred and the bump when a refetch brings the same body back', async () => {
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"id":"a","pts":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+    await ingest.prefetch('week');
+    harness.state.version = 9;
+
+    const out = await ingest.prefetch('week');
+
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledTimes(1);
+    expect(harness.version.bump).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ version: 9, count: -2 });
+  });
+
+  it('shreds again as soon as the body differs, however slightly', async () => {
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"id":"a","pts":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+    await ingest.prefetch('week');
+
+    // One digit of one stat, which is what a live scoring update looks like.
+    harness.setResponse({ data: '[{"id":"a","pts":2}]' });
+    const out = await ingest.prefetch('week');
+
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledTimes(2);
+    expect(harness.version.bump).toHaveBeenCalledTimes(2);
+    expect(out.count).toBe(5);
+  });
+
+  it('tracks bodies per partition, so one partition cannot suppress another', async () => {
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"id":"a"}]' });
+    const ingest = createFetchIngest(harness.cfg);
+    await ingest.prefetch('w1');
+
+    // Same body, different partition: it has never been shredded there.
+    const out = await ingest.prefetch('w2');
+
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledTimes(2);
+    expect(out.count).toBe(5);
+  });
+
+  it('keeps the etag from an unchanged body, so the next fetch can still go conditional', async () => {
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"id":"a"}]', etag: 'W/"1"' });
+    const ingest = createFetchIngest(harness.cfg);
+    await ingest.prefetch('week');
+    (harness.cfg.setEtag as jest.Mock).mockClear();
+
+    harness.setResponse({ data: '[{"id":"a"}]', etag: 'W/"2"' });
+    await ingest.prefetch('week');
+
+    expect(harness.cfg.setEtag).toHaveBeenCalledWith('week', 'W/"2"');
+  });
+
+  it('records the skip, so a session can tell a no-op refetch from one that landed rows', async () => {
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"id":"a"}]' });
+    const ingest = createFetchIngest(harness.cfg);
+    await ingest.prefetch('week');
+    await ingest.prefetch('week');
+
+    const rows = getIngestTimings().map((timing) => timing.rows);
+    expect(rows).toEqual([5, -2]);
+  });
+});
+
+describe('createFetchIngest — a 200 carrying no body', () => {
+  it('does not bump, since no rows changed and a bump would repaint every read for nothing', async () => {
+    const harness = makeCfg();
+    harness.state.version = 4;
+    harness.setResponse({ data: undefined });
+    const ingest = createFetchIngest(harness.cfg);
+
+    const out = await ingest.prefetch('week');
+
+    expect(harness.cfg.ingestRaw).not.toHaveBeenCalled();
+    expect(harness.version.bump).not.toHaveBeenCalled();
+    expect(out).toEqual({ version: 4, count: 0 });
+  });
+});
+
 describe('createFetchIngest — 304 / etag short-circuit', () => {
   it('skips the shred, etag persist, and version bump when the API reports __etagMatch', async () => {
     const harness = makeCfg();
@@ -275,16 +370,15 @@ describe('createFetchIngest — successful ingest (200)', () => {
     expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('us', JSON.stringify({ items: [1, 2] }));
   });
 
-  it('bumps but refuses the etag from a 200 that carried no body, so the next launch is a real fetch', async () => {
+  it('refuses the etag from a 200 that carried no body, so the next launch is a real fetch', async () => {
     const harness = makeCfg();
     harness.setResponse({ etag: 'e' });
     const ingest = createFetchIngest(harness.cfg);
 
-    const out = await ingest.prefetch('us');
+    await ingest.prefetch('us');
 
     expect(harness.cfg.ingestRaw).not.toHaveBeenCalled();
     expect(harness.cfg.setEtag).not.toHaveBeenCalled();
-    expect(out).toEqual({ version: 1, count: 0 });
   });
 
   it('persists the etag for a body that held no rows, which is a partition that is genuinely empty', async () => {

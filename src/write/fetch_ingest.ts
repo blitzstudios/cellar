@@ -54,6 +54,44 @@ function coerceRawJson(data: unknown): string | undefined {
   return data != null ? JSON.stringify(data) : undefined;
 }
 
+/** `rows` on a recorded ingest that shredded nothing because the body matched the one already shredded. */
+const ROWS_UNCHANGED = -2;
+
+/**
+ * How many partitions' body fingerprints to keep. Far above the number a session addresses, so the bound only exists
+ * so a long session cannot grow this without limit.
+ */
+const FINGERPRINT_CAPACITY = 512;
+
+/** A body, as two independent 32-bit hashes and its length — 96 bits, so a false match is not a practical concern. */
+interface BodyFingerprint {
+  length: number;
+  fnv: number;
+  djb: number;
+}
+
+/**
+ * Fingerprints a body without allocating, in one pass, using two hashes with different constants and mixing.
+ *
+ * This runs on every fetched body, so it has to be cheap relative to what it saves. It is a charCodeAt loop and two
+ * multiplies per character against a shred that parses the same string and writes a row per record — on the bodies
+ * where this matters, hashing is a small fraction of the shred it skips.
+ */
+function fingerprintOf(body: string): BodyFingerprint {
+  let fnv = 0x811c9dc5;
+  let djb = 5381;
+  for (let index = 0; index < body.length; index += 1) {
+    const code = body.charCodeAt(index);
+    fnv = Math.imul(fnv ^ code, 0x01000193);
+    djb = (Math.imul(djb, 33) + code) | 0;
+  }
+  return { length: body.length, fnv: fnv >>> 0, djb: djb >>> 0 };
+}
+
+function sameBody(left: BodyFingerprint | undefined, right: BodyFingerprint): boolean {
+  return !!left && left.length === right.length && left.fnv === right.fnv && left.djb === right.djb;
+}
+
 /**
  * A partition's fetch as the rest of the kernel drives it: the priming hooks a read mounts, and the imperative starts,
  * refetches and invalidations `definePartitions` republishes as a store's `lifecycle` group.
@@ -80,6 +118,8 @@ const NO_TIMINGS = { staleTime: undefined, cacheTime: undefined };
  * store's `fetch` spec, so a store author declares that spec rather than calling this.
  */
 export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest<Key> {
+  /** The body each partition last shredded, so a refetch that brings the same one back can stop before it does. */
+  const ingestedBodies = new Map<string, BodyFingerprint>();
   const queryKey = (parts: readonly string[]): (string | undefined)[] => [cfg.ingestKeyRoot, ...parts];
   const bump = (key: Key, parts: readonly string[]): number => (cfg.bump ? cfg.bump(key) : cfg.version.bump(parts));
 
@@ -118,10 +158,31 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
     }
 
     const rawJson = coerceRawJson(res?.data);
-    const count = rawJson ? await cfg.ingestRaw(key, rawJson) : 0;
-    recordTiming(count, rawJson ? rawJson.length : null);
+    if (!rawJson) {
+      // A 200 carrying nothing to shred. `ingestRaw` never runs, so no rows changed and there is nothing for a bump
+      // to tell anyone about — bumping here would invalidate every read on the partition to republish what it holds.
+      recordTiming(0, null);
+      return { version: cfg.version.get(parts), count: 0 };
+    }
+
+    const fingerprint = fingerprintOf(rawJson);
+    const partitionId = partitionsKey([parts]);
+    if (sameBody(ingestedBodies.get(partitionId), fingerprint)) {
+      // The same body we already shredded. Re-shredding it would rewrite every row to the value it already holds and
+      // bump the partition, and a bump is what every read watches, so an unchanged partition would repaint all of
+      // them. For a socket-fed partition it is also the wrong answer: an unchanged body is older than any delta that
+      // has landed since it was shredded, so replacing the rows with it would undo them.
+      recordTiming(ROWS_UNCHANGED, rawJson.length);
+      if (res?.etag) cfg.setEtag(key, res.etag);
+      return { version: cfg.version.get(parts), count: ROWS_UNCHANGED };
+    }
+
+    const count = await cfg.ingestRaw(key, rawJson);
+    recordTiming(count, rawJson.length);
+    if (ingestedBodies.size >= FINGERPRINT_CAPACITY) ingestedBodies.clear();
+    ingestedBodies.set(partitionId, fingerprint);
     // Only for a body that was ingested: an etag saved from a bodyless 200 would 304 every later launch.
-    if (res?.etag && rawJson) cfg.setEtag(key, res.etag);
+    if (res?.etag) cfg.setEtag(key, res.etag);
     return { version: bump(key, parts), count };
   };
 
