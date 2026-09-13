@@ -89,6 +89,63 @@ beforeEach(() => {
   clearIngestTimings();
 });
 
+describe('createFetchIngest — timings never reach React Query as present-but-undefined', () => {
+  /**
+   * React Query reads `staleTime` off the observer with a `= 0` default and merges options by spread, so a key that is
+   * present and `undefined` overrides the configured default and lands on 0 — stale on arrival. The focus gate builds
+   * each observer once from its first render's options, so a prime that mounts disabled would bake that in and then
+   * fetch as soon as it is enabled, however fresh the cache is. That is one full body per mount.
+   */
+  const timingKeysOf = (options: Record<string, unknown>): string[] => Object.keys(options).filter((key) => key === 'staleTime' || key === 'cacheTime');
+
+  it('carries the partition timings even while the caller is disabled, since that is when the observer is built', () => {
+    const harness = makeCfg();
+    const ingest = createFetchIngest(harness.cfg);
+
+    renderHook(() => ingest.usePrime('week', false));
+
+    const options = useFocusGatedQueryMock.mock.calls[0][0];
+    expect(options.enabled).toBe(false);
+    expect(options.staleTime).toBe(1000);
+    expect(options.cacheTime).toBe(2000);
+  });
+
+  it('omits the timing keys entirely for a hook addressing nothing, rather than passing undefined', () => {
+    const harness = makeCfg();
+    const ingest = createFetchIngest(harness.cfg);
+
+    renderHook(() => ingest.usePrime(undefined));
+
+    expect(timingKeysOf(useFocusGatedQueryMock.mock.calls[0][0])).toEqual([]);
+  });
+
+  it('takes only the timings off the request, never the request itself', async () => {
+    // `rawQuery` hands back the whole request, `queryFn` included. Spreading that into the query spec replaces the
+    // ingest with the bare request: the body is fetched and then dropped, and no rows are ever shredded.
+    const harness = makeCfg();
+    harness.setResponse({ data: '[{"x":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+
+    renderHook(() => ingest.usePrime('week'));
+    await useFocusGatedQueryMock.mock.calls[0][0].queryFn();
+
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledWith('week', '[{"x":1}]');
+  });
+
+  it('omits them when the store cannot describe the request, rather than forcing every mount to fetch', () => {
+    const harness = makeCfg({
+      rawQuery: jest.fn(() => {
+        throw new Error('locator not ready');
+      }),
+    });
+    const ingest = createFetchIngest(harness.cfg);
+
+    renderHook(() => ingest.usePrime('week'));
+
+    expect(timingKeysOf(useFocusGatedQueryMock.mock.calls[0][0])).toEqual([]);
+  });
+});
+
 describe('createFetchIngest — unchanged body short-circuit', () => {
   it('shreds the first body it sees and bumps, since nothing is known about the partition yet', async () => {
     const harness = makeCfg();
