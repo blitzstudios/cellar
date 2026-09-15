@@ -49,6 +49,18 @@ export interface VersionedSourceCache<V> {
     peek(key: string, version: number): {
         value: V;
     } | undefined;
+    /**
+     * Whether the entry for `key` was built from this same `source`, ignoring what version it was stored at.
+     *
+     * This is what `put` is about to decide, asked ahead of calling it. A caller that must gather the inputs for
+     * several keys in one query needs to know which of them will actually rebuild *before* it queries, or it ends up
+     * fetching inputs for every key it holds and throwing away all but the few that moved.
+     *
+     * Treat the answer as a prediction, not a guarantee: the entry can still be evicted before `put` reaches it, so a
+     * caller that used this to decide what to fetch must stay correct when a build it did not expect asks for inputs
+     * it did not gather.
+     */
+    holds(key: string, source: unknown): boolean;
     /** Records the value for `key` at `version`, building it only when `source` differs from the one held. */
     put(key: string, version: number, source: unknown, build: () => V): V;
 }
@@ -85,6 +97,14 @@ export interface BoundSourceMemo<V, By extends readonly string[]> {
     peek(...parts: PartsOf<By>): {
         value: V;
     } | undefined;
+    /**
+     * Whether these parts already hold a value built from this `source`, and so will not rebuild.
+     *
+     * For deciding what to query before querying it. A bump drops every `peek`, so a read that consults this memo once
+     * per item sees every item miss, and without this it must gather inputs for all of them to serve the few whose
+     * source actually moved. See the note on {@link VersionedSourceCache.holds} about treating it as a prediction.
+     */
+    holds(...args: [...PartsOf<By>, source: MemoSource]): boolean;
     /** Records the value for these parts, building it only when `source` differs from the one held. */
     put(...args: [...PartsOf<By>, source: MemoSource, build: () => V]): V;
 }

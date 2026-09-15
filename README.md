@@ -276,7 +276,7 @@ same replacement from an undecoded response body.
 | --- | --- |
 | `partitions.memos({ … })` | every value a store derives onto the heap, declared in one reviewable block and keyed by the partition for you |
 | `byVersion` | dropped by every write to its partition; for a value several reads share |
-| `bySource` | keyed by the row it was built from, so one row changing doesn't re-derive its neighbours |
+| `bySource` | keyed by the row it was built from, so one row changing doesn't re-derive its neighbours. Its `holds(…, source)` answers whether a key would rebuild *before* you query, so a read consulting it once per item can fetch inputs for only the items that moved rather than for every item a bump invalidated |
 | `shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct` | the `isEqual` family a read compares its value with |
 
 ### Host services and diagnostics

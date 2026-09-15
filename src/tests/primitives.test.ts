@@ -248,6 +248,55 @@ describe('createVersionedSourceCache', () => {
     expect(second.n).toBe(2);
   });
 
+  describe('holds', () => {
+    /**
+     * `holds` exists so a caller gathering inputs for many keys in one query can find out which of them will
+     * rebuild before it queries. Without it a bump drops every `peek`, so the caller fetches inputs for every key
+     * it holds to serve the handful whose source moved.
+     */
+    it('answers for the source alone, so a bump does not make an unchanged key look like it needs rebuilding', () => {
+      const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
+      cache.put('row', 1, 'a', () => ({ n: 1 }));
+
+      // The version has moved on, which is exactly when `peek` stops answering.
+      expect(cache.peek('row', 2)).toBeUndefined();
+      expect(cache.holds('row', 'a')).toBe(true);
+      expect(cache.holds('row', 'b')).toBe(false);
+    });
+
+    it('is false for a key it never held, which is the caller\'s cue to gather its inputs', () => {
+      const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
+
+      expect(cache.holds('never-seen', 'a')).toBe(false);
+    });
+
+    it('agrees with what put then does, which is the only reason it is worth asking', () => {
+      const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
+      cache.put('row', 1, 'a', () => ({ n: 1 }));
+      const build = jest.fn(() => ({ n: 2 }));
+
+      expect(cache.holds('row', 'a')).toBe(true);
+      cache.put('row', 2, 'a', build);
+      expect(build).not.toHaveBeenCalled();
+
+      expect(cache.holds('row', 'c')).toBe(false);
+      cache.put('row', 2, 'c', build);
+      expect(build).toHaveBeenCalledTimes(1);
+    });
+
+    it('is false once the entry has been evicted, so the prediction degrades toward doing the work', () => {
+      // A caller that trusted a stale `true` would skip gathering inputs it turns out to need, so the failure has
+      // to fall the safe way.
+      const cache = createVersionedSourceCache<{ n: number }>(2, memoName('test.both'));
+      cache.put('a', 1, 's', () => ({ n: 1 }));
+      cache.put('b', 1, 's', () => ({ n: 2 }));
+      cache.put('c', 1, 's', () => ({ n: 3 }));
+
+      expect(cache.holds('a', 's')).toBe(false);
+      expect(cache.holds('c', 's')).toBe(true);
+    });
+  });
+
   it('caches a built undefined, which is what a nullable point read stores for a item with no rows', () => {
     const cache = createVersionedSourceCache<{ n: number } | undefined>(16, memoName('test.both'));
     const build = jest.fn(() => undefined);
@@ -385,6 +434,37 @@ describe('a memo bound to a partition', () => {
     // The write was to another partition, so this one still answers from its entry.
     bump('eu');
     expect(values.for('us').read('p1', build)).toBe(2);
+  });
+
+  it('answers holds for its own derived key, so a per-item read can pick what to query before querying', () => {
+    const { binding, bump } = bindable();
+    const { values } = createMemos('test', binding, { values: bySource<number>()({ max: 64, by: ['item'] }) });
+    values.for('us').put('p1', 'digest-1', () => 1);
+    values.for('us').put('p2', 'digest-1', () => 2);
+
+    bump('us');
+    // `for` reads the version once, so the caller after a write is holding a fresh binding.
+    const at = values.for('us');
+
+    // The bump dropped both peeks -- which is the whole problem this answers.
+    expect(at.peek('p1')).toBeUndefined();
+    expect(at.peek('p2')).toBeUndefined();
+    // Only p2 moved, so only p2's inputs are worth fetching.
+    expect(at.holds('p1', 'digest-1')).toBe(true);
+    expect(at.holds('p2', 'digest-2')).toBe(false);
+    // And a different partition's entry is not mistaken for this one's.
+    expect(values.for('eu').holds('p1', 'digest-1')).toBe(false);
+  });
+
+  it('folds a scalar-list source the same way put does, so the two cannot disagree', () => {
+    const { binding, bump } = bindable();
+    const { values } = createMemos('test', binding, { values: bySource<number>()({ max: 64, by: ['item'] }) });
+    values.for('us').put('p1', ['g1', 'g2'], () => 1);
+    bump('us');
+    const at = values.for('us');
+
+    expect(at.holds('p1', ['g1', 'g2'])).toBe(true);
+    expect(at.holds('p1', ['g1', 'g3'])).toBe(false);
   });
 
   it('keys a structured part by its content, so a caller rebuilding one per call still hits', () => {
