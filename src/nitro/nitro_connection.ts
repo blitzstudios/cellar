@@ -70,6 +70,27 @@ function applyPragmas(conn: ReturnType<typeof open>, name: string): void {
   }
 }
 
+/**
+ * Shred specs already serialized. A store hands the same spec object to every ingest of a partition variant, and the
+ * spec describes the schema rather than the body, so serializing it per call re-encodes a constant.
+ */
+const serializedSpecs = new WeakMap<ShredSpec, string>();
+
+function serializeSpec(spec: ShredSpec): string {
+  const cached = serializedSpecs.get(spec);
+  if (cached !== undefined) {
+    // Caching on identity assumes a spec is never edited after its first ingest. Nothing freezes them, so in dev the
+    // assumption is checked rather than trusted: silently shredding against a stale spec writes the wrong columns.
+    if (__DEV__ && JSON.stringify(spec) !== cached) {
+      throw new Error(`nitro_connection: shred spec for '${spec.table}' was mutated after it was first serialized`);
+    }
+    return cached;
+  }
+  const json = JSON.stringify(spec);
+  serializedSpecs.set(spec, json);
+  return json;
+}
+
 function adaptHandle(conn: ReturnType<typeof open>): PinnedConnection {
   return {
     execute: (sql, params) => conn.execute(sql, toNativeParams(params)),
@@ -81,7 +102,7 @@ function adaptHandle(conn: ReturnType<typeof open>): PinnedConnection {
       await conn.executeBatchAsync(commands.map(([query, params]) => ({ query, params: toNativeParams(params) })));
     },
     shredJsonArrayAsync: async (spec: ShredSpec, rawJson: string, scopeBinds: ReadonlyArray<string | number | null>): Promise<number> => {
-      const params = toNativeParams([JSON.stringify(spec), rawJson, ...scopeBinds]);
+      const params = toNativeParams([serializeSpec(spec), rawJson, ...scopeBinds]);
       const result = await conn.executeAsync(NITRO_SHRED_SENTINEL, params);
       const rowsAffected = (result as { rowsAffected?: number } | undefined)?.rowsAffected;
       return typeof rowsAffected === 'number' ? rowsAffected : 0;

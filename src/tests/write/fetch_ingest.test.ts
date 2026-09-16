@@ -64,6 +64,8 @@ function makeCfg(over: Partial<FetchIngestConfig<string>> = {}) {
       state.etag = etag;
     }),
     ingestRaw: jest.fn(async () => 5),
+    // Present by default: the unchanged-body guard only runs for a store taking concurrent socket writes.
+    holdWrites: jest.fn(() => () => {}),
     ...over,
   };
 
@@ -223,6 +225,18 @@ describe('createFetchIngest — unchanged body short-circuit', () => {
 
     const rows = getIngestTimings().map((timing) => timing.rows);
     expect(rows).toEqual([5, -2]);
+  });
+
+  it('does not hash bodies for a store with no concurrent writes, where re-shredding one is only a repaint', async () => {
+    const harness = makeCfg({ holdWrites: undefined });
+    harness.setResponse({ data: '[{"id":"a","pts":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+    await ingest.prefetch('week');
+
+    const out = await ingest.prefetch('week');
+
+    expect(harness.cfg.ingestRaw).toHaveBeenCalledTimes(2);
+    expect(out.count).toBe(5);
   });
 });
 
