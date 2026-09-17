@@ -930,6 +930,73 @@ describe('row_table — memory and SQLite answer the same `where`', () => {
   });
 });
 
+describe('row_table — digests say which rows moved', () => {
+  beforeAll(async () => {
+    await initSqlJs();
+  });
+
+  const seed: TestRow[] = [row('a', 'us', 'NE', 2), row('b', 'us', null, 1), row('c', 'us', 'KC', null)];
+
+  const memoryWith = (rows: readonly TestRow[]): ReturnType<typeof createMemoryRowTable<TestRow>> => {
+    const db = createMemoryRowTable(schema);
+    db.overwrite({ region: 'us' }, rows as TestRow[]);
+    return db;
+  };
+
+  const sqliteWith = (rows: readonly TestRow[]) => {
+    const conn = createSqlJsConnection({ capabilities: 'full' });
+    const db = createSqliteRowTable(schema, conn);
+    db.init();
+    db.overwrite({ region: 'us' }, rows as TestRow[]);
+    conn.executed.length = 0;
+    return { db, conn };
+  };
+
+  it('agrees between the backends, including over the null columns each spells its own way', () => {
+    const memory = memoryWith(seed).digests({ region: 'us' }, 'id');
+    const { db } = sqliteWith(seed);
+    expect([...memory.keys()].sort()).toEqual(['a', 'b', 'c']);
+    expect(db.digests({ region: 'us' }, 'id')).toEqual(memory);
+  });
+
+  it('moves a row digest when any column changes, and leaves every other row alone', () => {
+    const before = memoryWith(seed).digests({ region: 'us' }, 'id');
+    const after = memoryWith([row('a', 'us', 'NE', 2), row('b', 'us', 'NE', 1), row('c', 'us', 'KC', null)]).digests({ region: 'us' }, 'id');
+    expect(after.get('b')).not.toEqual(before.get('b'));
+    expect(after.get('a')).toEqual(before.get('a'));
+    expect(after.get('c')).toEqual(before.get('c'));
+  });
+
+  it('cannot be fooled by two rows whose values run together, which is what the separator is for', () => {
+    const digests = memoryWith([row('a', 'us', 'x', null), row('b', 'us', null, null)]).digests({ region: 'us' }, 'id');
+    expect(digests.get('a')).not.toEqual(digests.get('b'));
+  });
+
+  it('leaves a row the filter does not match absent, rather than digesting it as empty', () => {
+    const { db } = sqliteWith(seed);
+    expect([...db.digests({ region: 'us', cohort: 'KC' }, 'id').keys()]).toEqual(['c']);
+    expect(db.digests({ region: 'eu' }, 'id').size).toBe(0);
+  });
+
+  it('narrowed to named rows, answers for the ones it holds and stays silent on the rest', () => {
+    const { db } = sqliteWith(seed);
+    const digests = db.digests({ region: 'us' }, 'id', ['a', 'missing']);
+    expect([...digests.keys()]).toEqual(['a']);
+    expect(db.digests({ region: 'us' }, 'id', []).size).toBe(0);
+  });
+
+  it('never reads the rows themselves, which is the whole point of asking', () => {
+    const { db, conn } = sqliteWith(seed);
+    db.digests({ region: 'us' }, 'id');
+    db.digests({ region: 'us' }, 'id', ['a', 'b']);
+    expect(conn.executed).toHaveLength(2);
+    for (const sql of conn.executed) {
+      expect(sql).not.toContain('SELECT *');
+      expect(sql).toContain('char(1)');
+    }
+  });
+});
+
 describe('row_table — the shred spec must delete what the scope names', () => {
   const shredSpec = (deleteWhere: Array<{ column: string; bindIndex: number }>): NativeShredSpec => ({
     specs: {

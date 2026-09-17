@@ -32,6 +32,7 @@ export type { MaybeId, ReadOptions, Loose } from './read/facade';
 export { pairRead } from './read/facade';
 export type { WindowedBlock } from './read/windowed_list';
 export { createWindowedList } from './read/windowed_list';
+export type { RowProjection, RowProjectionDef } from './read/projection';
 export type { VersionAtom } from './reactivity/version_atom';
 export type { Dep } from './reactivity/tracking';
 export { runTracked, runSubscribed } from './reactivity/tracking';

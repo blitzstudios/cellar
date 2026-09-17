@@ -4,7 +4,7 @@ import { cacheKey } from '../args_key';
 import { chunkList } from '../collections';
 import { createPresence, whereMapKey } from './presence';
 import { columnNames, FindOpts, IndexDef, RowShape, RowTable, RowTableSchema, SqlValue } from './types';
-import { assertRowsMatchWhere, comparator, whereClause } from './query';
+import { assertRowsMatchWhere, comparator, digestColumns, whereClause } from './query';
 import {
   addColumnSql,
   addedColumns,
@@ -184,7 +184,35 @@ export function createSqliteRowTable<Row extends RowShape>(
     return readRows<Row>(conn, `SELECT * FROM ${schema.table}${sql};`, params);
   }
 
+  /** Built once: `char(1)` is {@link DIGEST_SEP}, and `ifnull` makes a null read empty, as the JS twin does. */
+  const digestExpr = digestColumns(schema)
+    .map((column) => `ifnull(${column},'')`)
+    .join(" || char(1) || ");
+
+  function readDigests(where: Partial<Row>, column: keyof Row & string, values?: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    const filter = whereClause(where);
+    const select = `SELECT ${column} AS id, ${digestExpr} AS digest FROM ${schema.table}`;
+    if (!values) {
+      for (const row of readRows<{ id: SqlValue; digest: SqlValue }>(conn, `${select}${filter.sql};`, filter.params)) {
+        out.set(String(row.id), String(row.digest));
+      }
+      return out;
+    }
+    if (!values.length) return out;
+    const prefix = filter.sql ? `${filter.sql} AND ` : ' WHERE ';
+    for (const chunk of chunkList(values, DEFAULT_IN_CHUNK)) {
+      const sql = `${select}${prefix}${column} IN (${bindList(chunk.length)});`;
+      for (const row of readRows<{ id: SqlValue; digest: SqlValue }>(conn, sql, [...filter.params, ...chunk])) {
+        out.set(String(row.id), String(row.digest));
+      }
+    }
+    return out;
+  }
+
   return {
+    primaryKey: schema.primaryKey,
+
     init(): void {
       const live = readLiveSchema(conn, schema.table);
       const plan = planSchemaMigration(schema, live, nativeShredSpec);
@@ -267,6 +295,10 @@ export function createSqliteRowTable<Row extends RowShape>(
       const row = readRows<{ one?: number }>(conn, `SELECT 1 AS one FROM ${schema.table}${sql} LIMIT 1;`, params)[0];
       presence.observe(where, !!row);
       return !!row;
+    },
+
+    digests(where: Partial<Row>, column: keyof Row & string, values?: readonly string[]): Map<string, string> {
+      return readDigests(where, column, values);
     },
 
     getMeta(where: Partial<Row>): string | undefined {

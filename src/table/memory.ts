@@ -3,7 +3,7 @@
 import { cacheKey } from '../args_key';
 import { createPresence, whereMapKey } from './presence';
 import { FindOpts, RowShape, RowTable, RowTableSchema } from './types';
-import { assertRowsMatchWhere, comparator, matchesWhere } from './query';
+import { assertRowsMatchWhere, comparator, digestColumns, digestRow, matchesWhere } from './query';
 
 /**
  * The {@link RowTable} a store gets where the platform has no SQLite: the web build, every test, and the stretch before
@@ -16,6 +16,7 @@ export function createMemoryRowTable<Row extends RowShape>(schema: RowTableSchem
   const rowsList: Row[] = [];
   const presence = createPresence();
   const meta = new Map<string, string>();
+  const digestCols = digestColumns(schema);
 
   const pkOf = (row: Row): string => cacheKey(...schema.primaryKey.map((column) => String(row[column])));
   const allRows = (): Iterable<Row> => (hasPk ? byPk.values() : rowsList);
@@ -45,6 +46,8 @@ export function createMemoryRowTable<Row extends RowShape>(schema: RowTableSchem
   }
 
   return {
+    primaryKey: schema.primaryKey,
+
     init(): void {},
 
     async upsert(rows: readonly Row[]): Promise<number> {
@@ -95,6 +98,17 @@ export function createMemoryRowTable<Row extends RowShape>(schema: RowTableSchem
       }
       presence.observe(where, found);
       return found;
+    },
+
+    digests(where: Partial<Row>, column: keyof Row & string, values?: readonly string[]): Map<string, string> {
+      const wanted = values && new Set(values);
+      const out = new Map<string, string>();
+      if (wanted && !wanted.size) return out;
+      for (const row of allRows()) {
+        const id = String(row[column]);
+        if (matchesWhere(row, where) && (!wanted || wanted.has(id))) out.set(id, digestRow(row, digestCols));
+      }
+      return out;
     },
 
     getMeta(where: Partial<Row>): string | undefined {

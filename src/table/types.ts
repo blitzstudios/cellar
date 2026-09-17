@@ -59,6 +59,12 @@ export interface FindOpts<Row extends RowShape> {
 export interface RowTable<Row extends RowShape> {
   init(): void;
   /**
+   * The schema's primary key, so a caller holding only the table can work out what identifies a row without being
+   * handed the schema too. `[]` for a table that declares none. A row projection reads it to derive which column
+   * identifies a row inside one partition.
+   */
+  readonly primaryKey: ReadonlyArray<keyof Row & string>;
+  /**
    * Merges `rows` in by primary key, leaving every other row alone, which is what a socket delta wants. Requires a
    * primary key: without one there is nothing to replace on, and each call appends duplicates instead.
    */
@@ -79,6 +85,16 @@ export interface RowTable<Row extends RowShape> {
   /** Returns matching rows in storage order; the caller reorders them to match `values`. */
   findIn(where: Partial<Row>, column: keyof Row & string, values: readonly string[], opts?: { chunk?: number }): Row[];
   has(where: Partial<Row>): boolean;
+  /**
+   * The content digest of each row matching `where`, keyed by `column`, without materializing the rows. Narrowed to
+   * `values` when the caller already knows which rows it is asking about.
+   *
+   * This is what makes a version bump survivable. A bump invalidates every value derived from the partition, but it
+   * says nothing about which rows moved; a digest does, so only those rows are read and only their values rebuilt.
+   * SQLite concatenates the columns itself, so one short string per row crosses the bridge rather than every column
+   * behind it. A row the filter does not match is absent rather than carrying an empty digest.
+   */
+  digests(where: Partial<Row>, column: keyof Row & string, values?: readonly string[]): Map<string, string>;
   getMeta(where: Partial<Row>): string | undefined;
   setMeta(where: Partial<Row>, value: string | undefined): void;
 }

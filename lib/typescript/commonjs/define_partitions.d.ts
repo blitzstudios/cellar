@@ -8,6 +8,7 @@ import { Read, ReadDef, ReadGroupedDef, ReadManyDef, VarySpec } from './read/sur
 import { RowShape, RowTable } from './table/types';
 import { BoundMemos, MemoDeclaration } from './caches';
 import { VersionAtom } from './reactivity/version_atom';
+import { RowProjection, RowProjectionDef } from './read/projection';
 import { PrimeState } from './prime_state';
 import { DataResult } from './store_result';
 import type { Loose } from './read/facade';
@@ -126,6 +127,12 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
      * thing it wants and never builds either. See {@link createMemos}.
      */
     memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
+    /**
+     * Declares a view-model shape built one row at a time, in two calls like the reads: `project<Vm>()({ … })`. Every
+     * read handing back that shape goes through the one projection, so a row is built once however many ask, and a
+     * version bump only rebuilds the rows whose content actually moved. See {@link createRowProjection}.
+     */
+    project: <Vm>() => (def: RowProjectionDef<Row, Vm>) => RowProjection<Key, Row, Vm>;
     where: (key: Key) => Partial<Row>;
     /** The key a partition record addresses, interning the pairing so a fetch can get the record back. */
     keyOf: (partition: Descriptor) => Key;

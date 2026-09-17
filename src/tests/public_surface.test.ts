@@ -30,7 +30,8 @@ describe('the core entry point', () => {
     expect(exportedFrom('index.ts')).toEqual([
       'ColumnDef', 'DATA_RESULT_KEYS', 'DataResult', 'DataStatus', 'Dep', 'Loose', 'MaybeId', 'MemoDeclaration',
       'MemoFactory', 'MemoPart', 'MemoSource', 'NativeShredSpec', 'PinnedConnection', 'PrimeState', 'QueryClient', 'QuerySpec',
-      'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM', 'RawQuery', 'ReadOptions', 'RowOf', 'RowTable', 'RowTableSchema',
+      'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM', 'RawQuery', 'ReadOptions', 'RowOf', 'RowProjection', 'RowProjectionDef',
+      'RowTable', 'RowTableSchema',
       'ShredColumn', 'ShredColumns', 'ShredOp', 'ShredSpec', 'SqlValue', 'SqliteConnection', 'VersionAtom',
       'WindowedBlock', 'bySource', 'byVersion', 'configureDataKernel', 'createMemoryRowTable', 'createOnceGuard',
       'createPushIngest', 'createSqliteRowTable', 'createTrackedSelector', 'createWindowedList', 'definePartitions',
