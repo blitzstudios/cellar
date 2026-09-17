@@ -1,7 +1,8 @@
 /**
- * The two services the kernel takes from its host rather than owning: where a report goes, and the React Query
- * runtime an ingest mounts on. A host calls {@link configureDataKernel} once during startup, before it binds any
- * store's backend. Until it does, both stay inert, so a store still reads its rows and a test still renders.
+ * The three services the kernel takes from its host rather than owning: where a report goes, the React Query
+ * runtime an ingest mounts on, and when a read is live. A host calls
+ * {@link configureDataKernel} once during startup, before it binds any store's backend. Until it does, each stays
+ * inert, so a store still reads its rows and a test still renders.
  */
 /** The Sentry-shaped context a kernel report carries. */
 export interface CaptureContext {
@@ -60,10 +61,35 @@ export interface QueryRuntime {
         queries: readonly QuerySpec<T>[];
     }) => readonly QueryStatus[];
 }
-/** Everything a host supplies. Either half may be configured on its own. */
+/**
+ * Whether a read should still be taking writes, and how to hear about that changing.
+ *
+ * The kernel never learns why a gate went dead — a blurred screen, a hidden subtree, a backgrounded app are all the
+ * same boolean to it, and the host owns which of those count. It is deliberately not a boolean returned from a hook
+ * either: this gates a read's *subscription*, not its render. A read that re-rendered when the gate moved would wake
+ * every screen in the stack on each navigation, which is the cost being avoided.
+ */
+export interface ReadGate {
+    /** While false, reads under this gate hold the value they last had and stop taking writes. */
+    isLive: () => boolean;
+    /** Fires on every transition, both directions. Must not re-render the caller. */
+    onChange: (listener: () => void) => () => void;
+}
+/**
+ * The host's policy for when a read is live. `useReadGate` is a hook so it can read the enclosing subtree's owner
+ * from context.
+ *
+ * It MUST return a reference-stable gate for as long as that owner is the same one — the kernel keys its
+ * subscription on the gate's identity, so one rebuilt each render would resubscribe each render.
+ */
+export interface ReadGateRuntime {
+    useReadGate: () => ReadGate;
+}
+/** Everything a host supplies. Each part may be configured on its own. */
 export interface DataKernelRuntime {
     errors: ErrorSink;
     query: QueryRuntime;
+    gate: ReadGateRuntime;
 }
 /** Drops every report. The default until a host configures one. */
 export declare const INERT_ERRORS: ErrorSink;
@@ -72,11 +98,13 @@ export declare const INERT_ERRORS: ErrorSink;
  * and reads instead of breaking the rules of hooks.
  */
 export declare const INERT_QUERY: QueryRuntime;
+export declare const INERT_GATE: ReadGateRuntime;
 /**
- * Installs a host's services. Each half given replaces the one before it, so a host may configure error reporting and
- * the query runtime from different places, and a test may install one and leave the other inert.
+ * Installs a host's services. Each part given replaces the one before it, so a host may configure error reporting,
+ * the query runtime and the read gate from different places, and a test may install one and leave the rest inert.
  */
 export declare function configureDataKernel(next: Partial<DataKernelRuntime>): void;
 export declare function errorSink(): ErrorSink;
 export declare function queryRuntime(): QueryRuntime;
+export declare function readGateRuntime(): ReadGateRuntime;
 //# sourceMappingURL=runtime.d.ts.map

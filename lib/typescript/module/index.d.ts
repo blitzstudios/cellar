@@ -7,7 +7,7 @@
  * kernel leans on it heavily inside — the type checker infers it at a call site, and `src/tests/public_surface.test.ts`
  * fails if this list grows without someone meaning it to. Test-only fixtures live behind `./testing` instead.
  */
-export type { QueryClient, QuerySpec, QueryStatus } from './runtime';
+export type { QueryClient, QuerySpec, QueryStatus, ReadGate, ReadGateRuntime } from './runtime';
 export { configureDataKernel } from './runtime';
 export { defineSqliteStore } from './define_sqlite_store';
 export { definePartitions } from './define_partitions';
