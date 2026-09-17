@@ -10,7 +10,7 @@ import { readGateRuntime } from '../runtime';
 import { Dep, runSubscribed, trackDependency } from './tracking';
 
 /** Whether a part list addresses a real partition: at least one part, and every part filled in. */
-export const isLive = (parts: readonly string[]): boolean => parts.length > 0 && parts.every(Boolean);
+export const addressesPartition = (parts: readonly string[]): boolean => parts.length > 0 && parts.every(Boolean);
 
 /** Stable empty part list, for a hook that must run in the same position while addressing nothing. */
 export const NO_PARTS: readonly string[] = Object.freeze([]);
@@ -191,7 +191,7 @@ export function createVersionAtom(root: string): VersionAtom {
 
   const useVersion = (parts: readonly string[], enabled?: boolean): number => {
     const spec = specifier(parts);
-    const isEnabled = (enabled ?? true) && isLive(parts);
+    const isEnabled = (enabled ?? true) && addressesPartition(parts);
     const specs = useMemo(() => [spec], [spec]);
     const { subscribe, getSnapshot } = useHeldVersion(specs, spec, isEnabled);
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
@@ -240,7 +240,7 @@ export function createVersionAtom(root: string): VersionAtom {
   ): T => {
     const specsKey = partitionsKey(partsList);
     const specs = useMemo(
-      () => partsList.filter(isLive).map((parts) => specifier(parts)),
+      () => partsList.filter(addressesPartition).map((parts) => specifier(parts)),
       // eslint-disable-next-line react-hooks/exhaustive-deps -- specsKey is the stable identity of the partition set
       [specsKey],
     );

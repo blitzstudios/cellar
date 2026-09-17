@@ -1,7 +1,7 @@
 /** The per-partition version counter that stands in for change notification: a write bumps it, a reader watches it. */
 import { DependencyList } from 'react';
 /** Whether a part list addresses a real partition: at least one part, and every part filled in. */
-export declare const isLive: (parts: readonly string[]) => boolean;
+export declare const addressesPartition: (parts: readonly string[]) => boolean;
 /** Stable empty part list, for a hook that must run in the same position while addressing nothing. */
 export declare const NO_PARTS: readonly string[];
 /** A partition key paired with the parts it is keyed by, for a caller needing both over a set of them — a presence probe across a `readMany`. */

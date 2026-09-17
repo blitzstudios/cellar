@@ -11,7 +11,7 @@ import { createFetchIngest, FetchIngest, RawQuery } from './write/fetch_ingest';
 import { createReadSurface, Read, ReadDef, ReadGroupedDef, ReadManyDef, useResult, VarySpec } from './read/surface';
 import { RowShape, RowTable } from './table/types';
 import { BoundMemos, createBoundedLru, createMemos, MemoDeclaration } from './caches';
-import { isLive, NO_PARTS, VersionAtom } from './reactivity/version_atom';
+import { addressesPartition, NO_PARTS, VersionAtom } from './reactivity/version_atom';
 import { PartitionField, partitionKeyOf } from './read/partition_fields';
 import { createRowProjection, RowProjection, RowProjectionDef, rowVmMemo, RowVmMemo } from './read/projection';
 import { NO_PRIMING, PrimeState } from './prime_state';
@@ -188,7 +188,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     interned.set(key as unknown as string, partition);
     return key;
   };
-  /** The key an absent partition maps to: all-empty parts, which `isLive` rejects, so nothing is read or primed. */
+  /** The key an absent partition maps to: all-empty parts, which `addressesPartition` rejects, so nothing is read or primed. */
   const GAP_KEY = (fields ? Object.freeze({}) : '') as unknown as Key;
   const keyOfMaybe = (partition: MaybePartition<Descriptor>): Key => (partition == null ? GAP_KEY : keyOf(partition));
 
@@ -277,14 +277,14 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
 
   /**
    * The key a priming hook's args address. Args short of a value are `keyOfArgs`' business as usual: a missing field
-   * becomes an empty part and `key.of` answers `null`, and either way `isLive` rejects the key, so nothing is primed.
+   * becomes an empty part and `key.of` answers `null`, and either way `addressesPartition` rejects the key, so nothing is primed.
    */
   const keyOfHookArgs = (args: Loose<Args>): Key => keyOfArgs(args as Args);
 
   function usePrimeAndVersion(args: Loose<Args> | undefined, options?: { enabled?: boolean }): DataResult<number> {
     const key = args === undefined ? undefined : keyOfHookArgs(args);
     const parts = key === undefined ? NO_PARTS : toParts(key);
-    const isEnabled = (options?.enabled ?? true) && key !== undefined && isLive(parts);
+    const isEnabled = (options?.enabled ?? true) && key !== undefined && addressesPartition(parts);
     const prime = usePriming(key, isEnabled);
     const ver = version.useVersion(parts, isEnabled);
     const partsKey = cacheKey(...parts);

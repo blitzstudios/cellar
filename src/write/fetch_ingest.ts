@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 
 import { partitionLabel, partitionsKey } from '../args_key';
-import { isLive, NO_PARTS, partitionEntries, VersionAtom } from '../reactivity/version_atom';
+import { addressesPartition, NO_PARTS, partitionEntries, VersionAtom } from '../reactivity/version_atom';
 import { PrimeState } from '../prime_state';
 import { recordIngestTiming } from '../diagnostics/ingest_timing';
 import { queryRuntime } from '../runtime';
@@ -239,7 +239,7 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
 
   function usePrime(key: Key | undefined, enabled?: boolean): PrimeState {
     const parts = key === undefined ? NO_PARTS : cfg.toParts(key);
-    const isEnabled = (enabled ?? true) && isLive(parts);
+    const isEnabled = (enabled ?? true) && addressesPartition(parts);
     // Asked for whenever the key names a partition, not only when this caller is enabled. A disabled caller still
     // constructs the observer, and an observer constructed without a staleTime treats its data as stale on arrival —
     // it then fetches when it is enabled, however fresh the cache is.
@@ -257,7 +257,7 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
 
   function usePrimeMany(keys: readonly Key[], enabled = true): PrimeState {
     // `useFocusGatedQueries` keys on this array's identity, and callers rebuild it each render, so memo on contents.
-    const addressable = partitionEntries(keys, cfg.toParts).filter((entry) => isLive(entry.parts));
+    const addressable = partitionEntries(keys, cfg.toParts).filter((entry) => addressesPartition(entry.parts));
     const identity = partitionsKey(addressable.map((entry) => entry.parts));
     const queries = useMemo(
       () =>
@@ -283,7 +283,7 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
 
   function prefetch(key: Key, opts?: { staleTime?: number }): Promise<{ version: number; count: number }> {
     const parts = cfg.toParts(key);
-    if (!isLive(parts)) return Promise.resolve({ version: cfg.version.get(parts), count: 0 });
+    if (!addressesPartition(parts)) return Promise.resolve({ version: cfg.version.get(parts), count: 0 });
     // Shares `usePrime`'s query key, so a partition a hook already primed resolves from the query cache — and that is
     // `staleTime`'s decision, so the timings are spread rather than named, to keep an absent one absent.
     return queryRuntime().client().fetchQuery<{ version: number; count: number }>({
@@ -302,7 +302,7 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
 
   function invalidate(key: Key): void {
     const parts = cfg.toParts(key);
-    if (!isLive(parts)) return;
+    if (!addressesPartition(parts)) return;
     // The etag survives, so an unchanged partition costs a 304 and stops there.
     queryRuntime().client().invalidateQueries({ queryKey: queryKey(parts), exact: true });
   }

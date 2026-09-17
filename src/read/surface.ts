@@ -9,7 +9,7 @@ import { cacheKey, EMPTY_VARY, isVaryPresent, KEY_SEP, partitionsKey, VaryValue,
 import { getOrCreate } from '../collections';
 import { PartitionField, partitionKeyOf, requiredFieldsOf, VaryField, varyValuesOf } from './partition_fields';
 import { createVersionedCache, shallowEqualValue } from '../caches';
-import { isLive, NO_PARTS, PartitionEntry, partitionEntries, VersionAtom } from '../reactivity/version_atom';
+import { addressesPartition, NO_PARTS, PartitionEntry, partitionEntries, VersionAtom } from '../reactivity/version_atom';
 import { createOnceGuard, onGuardReset } from '../diagnostics/once_guard';
 import { NO_PRIMING, type PrimeState } from '../prime_state';
 import { DataResult, DataStatus, makeResult, offHeapStatus } from '../store_result';
@@ -235,7 +235,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
 
   const versionOf = (partitions: readonly (readonly string[])[]): number => {
     let sum = 0;
-    for (const parts of partitions) if (isLive(parts)) sum += kernel.version.get(parts);
+    for (const parts of partitions) if (addressesPartition(parts)) sum += kernel.version.get(parts);
     return sum;
   };
 
@@ -246,7 +246,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   const presenceByVersion = createVersionedCache<boolean>(PRESENCE_CACHE_MAX);
   // Memoizable per version because presence only flips on a write, and every write bumps.
   const hasOne = (key: Key, parts: readonly string[]): boolean => presenceByVersion.read(cacheKey(...parts), kernel.version.get(parts), () => kernel.has(key));
-  const hasAny = (entries: readonly PartitionEntry<Key>[]): boolean => entries.some((entry) => isLive(entry.parts) && hasOne(entry.key, entry.parts));
+  const hasAny = (entries: readonly PartitionEntry<Key>[]): boolean => entries.some((entry) => addressesPartition(entry.parts) && hasOne(entry.key, entry.parts));
 
   /** Starts a cold partition's fetch. Only `getValue` needs it; a reactive read primes through `usePrime`. */
   const primeIfCold = (key: Key, parts: readonly string[]): void => {
@@ -264,7 +264,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     const keyOf = partitionKeyOf<Args, Key>(spec);
     const varyOf = varyResolver<Args>(def);
     const select = overArgs<Args, Key, T, V>(def.select);
-    const gatesFor = (args: Args, parts: readonly string[], vary: readonly VaryValue[], wanted: boolean) => readGates(def, args, wanted && isLive(parts), vary);
+    const gatesFor = (args: Args, parts: readonly string[], vary: readonly VaryValue[], wanted: boolean) => readGates(def, args, wanted && addressesPartition(parts), vary);
 
     const cached = (args: Args, key: Key, parts: readonly string[], argsKey: string): T =>
       getCache.read(argsKey, kernel.version.get(parts), () => select(args, key));
@@ -273,7 +273,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       if (args === undefined) return def.empty;
       const key = keyOf(args);
       const parts = toParts(key);
-      if (!isLive(parts)) return def.empty;
+      if (!addressesPartition(parts)) return def.empty;
       // Must run on every call, cache hits included, or the enclosing tracking scope misses this dependency.
       kernel.version.get(parts);
       const vary = varyOf(args);
@@ -303,7 +303,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const doRefetch = useCallback(() => {
         if (key !== undefined) ingest?.refetch(key);
       }, [argsKey]); // eslint-disable-line react-hooks/exhaustive-deps -- `argsKey` covers `key`
-      return useReadTail(data, gates.read, () => isLive(parts) && hasOne(key as Key, parts), prime, doRefetch);
+      return useReadTail(data, gates.read, () => addressesPartition(parts) && hasOne(key as Key, parts), prime, doRefetch);
     }
 
     return { getValue, useValue, requires: def.requires ?? requiredFieldsOf<Args, Key>(spec, def.varyBy) };
@@ -326,7 +326,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
 
     /** `read`'s gates over a set: addressable when at least one partition is, since the rest are gaps. */
     const gatesFor = (args: Args, partitions: readonly (readonly string[])[], vary: readonly VaryValue[], wanted: boolean) =>
-      readGates(def, args, wanted && partitions.some(isLive), vary);
+      readGates(def, args, wanted && partitions.some(addressesPartition), vary);
 
     const cached = (args: Args, named: Named, partitions: readonly (readonly string[])[], argsKey: string): T =>
       getCache.read(argsKey, versionOf(partitions), () => select(args, named));
@@ -340,7 +340,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       versionOf(partitions);
       const vary = varyOf(args);
       const gates = gatesFor(args, partitions, vary, true);
-      if (gates.prime) for (const entry of entries) if (isLive(entry.parts)) primeIfCold(entry.key, entry.parts);
+      if (gates.prime) for (const entry of entries) if (addressesPartition(entry.parts)) primeIfCold(entry.key, entry.parts);
       if (!gates.read || !hasAny(entries)) return def.empty;
       return cached(args, named, partitions, cacheKeyOf(partitions, vary));
     }
