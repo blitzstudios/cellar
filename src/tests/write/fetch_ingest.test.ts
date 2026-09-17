@@ -537,8 +537,9 @@ describe('createFetchIngest — usePrime (reactive wiring)', () => {
     expect(config.enabled).toBe(true);
     expect(config.staleTime).toBe(1000);
     expect(config.cacheTime).toBe(2000);
-    // Must include `isError`, or a failed fetch never re-renders the read that would report it.
-    expect(config.notifyOnChangeProps).toEqual(['isInitialLoading', 'isFetching', 'isError']);
+    // Must include `isError`, or a failed fetch never re-renders the read that would report it. Must exclude
+    // `isFetching`, which toggles twice per fetch and would wake every reader on the partition to say nothing changed.
+    expect(config.notifyOnChangeProps).toEqual(['isInitialLoading', 'isError']);
     expect(res).toEqual({ isInitialLoading: false, isFetching: false, isError: false });
   });
 
@@ -595,7 +596,7 @@ describe('createFetchIngest — usePrimeMany (a partition set whose size varies 
       ['test_ingest', 'us'],
       ['test_ingest', 'eu'],
     ]);
-    expect(first[0].notifyOnChangeProps).toEqual(['isInitialLoading', 'isFetching', 'isError']);
+    expect(first[0].notifyOnChangeProps).toEqual(['isInitialLoading', 'isError']);
 
     renderHook(() => ingest.usePrimeMany(['us']));
     expect(useFocusGatedQueriesMock.mock.calls[1][0].queries).toHaveLength(1);

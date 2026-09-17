@@ -13,6 +13,7 @@ export interface DataResult<T> {
   data: T;
   status: DataStatus;
   isLoading: boolean;
+  /** In flight. Accurate when read, but not on its own a reason to re-render — see {@link PrimeState.isFetching}. */
   isFetching: boolean;
   isSuccess: boolean;
   isError: boolean;

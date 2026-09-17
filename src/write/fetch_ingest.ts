@@ -8,7 +8,18 @@ import { PrimeState } from '../prime_state';
 import { recordIngestTiming } from '../diagnostics/ingest_timing';
 import { queryRuntime } from '../runtime';
 
-const NOTIFY_ON_PRIME_STATE = ['isInitialLoading', 'isFetching', 'isError'] as const;
+/**
+ * What a change in the fetch's state is allowed to repaint a reader for. Deliberately short of every field
+ * {@link PrimeState} carries: `isFetching` is left out.
+ *
+ * `isFetching` toggles twice on every fetch, and each toggle wakes every reader primed on that partition — hundreds
+ * of them across the app, for a flag that says only that a refresh is in flight. What it does not say is that
+ * anything changed; the rows arriving is a version bump, and that is what repaints a read. So this leaves it
+ * unobserved rather than unavailable: `result.isFetching` is still read fresh at render, it just no longer causes a
+ * render of its own. The first load stays reactive, since `isInitialLoading` covers exactly the case of a fetch in
+ * flight with nothing yet to show.
+ */
+const NOTIFY_ON_PRIME_STATE = ['isInitialLoading', 'isError'] as const;
 
 /**
  * What the ingest reads off a store's request, and so the shape a `write/raw_query.ts` has to hand back: the undecoded
