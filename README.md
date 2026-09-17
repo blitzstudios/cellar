@@ -213,6 +213,10 @@ A store has as many partitions as its callers ask for — one per group, or thou
   only added columns, rebuilt from the next fetch otherwise.
 - **Reactivity per slice, not per store.** Each partition carries a version, and a read subscribes to the
   versions it touches. A write to one slice repaints its readers and nobody else's.
+- **Reactivity per row, where a read asks for it.** A version says the slice was written, not what changed in
+  it, and rows come back from SQLite as fresh objects — so a read rebuilding view models would repaint every
+  subscriber on every fetch. Declare the shape with `project` and the kernel digests the rows instead, rebuilds
+  only the ones that moved, and keeps the reference for the rest.
 - **A fallback that keeps the app running.** Every store also runs over an in-memory row table. That is the web
   and test path, and it is where a store lands if SQLite fails mid-session, so a database error degrades
   performance instead of breaking reads.
@@ -258,6 +262,7 @@ same replacement from an undecoded response body.
 | export | what it gives you |
 | --- | --- |
 | `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about |
+| `partitions.project()` | a view-model shape built one row at a time: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply the row-to-view-model function; a bump then rebuilds only the rows whose content moved and hands back the previous reference for the rest, so the readers of an unchanged row don't repaint. Reads of the same shape share one projection, so a row is built once however many ask |
 | `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares |
 | `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
 | `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |
