@@ -398,7 +398,7 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `args_key.ts`                                    | what a read's key is derived from: a value by its content, a partition, a vary list |
 | `caches.ts`                                      | bounded LRU, the two memos and the block that binds them to a store's partitions, and the `isEqual` family |
 | `collections.ts`                                 | `chunkList` and `getOrCreate`                                             |
-| `runtime.ts`                                     | the host's two services — where a report goes, and the query runtime an ingest mounts on — and the inert defaults until one is installed |
+| `runtime.ts`                                     | the host's three services — where a report goes, the query runtime an ingest mounts on, and when a read is live — and the inert defaults until one is installed |
 
 | `table/` — where rows live                       |                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
@@ -426,7 +426,7 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 
 | `reactivity/` — how a write reaches a component  |                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------ |
-| `version_atom.ts`                                | per-partition reactivity                                                 |
+| `version_atom.ts`                                | per-partition reactivity, and the host read gate applied to a subscription: a dead gate drops the subscription and holds the version, so the read keeps its value by reference and catches up in one render |
 | `tracked_selector.ts`, `tracking.ts`             | off-heap-aware reselect, for reads reached from Redux selectors; also the DEV guard that catches an unsubscribed render read (`render_phase.ts` is its phase probe) |
 
 | `diagnostics/` — how the layer reports on itself |                                                                          |

@@ -8,8 +8,9 @@
  * fails if this list grows without someone meaning it to. Test-only fixtures live behind `./testing` instead.
  */
 
-// What the host installs before it binds a backend: where a report goes, and the query runtime an ingest mounts on.
-export type { QueryClient, QuerySpec, QueryStatus } from './runtime';
+// What the host installs before it binds a backend: where a report goes, the query runtime an ingest mounts on, and
+// when a read is live.
+export type { QueryClient, QuerySpec, QueryStatus, ReadGate, ReadGateRuntime } from './runtime';
 export { configureDataKernel } from './runtime';
 
 // Declaring a store.

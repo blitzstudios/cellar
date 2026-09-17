@@ -1,11 +1,12 @@
 /** The per-partition version counter that stands in for change notification: a write bumps it, a reader watches it. */
 
-import { DependencyList, useCallback, useMemo } from 'react';
+import { DependencyList, useCallback, useMemo, useRef } from 'react';
 import { useSyncExternalStore } from 'use-sync-external-store/shim';
 import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/with-selector';
 
 import { cacheKey, GROUP_SEP, partitionsKey } from '../args_key';
 import { getOrCreate } from '../collections';
+import { readGateRuntime } from '../runtime';
 import { Dep, runSubscribed, trackDependency } from './tracking';
 
 /** Whether a part list addresses a real partition: at least one part, and every part filled in. */
@@ -114,11 +115,85 @@ export function createVersionAtom(root: string): VersionAtom {
     };
   };
 
+  const sumOf = (specs: readonly string[]): number => {
+    let sum = 0;
+    for (const spec of specs) sum += getSpec(spec);
+    return sum;
+  };
+
+  /**
+   * The host's read gate, applied to a subscription. While the gate is dead the subscription is dropped and the
+   * version is HELD at what it was when the gate closed, so a read keeps showing the value it already had rather
+   * than repainting with data nobody is looking at. When the gate goes live the subscription is restored and, only
+   * if the version moved meanwhile, one notification is sent so the reader catches up in a single render.
+   *
+   * Holding the VERSION rather than the value is what makes this nearly free: both hooks below feed the version to
+   * `useSyncExternalStore*`, and the selector variant memoizes on that snapshot, so an unchanged version means the
+   * selector never re-runs and the prior value comes back by reference.
+   *
+   * Why the subscription and not the render: a read that returned `empty` while gated would blank the screen, and a
+   * read that re-rendered when the gate moved would wake every screen in the stack on each navigation. Gating here
+   * leaves the gate invisible to the render.
+   */
+  function useHeldVersion(specs: readonly string[], activeKey: string, enabled: boolean) {
+    const gate = readGateRuntime().useReadGate();
+    // Non-null exactly while held. Written from the subscription below, never from `getSnapshot`, which stays pure.
+    const held = useRef<number | null>(null);
+
+    const subscribe = useCallback(
+      (onChange: () => void) => {
+        if (!enabled) return () => {};
+        let unsubs: (() => void)[] | null = null;
+        const attach = () => {
+          if (!unsubs) unsubs = specs.map((spec) => subscribeSpec(spec, onChange));
+        };
+        const detach = () => {
+          unsubs?.forEach((unsub) => unsub());
+          unsubs = null;
+        };
+        const sync = (announce: boolean) => {
+          if (gate.isLive()) {
+            const wasHeld = held.current;
+            held.current = null;
+            attach();
+            // Nothing moved while away, so there is nothing to catch up on and no render to spend.
+            if (announce && wasHeld !== null && wasHeld !== sumOf(specs)) onChange();
+          } else {
+            // Captured as the gate closes, so a bump arriving later cannot move what a held read shows.
+            held.current = sumOf(specs);
+            detach();
+          }
+        };
+        sync(false);
+        const offGate = gate.onChange(() => sync(true));
+        return () => {
+          detach();
+          offGate();
+          held.current = null;
+        };
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- activeKey is the stable identity of `specs`
+      [activeKey, enabled, gate],
+    );
+
+    const getSnapshot = useCallback(
+      () => {
+        if (!enabled) return 0;
+        const version = held.current;
+        return version !== null ? version : sumOf(specs);
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- activeKey is the stable identity of `specs`; the gate arrives through the ref
+      [activeKey, enabled],
+    );
+
+    return { subscribe, getSnapshot };
+  }
+
   const useVersion = (parts: readonly string[], enabled?: boolean): number => {
     const spec = specifier(parts);
     const isEnabled = (enabled ?? true) && isLive(parts);
-    const subscribe = useCallback((onChange: () => void) => (isEnabled ? subscribeSpec(spec, onChange) : () => {}), [spec, isEnabled]);
-    const getSnapshot = useCallback(() => (isEnabled ? getSpec(spec) : 0), [spec, isEnabled]);
+    const specs = useMemo(() => [spec], [spec]);
+    const { subscribe, getSnapshot } = useHeldVersion(specs, spec, isEnabled);
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   };
 
@@ -132,25 +207,7 @@ export function createVersionAtom(root: string): VersionAtom {
     isEqual: (left: T, right: T) => boolean,
     empty: T,
   ): T {
-    const subscribe = useCallback(
-      (onChange: () => void) => {
-        if (!enabled) return () => {};
-        const unsubs = specs.map((spec) => subscribeSpec(spec, onChange));
-        return () => unsubs.forEach((unsub) => unsub());
-      },
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- activeKey is the stable identity of `specs`
-      [activeKey, enabled],
-    );
-    const getVersionSnapshot = useCallback(
-      () => {
-        if (!enabled) return 0;
-        let sum = 0;
-        for (const spec of specs) sum += getSpec(spec);
-        return sum;
-      },
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- activeKey is the stable identity of `specs`
-      [activeKey, enabled],
-    );
+    const { subscribe, getSnapshot: getVersionSnapshot } = useHeldVersion(specs, activeKey, enabled);
     // `subscribe` above covers whatever `compute` reads, which is what the render-phase guard checks for.
     const selector = useCallback(
       () => (enabled ? runSubscribed(compute) : empty),

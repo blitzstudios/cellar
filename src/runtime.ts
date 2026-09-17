@@ -1,7 +1,8 @@
 /**
- * The two services the kernel takes from its host rather than owning: where a report goes, and the React Query
- * runtime an ingest mounts on. A host calls {@link configureDataKernel} once during startup, before it binds any
- * store's backend. Until it does, both stay inert, so a store still reads its rows and a test still renders.
+ * The three services the kernel takes from its host rather than owning: where a report goes, the React Query
+ * runtime an ingest mounts on, and when a read is live. A host calls
+ * {@link configureDataKernel} once during startup, before it binds any store's backend. Until it does, each stays
+ * inert, so a store still reads its rows and a test still renders.
  */
 
 import { createOnceGuard } from './diagnostics/once_guard';
@@ -56,10 +57,37 @@ export interface QueryRuntime {
   useQueries: <T>(specs: { queries: readonly QuerySpec<T>[] }) => readonly QueryStatus[];
 }
 
-/** Everything a host supplies. Either half may be configured on its own. */
+/**
+ * Whether a read should still be taking writes, and how to hear about that changing.
+ *
+ * The kernel never learns why a gate went dead — a blurred screen, a hidden subtree, a backgrounded app are all the
+ * same boolean to it, and the host owns which of those count. It is deliberately not a boolean returned from a hook
+ * either: this gates a read's *subscription*, not its render. A read that re-rendered when the gate moved would wake
+ * every screen in the stack on each navigation, which is the cost being avoided.
+ */
+export interface ReadGate {
+  /** While false, reads under this gate hold the value they last had and stop taking writes. */
+  isLive: () => boolean;
+  /** Fires on every transition, both directions. Must not re-render the caller. */
+  onChange: (listener: () => void) => () => void;
+}
+
+/**
+ * The host's policy for when a read is live. `useReadGate` is a hook so it can read the enclosing subtree's owner
+ * from context.
+ *
+ * It MUST return a reference-stable gate for as long as that owner is the same one — the kernel keys its
+ * subscription on the gate's identity, so one rebuilt each render would resubscribe each render.
+ */
+export interface ReadGateRuntime {
+  useReadGate: () => ReadGate;
+}
+
+/** Everything a host supplies. Each part may be configured on its own. */
 export interface DataKernelRuntime {
   errors: ErrorSink;
   query: QueryRuntime;
+  gate: ReadGateRuntime;
 }
 
 const unconfigured = createOnceGuard();
@@ -107,16 +135,32 @@ export const INERT_QUERY: QueryRuntime = {
   },
 };
 
-let runtime: DataKernelRuntime = { errors: INERT_ERRORS, query: INERT_QUERY };
+const NO_UNSUBSCRIBE = () => {};
 
 /**
- * Installs a host's services. Each half given replaces the one before it, so a host may configure error reporting and
- * the query runtime from different places, and a test may install one and leave the other inert.
+ * Always live, which is the safe default: a host that configures no gate keeps every read taking writes, exactly as
+ * it behaved before reads were gated at all. Frozen and shared so it satisfies the stable-reference contract.
+ */
+const ALWAYS_LIVE: ReadGate = Object.freeze({
+  isLive: () => true,
+  onChange: () => NO_UNSUBSCRIBE,
+});
+
+export const INERT_GATE: ReadGateRuntime = {
+  useReadGate: () => ALWAYS_LIVE,
+};
+
+let runtime: DataKernelRuntime = { errors: INERT_ERRORS, query: INERT_QUERY, gate: INERT_GATE };
+
+/**
+ * Installs a host's services. Each part given replaces the one before it, so a host may configure error reporting,
+ * the query runtime and the read gate from different places, and a test may install one and leave the rest inert.
  */
 export function configureDataKernel(next: Partial<DataKernelRuntime>): void {
   runtime = {
     errors: next.errors ?? runtime.errors,
     query: next.query ?? runtime.query,
+    gate: next.gate ?? runtime.gate,
   };
 }
 
@@ -126,4 +170,8 @@ export function errorSink(): ErrorSink {
 
 export function queryRuntime(): QueryRuntime {
   return runtime.query;
+}
+
+export function readGateRuntime(): ReadGateRuntime {
+  return runtime.gate;
 }

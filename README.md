@@ -180,6 +180,7 @@ import { bindSqliteStore } from '@sleeperhq/react-data-kernel/nitro';
 configureDataKernel({
   errors: { captureException, captureMessage },
   query: { client: () => queryClient, useQuery, useQueries },
+  gate: { useReadGate },
 });
 
 bindSqliteStore('initItemStore', 'items.db', setItemBackend, createSqliteItemBackend);
@@ -188,6 +189,22 @@ bindSqliteStore('initItemStore', 'items.db', setItemBackend, createSqliteItemBac
 `useQuery` and `useQueries` are passed in rather than imported, so an app keeps its own fetch policy — focus
 gating, retries, whatever it already does. Until `configureDataKernel` runs the kernel is inert: reads answer
 from rows already stored, and nothing fetches.
+
+`useReadGate` is the same idea for the read side. It answers one question — is this read still taking writes? —
+and the kernel never learns why the answer changed, so an app decides whether a blurred screen, a hidden subtree
+or a backgrounded app counts:
+
+```ts
+const useReadGate = () => {
+  const controller = useFocusController();
+  return useMemo(() => ({ isLive: () => controller.isFocused, onChange: controller.onFocusChange }), [controller]);
+};
+```
+
+While a gate is dead its reads drop their subscription and hold the value they last had, then catch up in one
+render when it goes live again. They do not blank, and the gate never reaches the render — a read that
+re-rendered on gate changes would wake every screen in the stack on each navigation, which is the cost this
+avoids. Configure no gate and every read stays live.
 
 ## Concepts
 
