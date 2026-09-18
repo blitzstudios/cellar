@@ -186,7 +186,7 @@ const FANOUT_WARN_THRESHOLD = 48;
 /** Entries in a surface's presence cache, which is keyed by partition and so bounds live partitions. */
 const PRESENCE_CACHE_MAX = 512;
 const fanoutWarned = createOnceGuard();
-let fanoutTick: Map<string, Set<string>> | null = null;
+let fanoutTick: Map<string, { keys: Set<string>; batched: boolean }> | null = null;
 onGuardReset(() => {
   fanoutTick = null;
 });
@@ -194,28 +194,46 @@ onGuardReset(() => {
 function flushFanout(): void {
   const tick = fanoutTick;
   fanoutTick = null;
-  tick?.forEach((keys, store) => {
-    if (keys.size <= FANOUT_WARN_THRESHOLD || fanoutWarned.seen(store)) return;
-    const sample = [...keys].slice(0, 3).join(', ');
+  tick?.forEach((entry, store) => {
+    if (entry.keys.size <= FANOUT_WARN_THRESHOLD || fanoutWarned.seen(store)) return;
+    const sample = [...entry.keys].slice(0, 3).join(', ');
+    // Already-batched callers need the opposite advice from per-row ones: telling a list that reads five ids a row
+    // to "use a plural read" describes what it is doing, and it stops reading the warning.
+    const remedy = entry.batched
+      ? 'These reads are already plural, so the fix is not a plural read but one read higher up: lift it to the ' +
+        "parent over the union of what its rows ask for, and let each row index into that result. If the rows' " +
+        'sets come from a list the parent already holds, `createWindowedList` resolves them against it.'
+      : 'A list is reading per row, which puts one subscription and one hydration on the heap per row. Read the ' +
+        "set once in the parent — a plural `*ByIds` read, or `createWindowedList` so rows resolve against the " +
+        "parent's list — and let each row index into that.";
     // eslint-disable-next-line no-console
     console.warn(
-      `[${store}_store] ${keys.size} separate reads in one tick (e.g. ${sample}). A list is reading per row, ` +
-        'which puts one subscription and one hydration on the heap per row. Read the set once in the parent — a ' +
-        "plural `*ByIds` read, or `createWindowedList` so rows resolve against the parent's list — and let each " +
-        'row index into that. Note that a plural read still primes by PARTITION, not by the ids it asks for, so ' +
-        "if this store's partition is coarse the parent read fetches all of it; where the rows are already to hand " +
-        'from the payload that listed them, prefer rendering from those and declaring `prime: false`.',
+      `[${store}_store] ${entry.keys.size} separate reads in one tick (e.g. ${sample}). ${remedy} Note that a ` +
+        'plural read still primes by PARTITION, not by the ids it asks for, so if this partition is coarse the ' +
+        'parent read fetches all of it either way and this is about subscriptions rather than fetching; where the ' +
+        'rows are already to hand from the payload that listed them, prefer rendering from those and declaring ' +
+        '`prime: false`.',
     );
   });
 }
 
-function noteRead(store: string, argsKey: string): void {
+/** `batchSize` is the widest array a read varies by, so a caller already asking for a set can be told something else. */
+function noteRead(store: string, argsKey: string, batchSize: number): void {
   if (fanoutWarned.has(store)) return;
   if (!fanoutTick) {
     fanoutTick = new Map();
     setTimeout(flushFanout, 0);
   }
-  getOrCreate(fanoutTick, store, () => new Set<string>()).add(argsKey);
+  const entry = getOrCreate(fanoutTick, store, () => ({ keys: new Set<string>(), batched: false }));
+  entry.keys.add(argsKey);
+  if (batchSize > 1) entry.batched = true;
+}
+
+/** The widest set a read is varying by: 1 when it names one thing, which is the per-row shape the warning is for. */
+function batchSizeOf(vary: readonly VaryValue[]): number {
+  let widest = 1;
+  for (const value of vary) if (Array.isArray(value) && value.length > widest) widest = value.length;
+  return widest;
 }
 
 /** Returns a {@link DataResult} whose identity is stable across renders while its parts hold. */
@@ -331,7 +349,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const gates = gatesFor(args as Args, parts, vary, (options?.enabled ?? true) && args !== undefined, options?.prime ?? true);
       const prime = usePriming(key, gates.prime, primeIntent);
       const argsKey = args === undefined ? NO_ARGS_KEY : varyKey(parts, vary);
-      if (__DEV__ && gates.read) noteRead(kernel.name ?? 'off_heap', argsKey);
+      if (__DEV__ && gates.read) noteRead(kernel.name ?? 'off_heap', argsKey, batchSizeOf(vary));
       const data = kernel.version.useSelect<T>(
         parts,
         gates.read,

@@ -81,6 +81,59 @@ describeDev('per-row fan-out tripwire', () => {
     expect(warnings[0]).toContain('us\u0000"p0"');
   });
 
+  it('tells a per-row reader to batch, since that is the fix when each row names one thing', () => {
+    const surface = makeSurface('item');
+    renderRows(surface, 60);
+
+    const [warning] = fanoutWarnings();
+    expect(warning).toContain('A list is reading per row');
+    expect(warning).toContain('plural `*ByIds` read');
+  });
+
+  it('tells an already-plural reader to lift the read instead, rather than describing what it does', () => {
+    const atom = createVersionAtom('fanout_batched_version');
+    const surface = createReadSurface<string>({
+      name: 'batched',
+      version: atom,
+      toParts: (region) => [region],
+      has: () => true,
+      ingest: {
+        usePrime: () => ({ isInitialLoading: false, isFetching: false, isError: false }),
+        usePrimeMany: () => ({ isInitialLoading: false, isFetching: false, isError: false }),
+        ensure: () => {},
+        refetch: () => {},
+      },
+    }).read<{ region: string; ids: string[] }, string>()({
+      partition: (args) => args.region,
+      varyBy: ['ids'],
+      select: (args) => args.ids.join(),
+      empty: '',
+    });
+
+    // 60 rows, each already asking for a set of 5 — the matchup-screen shape.
+    const Row = ({ base }: { base: number }): null => {
+      surface.useValue({ region: 'us', ids: [`p${base}`, `p${base + 1}`, `p${base + 2}`, `p${base + 3}`, `p${base + 4}`] });
+      return null;
+    };
+    act(() => {
+      TestRenderer.create(
+        React.createElement(
+          React.Fragment,
+          null,
+          Array.from({ length: 60 }, (_value, index) => React.createElement(Row, { key: index, base: index * 5 })),
+        ),
+      );
+    });
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+
+    const [warning] = fanoutWarnings();
+    expect(warning).toContain('already plural');
+    expect(warning).toContain('lift it to the parent');
+    expect(warning).not.toContain('A list is reading per row');
+  });
+
   it('stays quiet for a list whose reads are batched, because one batched read is one arg key', () => {
     const surface = makeSurface('item');
     const Parent = (): null => {
