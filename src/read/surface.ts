@@ -143,20 +143,6 @@ export interface ReadGroupedDef<Args, Key, T, V extends VarySpec<Args> = readonl
  */
 export interface ReadCallOptions {
   enabled?: boolean;
-  /**
-   * `false` to read without fetching, for a caller whose parent already primes the partition. The rows still arrive —
-   * the read subscribes and re-renders when the owner's fetch lands — this caller just does not ask for them itself.
-   *
-   * It exists because priming is by PARTITION and a partition can be far larger than what a read selects: a player
-   * read names one id, but `/players/{sport}` is the only endpoint, so the read fetches a league. One such read is
-   * the cost of the data; fifty of them on a screen is fifty requests for the same league. Who owns a fetch is a
-   * property of the call site, not of the read — the same `usePlayer` is a screen's own fetch in one place and a list
-   * row under an owner in another — which is why this lives here and not on the declaration.
-   *
-   * Only `false` is accepted. A call site may decline to prime, but cannot make a read prime that declares it will
-   * not, so there is no `true` to mistake for forcing one.
-   */
-  prime?: false;
 }
 
 /**
@@ -237,12 +223,9 @@ function readGates<Args>(
   args: Args,
   addressable: boolean,
   vary: readonly VaryValue[],
-  primeWanted: boolean,
 ): { prime: boolean; read: boolean } {
   return {
-    // Both the declaration and the call site can veto priming, and neither can override the other: a read that
-    // declares `prime: false` never fetches, and a caller passing `prime: false` never fetches, whoever else does.
-    prime: addressable && primeWanted && (def.prime ?? true),
+    prime: addressable && (def.prime ?? true),
     read: addressable && vary.every(isVaryPresent) && (def.enabled?.(args) ?? true),
   };
 }
@@ -292,8 +275,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     const keyOf = partitionKeyOf<Args, Key>(spec);
     const varyOf = varyResolver<Args>(def);
     const select = overArgs<Args, Key, T, V>(def.select);
-    const gatesFor = (args: Args, parts: readonly string[], vary: readonly VaryValue[], wanted: boolean, primeWanted = true) =>
-      readGates(def, args, wanted && addressesPartition(parts), vary, primeWanted);
+    const gatesFor = (args: Args, parts: readonly string[], vary: readonly VaryValue[], wanted: boolean) => readGates(def, args, wanted && addressesPartition(parts), vary);
 
     const cached = (args: Args, key: Key, parts: readonly string[], argsKey: string): T =>
       getCache.read(argsKey, kernel.version.get(parts), () => select(args, key));
@@ -317,7 +299,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const key = args === undefined ? undefined : keyOf(args);
       const parts = key === undefined ? NO_PARTS : toParts(key);
       const vary = args === undefined ? EMPTY_VARY : varyOf(args);
-      const gates = gatesFor(args as Args, parts, vary, (options?.enabled ?? true) && args !== undefined, options?.prime ?? true);
+      const gates = gatesFor(args as Args, parts, vary, (options?.enabled ?? true) && args !== undefined);
       const prime = usePriming(key, gates.prime);
       const argsKey = args === undefined ? NO_ARGS_KEY : varyKey(parts, vary);
       if (__DEV__ && gates.read) noteRead(kernel.name ?? 'off_heap', argsKey);
@@ -354,8 +336,8 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     const resolveOr = (args: Args | undefined) => (args === undefined ? { keys: NO_KEYS as readonly Key[], named: noneNamed } : resolve(args));
 
     /** `read`'s gates over a set: addressable when at least one partition is, since the rest are gaps. */
-    const gatesFor = (args: Args, partitions: readonly (readonly string[])[], vary: readonly VaryValue[], wanted: boolean, primeWanted = true) =>
-      readGates(def, args, wanted && partitions.some(addressesPartition), vary, primeWanted);
+    const gatesFor = (args: Args, partitions: readonly (readonly string[])[], vary: readonly VaryValue[], wanted: boolean) =>
+      readGates(def, args, wanted && partitions.some(addressesPartition), vary);
 
     const cached = (args: Args, named: Named, partitions: readonly (readonly string[])[], argsKey: string): T =>
       getCache.read(argsKey, versionOf(partitions), () => select(args, named));
@@ -379,7 +361,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const entries = args === undefined ? [] : partitionEntries(keys, toParts);
       const partitions = args === undefined ? NO_PARTITIONS : entries.map((entry) => entry.parts);
       const vary = args === undefined ? EMPTY_VARY : varyOf(args);
-      const gates = gatesFor(args as Args, partitions, vary, (options?.enabled ?? true) && args !== undefined, options?.prime ?? true);
+      const gates = gatesFor(args as Args, partitions, vary, (options?.enabled ?? true) && args !== undefined);
       const prime = usePrimingAll(keys, gates.prime);
       const argsKey = args === undefined ? NO_ARGS_KEY : cacheKeyOf(partitions, vary);
       const data = kernel.version.useSelectMany<T>(
