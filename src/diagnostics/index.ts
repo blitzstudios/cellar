@@ -5,3 +5,4 @@
 
 export type { IngestRollup, IngestTiming } from './ingest_timing';
 export { getIngestTimings, rollupIngestTimings } from './ingest_timing';
+export { getLogLevel, setLogLevel, type LogLevel } from './log_level';

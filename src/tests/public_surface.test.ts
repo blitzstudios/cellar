@@ -59,7 +59,9 @@ describe('the nitro entry point', () => {
 
 describe('the diagnostics entry point', () => {
   it('exports what a developer surface dumps, which no shipping screen reads', () => {
-    expect(exportedFrom('diagnostics/index.ts')).toEqual(['IngestRollup', 'IngestTiming', 'getIngestTimings', 'rollupIngestTimings']);
+    expect(exportedFrom('diagnostics/index.ts')).toEqual([
+      'IngestRollup', 'IngestTiming', 'LogLevel', 'getIngestTimings', 'getLogLevel', 'rollupIngestTimings', 'setLogLevel',
+    ]);
   });
 });
 

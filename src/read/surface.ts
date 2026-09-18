@@ -11,6 +11,7 @@ import { PartitionField, partitionKeyOf, requiredFieldsOf, VaryField, varyValues
 import { createVersionedCache, shallowEqualValue } from '../caches';
 import { addressesPartition, NO_PARTS, PartitionEntry, partitionEntries, VersionAtom } from '../reactivity/version_atom';
 import { createOnceGuard, onGuardReset } from '../diagnostics/once_guard';
+import { shouldLog } from '../diagnostics/log_level';
 import { NO_PRIMING, type PrimeState } from '../prime_state';
 import { DataResult, DataStatus, makeResult, offHeapStatus } from '../store_result';
 import { runSubscribed } from '../reactivity/tracking';
@@ -194,6 +195,7 @@ onGuardReset(() => {
 function flushFanout(): void {
   const tick = fanoutTick;
   fanoutTick = null;
+  if (!shouldLog('warn')) return;
   tick?.forEach((entry, store) => {
     if (entry.keys.size <= FANOUT_WARN_THRESHOLD || fanoutWarned.seen(store)) return;
     const sample = [...entry.keys].slice(0, 3).join(', ');

@@ -2,6 +2,7 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { createReadSurface } from '../../read/surface';
+import { setLogLevel } from '../../diagnostics/log_level';
 import { describeDev } from '../../testing/dev_mode';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { createVersionAtom } from '../../reactivity/version_atom';
@@ -15,9 +16,12 @@ beforeEach(() => {
   jest.useFakeTimers();
   resetOnceGuards();
   warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  // Guidance is above the default level; a host raises it from its dev menu when hunting.
+  setLogLevel('warn');
 });
 
 afterEach(() => {
+  setLogLevel('error');
   warn.mockRestore();
   jest.useRealTimers();
 });
@@ -146,6 +150,14 @@ describeDev('per-row fan-out tripwire', () => {
     act(() => {
       jest.advanceTimersByTime(1);
     });
+
+    expect(fanoutWarnings()).toEqual([]);
+  });
+
+  it('says nothing at the default level, since guidance a caller cannot act on is not worth a launch of console', () => {
+    setLogLevel('error');
+    const surface = makeSurface('item');
+    renderRows(surface, 60);
 
     expect(fanoutWarnings()).toEqual([]);
   });
