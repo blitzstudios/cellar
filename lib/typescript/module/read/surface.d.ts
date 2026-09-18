@@ -120,6 +120,20 @@ export interface ReadGroupedDef<Args, Key, T, V extends VarySpec<Args> = readonl
  */
 export interface ReadCallOptions {
     enabled?: boolean;
+    /**
+     * `false` to read without fetching, for a caller whose parent already primes the partition. The rows still arrive —
+     * the read subscribes and re-renders when the owner's fetch lands — this caller just does not ask for them itself.
+     *
+     * It exists because priming is by PARTITION and a partition can be far larger than what a read selects: a player
+     * read names one id, but `/players/{sport}` is the only endpoint, so the read fetches a league. One such read is
+     * the cost of the data; fifty of them on a screen is fifty requests for the same league. Who owns a fetch is a
+     * property of the call site, not of the read — the same `usePlayer` is a screen's own fetch in one place and a list
+     * row under an owner in another — which is why this lives here and not on the declaration.
+     *
+     * Only `false` is accepted. A call site may decline to prime, but cannot make a read prime that declares it will
+     * not, so there is no `true` to mistake for forcing one.
+     */
+    prime?: false;
 }
 /**
  * A read as a store publishes it: `undefined` args mean there is nothing to read yet, so it returns `empty`. Its
