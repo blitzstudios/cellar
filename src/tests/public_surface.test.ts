@@ -29,7 +29,7 @@ describe('the core entry point', () => {
   it('exports what a store, a service or a screen writes against, and nothing else', () => {
     expect(exportedFrom('index.ts')).toEqual([
       'ColumnDef', 'DATA_RESULT_KEYS', 'DataResult', 'DataStatus', 'Dep', 'Loose', 'MaybeId', 'MemoDeclaration',
-      'MemoFactory', 'MemoPart', 'MemoSource', 'NativeShredSpec', 'PinnedConnection', 'PrimeChoice', 'PrimeSetting', 'PrimeState', 'QueryClient', 'QuerySpec',
+      'MemoFactory', 'MemoPart', 'MemoSource', 'NativeShredSpec', 'PinnedConnection', 'PrimeState', 'QueryClient', 'QuerySpec',
       'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM', 'RawQuery', 'ReadGate', 'ReadGateRuntime', 'ReadOptions', 'RowOf', 'RowProjection', 'RowProjectionDef',
       'RowTable', 'RowTableSchema',
       'ShredColumn', 'ShredColumns', 'ShredOp', 'ShredSpec', 'SqlValue', 'SqliteConnection', 'VersionAtom',

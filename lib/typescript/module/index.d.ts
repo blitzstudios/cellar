@@ -29,7 +29,6 @@ export { defineShredColumns } from './write/shred_columns';
 export type { ShredOp, ShredSpec, NativeShredSpec } from './write/shred_spec';
 export { rowsOf } from './read/row_shaping';
 export type { MaybeId, ReadOptions, Loose } from './read/facade';
-export type { PrimeChoice, PrimeSetting } from './read/surface';
 export { pairRead } from './read/facade';
 export type { WindowedBlock } from './read/windowed_list';
 export { createWindowedList } from './read/windowed_list';

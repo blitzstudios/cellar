@@ -45,7 +45,6 @@ function makeSurface(name?: string) {
   return surface.read<{ region: string; id: string }, string>()({
     partition: (args) => args.region,
     varyBy: ['id'],
-    prime: 'partition',
     select: (args) => args.id,
     empty: '',
   });

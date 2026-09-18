@@ -223,7 +223,6 @@ describe('createReadSurface — a read declared by field name', () => {
     const read = harness.surface.read<{ key: string; id: string }, Slice>()({
       partition: ['key'],
       varyBy: ['id'],
-      prime: 'partition',
       select: (args, key) => ({ [args.id]: { score: (harness.slices.get(key.key) ?? {})[args.id]?.score ?? 0 } }),
       empty: harness.EMPTY,
       isEqual: shallowEqualRecord,
@@ -240,7 +239,6 @@ describe('createReadSurface — a read declared by field name', () => {
     const read = harness.surface.read<{ key: string; id?: string }, Slice>()({
       partition: ['key'],
       varyBy: ['id'],
-      prime: 'partition',
       select: () => ({ a: { score: 1 } }),
       empty: harness.EMPTY,
     });
@@ -256,7 +254,6 @@ describe('createReadSurface — varyBy (the read is keyed and gated by one decla
     harness.surface.read<ScopedArgs, Slice>()({
       partition: (args) => args.key,
       varyBy,
-      prime: 'partition',
       select: (args) => ({ a: { score: Number(args.id) } }),
       empty: harness.EMPTY,
       isEqual: shallowEqualRecord,
@@ -282,7 +279,6 @@ describe('createReadSurface — varyBy (the read is keyed and gated by one decla
     const read = harness.surface.read<ScopedArgs, Slice>()({
       partition: (args) => args.key,
       varyBy: (args: ScopedArgs) => [args.id],
-      prime: 'partition',
       select,
       empty: harness.EMPTY,
     });
@@ -369,7 +365,6 @@ describe('createReadSurface — get (imperative)', () => {
     const rowRead = harness.surface.read<{ key: string; id: string }, Row | undefined>()({
       partition: (args) => args.key,
       varyBy: (args: { key: string; id: string }) => [args.id],
-      prime: 'partition',
       select: (args) => rows[args.id],
       empty: undefined,
     });
@@ -551,7 +546,7 @@ describe('createReadSurface — absent args (nothing to read yet)', () => {
     const partition = jest.fn((args: { key: string }) => args.key);
     const varyBy = jest.fn((args: { key: string }) => [args.key]);
     const select = jest.fn(harness.sliceDef.select);
-    const read = harness.surface.read<{ key: string }, Slice>()({ ...harness.sliceDef, partition, varyBy, select, prime: 'partition' });
+    const read = harness.surface.read<{ key: string }, Slice>()({ ...harness.sliceDef, partition, varyBy, select });
 
     const probe = renderHook(() => read.useValue(undefined));
 
@@ -650,7 +645,6 @@ describe('createReadSurface — readMany (a read spanning a variable partition s
     const list = createReadSurface(harness.kernel).readMany<{ keys: string[] }, Slice[]>()({
       partitions: (args) => args.keys,
       varyBy: (args: { keys: string[] }) => [args.keys],
-      prime: 'partition',
       select: (_args, keys) => keys.map((key) => harness.slices.get(key) ?? harness.EMPTY),
       empty: EMPTY_LIST,
     });
@@ -763,7 +757,6 @@ describe('createReadSurface — readMany (a read spanning a variable partition s
       partitions: (args) => args.keys,
       enabled: (args) => args.reading,
       varyBy: (args: { keys: string[] }) => [args.keys],
-      prime: 'partition',
       select: (_args, keys) => keys.map((key) => harness.slices.get(key) ?? harness.EMPTY),
       empty: EMPTY_LIST,
     });

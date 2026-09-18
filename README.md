@@ -129,35 +129,37 @@ export function buildItemBackend(table: RowTable<ItemRow>, version: VersionAtom)
 `select` runs only once the slice holds rows, and only when its version changes. `empty` is what callers get
 before that, so it has to be a stable reference.
 
-#### A read that narrows has to answer for priming
+#### Priming is by partition, not by what a read selects
 
-The read above takes its partition whole, so nothing is asked of it: reading a cold partition fetches it, which is
-the point. Add a `varyBy` and that changes, because the read is now saying it wants a *slice*:
+Reading a cold partition fetches it, automatically, and that is meant to be unremarkable — it is most of why the
+layer exists. Worth knowing once, though: the fetch is scoped to the **partition**, never to what the read selects.
 
 ```ts
 ItemsByIds: items.read<ItemIdsKey, ItemVM[]>()({
   varyBy: ['ids'],
-  prime: 'partition', // or `false`
   select: (args, key) => rows.byIds(items.where(key), args.ids),
   empty: NO_ITEMS,
 }),
 ```
 
-**Priming is by partition, never by what the read selects.** A read of twenty ids out of a partition holding a
-league's whole roster fetches the roster — the kernel has no narrower thing to fetch, because the partition is the
-unit the store declared. The gap between the two can be three orders of magnitude, and none of it is visible at the
+That read asks for a handful of ids. If `items` partitions by league and a league holds thirty thousand rows, the
+first such read fetches thirty thousand rows. The gap can be three orders of magnitude and it is invisible at the
 call site, which sees only `useItemsByIds({ league, ids })`.
 
-So `prime` is required wherever a `varyBy` is, and it is a genuine question rather than a rule with a right answer:
+This is a property of the store's **fetch granularity**, not of the read, and no setting on the read improves it.
+Where it bites, the fixes are:
 
-- `'partition'` — fetch the whole partition to serve this read. Correct when the caller needs rows it has no other
-  way to get, and when the partition is a size worth paying for.
-- `false` — never fetch on this read's behalf; render from rows already resident, and `empty` until they are. Correct
-  when the payload that named these ids already carries what the caller renders, which is more often than it looks.
+- at the call site — if the payload that named those ids already carries what you render, render from that and do
+  not read the store at all;
+- in the store — a narrower partition key, where the API offers one.
 
-A read with no `varyBy` is not asked, because for it priming is plainly right. At runtime a partition landing more
-than a few thousand rows also files one `info` report per partition per session, which is the half no type can
-see — a partition that was small when the read was written and is not any more.
+`prime: false` exists but is not that fix. It means *never fetch on this read's behalf*, and it is for a read that
+guesses across candidate partitions, or a selector over rows something else is responsible for fetching. A read
+using it is `empty` until whoever owns the fetch has run.
+
+Nothing here has to be declared. An ingest landing more than a few thousand rows files one `info` report per
+partition per session, which is how an over-large partition makes itself known — including one that was a
+reasonable size when the read was written and grew since.
 
 ### 3. Declare the store
 
