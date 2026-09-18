@@ -347,6 +347,39 @@ describe('createFetchIngest — ingest timing', () => {
     warn.mockRestore();
   });
 
+  it('says nothing when a caller asked for the whole partition, since those rows are what it wanted', async () => {
+    const captureMessage = jest.fn();
+    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => 31_430) });
+    harness.setResponse({ data: '[{"id":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+
+    // A prime hook with no `slice` intent — what `usePrimeSport` and the lifecycle hooks are.
+    renderHook(() => ingest.usePrime('cfb'));
+    await ingest.prefetch('cfb');
+
+    expect(captureMessage).not.toHaveBeenCalled();
+
+    configureDataKernel({ errors: INERT_ERRORS });
+  });
+
+  it('still reports when only a slice-selecting read primed it, which is the case the advice fits', async () => {
+    const captureMessage = jest.fn();
+    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => 31_430) });
+    harness.setResponse({ data: '[{"id":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+
+    renderHook(() => ingest.usePrime('cfb', true, { slice: true }));
+    await ingest.prefetch('cfb');
+
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+
+    configureDataKernel({ errors: INERT_ERRORS });
+    warn.mockRestore();
+  });
+
   it('leaves an ordinary partition alone, so the report stays worth reading', async () => {
     const captureMessage = jest.fn();
     configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });

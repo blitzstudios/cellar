@@ -113,8 +113,8 @@ function sameBody(left: BodyFingerprint | undefined, right: BodyFingerprint): bo
  */
 export interface FetchIngest<Key> {
   /** `undefined` holds the hook's position in the render and leaves it idle. */
-  usePrime: (key: Key | undefined, enabled?: boolean) => PrimeState;
-  usePrimeMany: (keys: readonly Key[], enabled?: boolean) => PrimeState;
+  usePrime: (key: Key | undefined, enabled?: boolean, opts?: PrimeIntent) => PrimeState;
+  usePrimeMany: (keys: readonly Key[], enabled?: boolean, opts?: PrimeIntent) => PrimeState;
   ensure: (key: Key) => void;
   /** Resolves once the fetch and ingest land, or immediately when the partition is fresh or in flight. */
   prefetch: (key: Key, opts?: { staleTime?: number }) => Promise<{ version: number; count: number }>;
@@ -141,6 +141,14 @@ const NO_TIMINGS: { staleTime?: number; cacheTime?: number } = {};
  * the whole of it, so these are sized to catch a partition big enough that serving a handful of rows out of it is a
  * bad trade — not to accuse it of being one, which only the call site knows. Tune them here rather than at a site.
  */
+/**
+ * What a priming caller wants of the partition. `slice` says it will select part of it, which is the only shape where
+ * an oversized ingest is worth reporting — everyone else asked for the rows they got.
+ */
+export interface PrimeIntent {
+  slice?: boolean;
+}
+
 const OVERSIZED_PRIME_ROWS = 5_000;
 const OVERSIZED_PRIME_CHARS = 2_000_000;
 
@@ -157,8 +165,15 @@ const oversizedPrimeReported = createOnceGuard();
  *
  * So nobody declares anything and the ingest reports what it actually cost. `info`, not `error`: a large partition
  * is not a fault, and the store may well mean it.
+ *
+ * It reports only where the advice applies: a read that selects a slice. A partition somebody asked for outright —
+ * a prime hook, or a read with no `varyBy` — cost what it was asked for, and reporting it taught the reader to
+ * ignore the channel. An app priming its own sports at startup is the case that made this necessary.
  */
-function reportOversizedPrime(store: string, partition: string, rows: number, chars: number | null): void {
+function reportOversizedPrime(store: string, partition: string, rows: number, chars: number | null, wantedWhole: boolean): void {
+  // Somebody asked for this partition outright — a prime hook, or a read that selects all of it. The rows are what
+  // they asked for, and `prime: false` is not advice that applies, so there is nothing to say.
+  if (wantedWhole) return;
   if (rows < OVERSIZED_PRIME_ROWS && (chars ?? 0) < OVERSIZED_PRIME_CHARS) return;
   if (oversizedPrimeReported.seen(store, partition)) return;
 
@@ -182,6 +197,12 @@ function reportOversizedPrime(store: string, partition: string, rows: number, ch
 export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest<Key> {
   /** The body each partition last shredded, so a refetch that brings the same one back can stop before it does. */
   const ingestedBodies = new Map<string, BodyFingerprint>();
+  /**
+   * Partitions some caller has asked for whole, which is what decides whether an oversized ingest is worth reporting.
+   * Set during the priming hook rather than counted across mounts: the report fires once per partition per session,
+   * so the question is only ever whether such a caller has existed, and a refcount would cost an effect per read.
+   */
+  const wantedWhole = new Set<string>();
   /**
    * Whether an identical body has to be *detected* rather than simply shredded again, which is what decides if every
    * body is worth hashing. Only a store taking concurrent socket writes can be harmed by re-shredding one: the body
@@ -220,7 +241,7 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
         at,
       });
       // A 304 and an unchanged body report negative rows and shredded nothing, so neither is a prime worth flagging.
-      if (rows > 0) reportOversizedPrime(cfg.ingestKeyRoot, partition, rows, chars);
+      if (rows > 0) reportOversizedPrime(cfg.ingestKeyRoot, partition, rows, chars, wantedWhole.has(partition));
     };
 
     if (res?.__etagMatch) {
@@ -280,9 +301,10 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
     return timings;
   };
 
-  function usePrime(key: Key | undefined, enabled?: boolean): PrimeState {
+  function usePrime(key: Key | undefined, enabled?: boolean, opts?: PrimeIntent): PrimeState {
     const parts = key === undefined ? NO_PARTS : cfg.toParts(key);
     const isEnabled = (enabled ?? true) && addressesPartition(parts);
+    if (!opts?.slice && addressesPartition(parts)) wantedWhole.add(partitionLabel(parts));
     // Asked for whenever the key names a partition, not only when this caller is enabled. A disabled caller still
     // constructs the observer, and an observer constructed without a staleTime treats its data as stale on arrival —
     // it then fetches when it is enabled, however fresh the cache is.
@@ -298,9 +320,10 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
     return { isInitialLoading: result.isInitialLoading, isFetching: result.isFetching, isError: result.isError };
   }
 
-  function usePrimeMany(keys: readonly Key[], enabled = true): PrimeState {
+  function usePrimeMany(keys: readonly Key[], enabled = true, opts?: PrimeIntent): PrimeState {
     // `useFocusGatedQueries` keys on this array's identity, and callers rebuild it each render, so memo on contents.
     const addressable = partitionEntries(keys, cfg.toParts).filter((entry) => addressesPartition(entry.parts));
+    if (!opts?.slice) for (const entry of addressable) wantedWhole.add(partitionLabel(entry.parts));
     const identity = partitionsKey(addressable.map((entry) => entry.parts));
     const queries = useMemo(
       () =>

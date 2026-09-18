@@ -17,8 +17,8 @@ import { runSubscribed } from '../reactivity/tracking';
 
 /** The fetch half of a store as a read sees it, which `createFetchIngest`'s return value satisfies. */
 export interface FetchOwner<Key> {
-  usePrime: (key: Key | undefined, enabled: boolean) => PrimeState;
-  usePrimeMany: (keys: readonly Key[], enabled: boolean) => PrimeState;
+  usePrime: (key: Key | undefined, enabled: boolean, opts?: { slice?: boolean }) => PrimeState;
+  usePrimeMany: (keys: readonly Key[], enabled: boolean, opts?: { slice?: boolean }) => PrimeState;
   /** Starts the partition's fetch; the surface calls it only for a partition `has` reports cold. */
   ensure: (key: Key) => void;
   refetch: (key: Key) => void;
@@ -229,6 +229,16 @@ function varyResolver<Args>(def: { varyBy?: VarySpec<Args> }): (args: Args) => r
 }
 
 /**
+ * What a read wants of the partitions it primes. A `varyBy` is the read saying it selects part of one, which is
+ * the only shape where an oversized ingest is worth reporting; a read without one is asking for the partition.
+ */
+function intentOf(def: { varyBy?: unknown }): { slice: boolean } | undefined {
+  return def.varyBy ? SELECTS_SLICE : undefined;
+}
+
+const SELECTS_SLICE = { slice: true } as const;
+
+/**
  * Whether a read may prime its partitions and whether its `select` may run. Priming asks strictly less: a read
  * still waiting on a vary value primes anyway, so the rows are there when the value arrives.
  */
@@ -291,6 +301,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       throw new Error(`${kernel.name ?? 'off_heap'}_store: this read needs a \`partition\`, since the store's key declares no \`fields\` to default to`);
     const keyOf = partitionKeyOf<Args, Key>(spec);
     const varyOf = varyResolver<Args>(def);
+    const primeIntent = intentOf(def);
     const select = overArgs<Args, Key, T, V>(def.select);
     const gatesFor = (args: Args, parts: readonly string[], vary: readonly VaryValue[], wanted: boolean, primeWanted = true) =>
       readGates(def, args, wanted && addressesPartition(parts), vary, primeWanted);
@@ -318,7 +329,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const parts = key === undefined ? NO_PARTS : toParts(key);
       const vary = args === undefined ? EMPTY_VARY : varyOf(args);
       const gates = gatesFor(args as Args, parts, vary, (options?.enabled ?? true) && args !== undefined, options?.prime ?? true);
-      const prime = usePriming(key, gates.prime);
+      const prime = usePriming(key, gates.prime, primeIntent);
       const argsKey = args === undefined ? NO_ARGS_KEY : varyKey(parts, vary);
       if (__DEV__ && gates.read) noteRead(kernel.name ?? 'off_heap', argsKey);
       const data = kernel.version.useSelect<T>(
@@ -350,6 +361,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   ): Read<Args, T> {
     const getCache = makeValueCache<T>(def);
     const varyOf = varyResolver<Args>(def);
+    const primeIntent = intentOf(def);
     const cacheKeyOf = (partitions: readonly (readonly string[])[], vary: readonly VaryValue[]): string => varyKey([partitionsKey(partitions)], vary);
     const resolveOr = (args: Args | undefined) => (args === undefined ? { keys: NO_KEYS as readonly Key[], named: noneNamed } : resolve(args));
 
@@ -380,7 +392,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const partitions = args === undefined ? NO_PARTITIONS : entries.map((entry) => entry.parts);
       const vary = args === undefined ? EMPTY_VARY : varyOf(args);
       const gates = gatesFor(args as Args, partitions, vary, (options?.enabled ?? true) && args !== undefined, options?.prime ?? true);
-      const prime = usePrimingAll(keys, gates.prime);
+      const prime = usePrimingAll(keys, gates.prime, primeIntent);
       const argsKey = args === undefined ? NO_ARGS_KEY : cacheKeyOf(partitions, vary);
       const data = kernel.version.useSelectMany<T>(
         partitions,

@@ -9,8 +9,12 @@ import { type PrimeState } from '../prime_state';
 import { DataResult, DataStatus } from '../store_result';
 /** The fetch half of a store as a read sees it, which `createFetchIngest`'s return value satisfies. */
 export interface FetchOwner<Key> {
-    usePrime: (key: Key | undefined, enabled: boolean) => PrimeState;
-    usePrimeMany: (keys: readonly Key[], enabled: boolean) => PrimeState;
+    usePrime: (key: Key | undefined, enabled: boolean, opts?: {
+        slice?: boolean;
+    }) => PrimeState;
+    usePrimeMany: (keys: readonly Key[], enabled: boolean, opts?: {
+        slice?: boolean;
+    }) => PrimeState;
     /** Starts the partition's fetch; the surface calls it only for a partition `has` reports cold. */
     ensure: (key: Key) => void;
     refetch: (key: Key) => void;

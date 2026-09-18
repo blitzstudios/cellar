@@ -42,8 +42,8 @@ export declare const RAW_TEXT_RESPONSE_TRANSFORM: ((data: unknown) => unknown)[]
  */
 export interface FetchIngest<Key> {
     /** `undefined` holds the hook's position in the render and leaves it idle. */
-    usePrime: (key: Key | undefined, enabled?: boolean) => PrimeState;
-    usePrimeMany: (keys: readonly Key[], enabled?: boolean) => PrimeState;
+    usePrime: (key: Key | undefined, enabled?: boolean, opts?: PrimeIntent) => PrimeState;
+    usePrimeMany: (keys: readonly Key[], enabled?: boolean, opts?: PrimeIntent) => PrimeState;
     ensure: (key: Key) => void;
     /** Resolves once the fetch and ingest land, or immediately when the partition is fresh or in flight. */
     prefetch: (key: Key, opts?: {
@@ -57,6 +57,18 @@ export interface FetchIngest<Key> {
     invalidate: (key: Key) => void;
     /** Discards every partition's fetch record, so each one reads as cold again. */
     forget: () => void;
+}
+/**
+ * Above this, one partition landing is worth knowing about. Priming is by partition and a read of a slice pays for
+ * the whole of it, so these are sized to catch a partition big enough that serving a handful of rows out of it is a
+ * bad trade — not to accuse it of being one, which only the call site knows. Tune them here rather than at a site.
+ */
+/**
+ * What a priming caller wants of the partition. `slice` says it will select part of it, which is the only shape where
+ * an oversized ingest is worth reporting — everyone else asked for the rows they got.
+ */
+export interface PrimeIntent {
+    slice?: boolean;
 }
 /**
  * Builds a store's whole fetch half: one React Query query per partition that asks for the body conditionally on the
