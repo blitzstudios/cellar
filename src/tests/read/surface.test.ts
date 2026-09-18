@@ -312,6 +312,45 @@ describe('createReadSurface — varyBy (the read is keyed and gated by one decla
     expect(probe.current.data).toBe(harness.EMPTY);
     probe.unmount();
   });
+
+  // A caller under a parent that already primes. The point of the option is that these two assertions hold at the
+  // same time: no fetch from here, and the rows still read.
+  it('reads without priming when the call site says its parent owns the fetch', () => {
+    const harness = makeHarness();
+    const read = harness.read(harness.sliceDef);
+    harness.land('p1', { a: { score: 1 } });
+
+    const probe = renderHook(() => read.useValue({ key: 'p1' }, { prime: false }));
+
+    expect(harness.spies.usePrime[harness.spies.usePrime.length - 1]).toEqual({ key: 'p1', enabled: false });
+    expect(probe.current.data).toEqual({ a: { score: 1 } });
+    probe.unmount();
+  });
+
+  // Declining to prime must not turn into declining to read, which would blank every row on the screen.
+  it('still subscribes and reads a cold partition it declined to prime, so the owner’s fetch lands here too', () => {
+    const harness = makeHarness();
+    const read = harness.read(harness.sliceDef);
+
+    const probe = renderHook(() => read.useValue({ key: 'p1' }, { prime: false }));
+    expect(probe.current.data).toBe(harness.EMPTY);
+
+    act(() => harness.land('p1', { a: { score: 2 } }));
+
+    expect(probe.current.data).toEqual({ a: { score: 2 } });
+    expect(harness.spies.usePrime.every((call) => call.enabled === false)).toBe(true);
+    probe.unmount();
+  });
+
+  it('leaves priming alone when the option is absent, so existing call sites are untouched', () => {
+    const harness = makeHarness();
+    const read = harness.read(harness.sliceDef);
+
+    const probe = renderHook(() => read.useValue({ key: 'p1' }, { enabled: true }));
+
+    expect(harness.spies.usePrime[harness.spies.usePrime.length - 1]).toEqual({ key: 'p1', enabled: true });
+    probe.unmount();
+  });
 });
 
 describe('createReadSurface — get (imperative)', () => {
@@ -766,6 +805,33 @@ describe('createReadSurface — readMany (a read spanning a variable partition s
     expect(harness.spies.usePrimeMany[harness.spies.usePrimeMany.length - 1]).toEqual({ keys: ['a', 'b'], enabled: true });
     expect(probe.current.data).toBe(EMPTY_LIST);
     probe.unmount();
+  });
+
+  it('declines to prime a whole set when the call site says its parent owns the fetch', () => {
+    const harness = manyHarness();
+
+    const probe = renderHook(() => harness.list.useValue({ keys: ['a', 'b'] }, { prime: false }));
+
+    expect(harness.spies.usePrimeMany[harness.spies.usePrimeMany.length - 1]).toEqual({ keys: ['a', 'b'], enabled: false });
+    probe.unmount();
+  });
+
+  // The two options answer different questions, so neither should imply the other: `enabled: false` is "not yet",
+  // `prime: false` is "not mine to fetch". Only the first of them stops the read.
+  it('keeps enabled and prime independent', () => {
+    const harness = manyHarness();
+
+    const both = renderHook(() => harness.list.useValue({ keys: ['a'] }, { enabled: false, prime: false }));
+    expect(harness.spies.usePrimeMany[harness.spies.usePrimeMany.length - 1]).toEqual({ keys: ['a'], enabled: false });
+    both.unmount();
+
+    const readOnly = renderHook(() => harness.list.useValue({ keys: ['a'] }, { prime: false }));
+    expect(harness.spies.usePrimeMany[harness.spies.usePrimeMany.length - 1]).toEqual({ keys: ['a'], enabled: false });
+    readOnly.unmount();
+
+    const owner = renderHook(() => harness.list.useValue({ keys: ['a'] }));
+    expect(harness.spies.usePrimeMany[harness.spies.usePrimeMany.length - 1]).toEqual({ keys: ['a'], enabled: true });
+    owner.unmount();
   });
 });
 
