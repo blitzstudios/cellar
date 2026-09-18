@@ -2,7 +2,9 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { installTestRuntime } from '../../testing/runtime';
+import { configureDataKernel, INERT_ERRORS } from '../../runtime';
 import { createFetchIngest, FetchIngestConfig, RawFetchResponse, RAW_TEXT_RESPONSE_TRANSFORM } from '../../write/fetch_ingest';
+import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { VersionAtom } from '../../reactivity/version_atom';
 import { clearIngestTimings, getIngestTimings, rollupIngestTimings } from '../../diagnostics/ingest_timing';
 
@@ -89,6 +91,8 @@ beforeEach(() => {
   useFocusGatedQueryMock.mockClear();
   useFocusGatedQueriesMock.mockClear();
   clearIngestTimings();
+  // The oversized-partition report fires once per partition per session, so it has to be re-armed between tests.
+  resetOnceGuards();
 });
 
 describe('createFetchIngest — timings never reach React Query as present-but-undefined', () => {
@@ -320,6 +324,39 @@ describe('createFetchIngest — ingest timing', () => {
     expect(timing.rows).toBe(5);
     expect(timing.store).toBe('test_ingest');
     expect(timing.partition).toBe('us');
+  });
+
+  it('reports an oversized partition once, since every read of it pays for the whole partition', async () => {
+    const captureMessage = jest.fn();
+    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => 31_430) });
+    harness.setResponse({ data: '[{"id":1}]' });
+    const ingest = createFetchIngest(harness.cfg);
+
+    await ingest.prefetch('cfb');
+    await ingest.prefetch('cfb');
+
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    const [message, ctx] = captureMessage.mock.calls[0];
+    expect(message).toContain('31430 rows');
+    expect(ctx.level).toBe('info');
+    expect(ctx.extra).toMatchObject({ store: 'test_ingest', partition: 'cfb', rows: 31_430 });
+
+    configureDataKernel({ errors: INERT_ERRORS });
+    warn.mockRestore();
+  });
+
+  it('leaves an ordinary partition alone, so the report stays worth reading', async () => {
+    const captureMessage = jest.fn();
+    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => 12) });
+    harness.setResponse({ data: '[{"id":1}]' });
+
+    await createFetchIngest(harness.cfg).prefetch('us');
+
+    expect(captureMessage).not.toHaveBeenCalled();
+    configureDataKernel({ errors: INERT_ERRORS });
   });
 
   it('records a 304 as a fetch that shred nothing, so a cheap launch is not mistaken for a missing ingest', async () => {

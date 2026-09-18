@@ -6,6 +6,8 @@ import { partitionLabel, partitionsKey } from '../args_key';
 import { addressesPartition, NO_PARTS, partitionEntries, VersionAtom } from '../reactivity/version_atom';
 import { PrimeState } from '../prime_state';
 import { recordIngestTiming } from '../diagnostics/ingest_timing';
+import { createOnceGuard } from '../diagnostics/once_guard';
+import { reportStoreDegradation } from '../diagnostics/telemetry';
 import { queryRuntime } from '../runtime';
 
 /**
@@ -135,6 +137,40 @@ export interface FetchIngest<Key> {
 const NO_TIMINGS: { staleTime?: number; cacheTime?: number } = {};
 
 /**
+ * Above this, one partition landing is worth knowing about. Priming is by partition and a read of a slice pays for
+ * the whole of it, so these are sized to catch a partition big enough that serving a handful of rows out of it is a
+ * bad trade — not to accuse it of being one, which only the call site knows. Tune them here rather than at a site.
+ */
+const OVERSIZED_PRIME_ROWS = 5_000;
+const OVERSIZED_PRIME_CHARS = 2_000_000;
+
+const oversizedPrimeReported = createOnceGuard();
+
+/**
+ * Files an oversized partition ingest, once per partition per session.
+ *
+ * The type side ({@link PrimeChoice}) makes a narrowing read answer for priming at the point it is declared, which
+ * is where the question can be asked but not where it can be answered with a number. This is the other half: what
+ * the partition actually cost once, in a build where nobody is taking a capture. It reports as `info` because a
+ * large partition is not itself a fault — a store may mean it — and the declaration has already been deliberate.
+ */
+function reportOversizedPrime(store: string, partition: string, rows: number, chars: number | null): void {
+  if (rows < OVERSIZED_PRIME_ROWS && (chars ?? 0) < OVERSIZED_PRIME_CHARS) return;
+  if (oversizedPrimeReported.seen(store, partition)) return;
+
+  reportStoreDegradation({
+    scope: `${store}.oversized_prime.${partition}`,
+    context:
+      `priming the '${partition}' partition landed ${rows} rows / ${chars ?? 0} chars. Priming is by partition, so ` +
+      'every read of this partition pays this whether it selects one row or all of them. If the reads here want a ' +
+      'slice, check whether the payload that named those rows already carries what they render, and declare ' +
+      '`prime: false` on the read if so.',
+    severity: 'info',
+    extra: { store, partition, rows, chars },
+  });
+}
+
+/**
  * Builds a store's whole fetch half: one React Query query per partition that asks for the body conditionally on the
  * stored ETag, hands it to `ingestRaw`, and bumps the version the reads watch. `definePartitions` composes it from a
  * store's `fetch` spec, so a store author declares that spec rather than calling this.
@@ -169,15 +205,18 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
     const fetchedAt = Date.now();
     const recordTiming = (rows: number, chars: number | null): void => {
       const at = Date.now();
+      const partition = partitionLabel(parts);
       recordIngestTiming({
         store: cfg.ingestKeyRoot,
-        partition: partitionLabel(parts),
+        partition,
         fetchMs: fetchedAt - startedAt,
         ingestMs: at - fetchedAt,
         chars,
         rows,
         at,
       });
+      // A 304 and an unchanged body report negative rows and shredded nothing, so neither is a prime worth flagging.
+      if (rows > 0) reportOversizedPrime(cfg.ingestKeyRoot, partition, rows, chars);
     };
 
     if (res?.__etagMatch) {

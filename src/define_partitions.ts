@@ -8,7 +8,7 @@ import { useCallback } from 'react';
 
 import { cacheKey, partitionLabel } from './args_key';
 import { createFetchIngest, FetchIngest, RawQuery } from './write/fetch_ingest';
-import { createReadSurface, Read, ReadDef, ReadGroupedDef, ReadManyDef, useResult, VarySpec } from './read/surface';
+import { createReadSurface, PrimeChoice, Read, ReadDef, ReadGroupedDef, ReadManyDef, useResult, VarySpec } from './read/surface';
 import { RowShape, RowTable } from './table/types';
 import { BoundMemos, createBoundedLru, createMemos, MemoDeclaration } from './caches';
 import { addressesPartition, NO_PARTS, VersionAtom } from './reactivity/version_atom';
@@ -123,10 +123,14 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
    * second takes the read itself — separately, because that is what leaves TypeScript free to infer `varyBy` from the
    * list a read spells, which is how `select` comes to see those fields and no others.
    */
-  read: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V>) => Read<A, T>;
-  readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+  read: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V> & PrimeChoice<A, V>) => Read<A, T>;
+  readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(
+    def: PartitionReadManyDef<A, Key, T, Descriptor, V> & PrimeChoice<A, V>,
+  ) => Read<A, T>;
   /** One group of candidates per thing the caller asks about; `select` gets them back in those groups. */
-  readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+  readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(
+    def: PartitionReadGroupedDef<A, Key, T, Descriptor, V> & PrimeChoice<A, V>,
+  ) => Read<A, T>;
   /**
    * Every value this store memoizes, declared in one block and bound to these partitions: each memo takes a key and
    * derives the rest of its own key and the version it holds against, so a hydration names the partition and the
@@ -297,16 +301,22 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
 
   /** Both set reads name their partitions as records; the keys they address are this layer's to resolve. */
   function readManyOf<A, T>() {
-    return <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>): Read<A, T> => {
+    return <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V> & PrimeChoice<A, V>): Read<A, T> => {
       const named = (def as { partitions?: PartitionsFrom<A, Descriptor> }).partitions ?? ((args) => (args as NamesPartitions<Descriptor>).partitions);
-      return surface.readMany<A, T>()({ ...def, partitions: (args: A) => (named(args) ?? NO_DESCRIPTORS).map(keyOfMaybe) } as ReadManyDef<A, Key, T, V>);
+      // `def` already carries whatever `prime` the published signature demanded of the caller, and this layer only
+      // rewrites `partitions`. So it forwards through the unconstrained shape: restating the conditional here asks
+      // TypeScript to compare a `PrimeChoice` it cannot resolve while `V` is still generic.
+      const publish = surface.readMany<A, T>() as (def: ReadManyDef<A, Key, T, V>) => Read<A, T>;
+      return publish({ ...def, partitions: (args: A) => (named(args) ?? NO_DESCRIPTORS).map(keyOfMaybe) } as ReadManyDef<A, Key, T, V>);
     };
   }
 
   function readGroupedOf<A, T>() {
-    return <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>): Read<A, T> => {
+    return <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V> & PrimeChoice<A, V>): Read<A, T> => {
       const groups = (args: A) => def.groups(args).map((group) => group.map(keyOfMaybe));
-      return surface.readGrouped<A, T>()({ ...def, groups } as ReadGroupedDef<A, Key, T, V>);
+      // Forwarded unconstrained for the same reason as `readManyOf` above.
+      const publish = surface.readGrouped<A, T>() as (def: ReadGroupedDef<A, Key, T, V>) => Read<A, T>;
+      return publish({ ...def, groups } as ReadGroupedDef<A, Key, T, V>);
     };
   }
 

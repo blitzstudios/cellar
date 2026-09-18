@@ -129,6 +129,36 @@ export function buildItemBackend(table: RowTable<ItemRow>, version: VersionAtom)
 `select` runs only once the slice holds rows, and only when its version changes. `empty` is what callers get
 before that, so it has to be a stable reference.
 
+#### A read that narrows has to answer for priming
+
+The read above takes its partition whole, so nothing is asked of it: reading a cold partition fetches it, which is
+the point. Add a `varyBy` and that changes, because the read is now saying it wants a *slice*:
+
+```ts
+ItemsByIds: items.read<ItemIdsKey, ItemVM[]>()({
+  varyBy: ['ids'],
+  prime: 'partition', // or `false`
+  select: (args, key) => rows.byIds(items.where(key), args.ids),
+  empty: NO_ITEMS,
+}),
+```
+
+**Priming is by partition, never by what the read selects.** A read of twenty ids out of a partition holding a
+league's whole roster fetches the roster — the kernel has no narrower thing to fetch, because the partition is the
+unit the store declared. The gap between the two can be three orders of magnitude, and none of it is visible at the
+call site, which sees only `useItemsByIds({ league, ids })`.
+
+So `prime` is required wherever a `varyBy` is, and it is a genuine question rather than a rule with a right answer:
+
+- `'partition'` — fetch the whole partition to serve this read. Correct when the caller needs rows it has no other
+  way to get, and when the partition is a size worth paying for.
+- `false` — never fetch on this read's behalf; render from rows already resident, and `empty` until they are. Correct
+  when the payload that named these ids already carries what the caller renders, which is more often than it looks.
+
+A read with no `varyBy` is not asked, because for it priming is plainly right. At runtime a partition landing more
+than a few thousand rows also files one `info` report per partition per session, which is the half no type can
+see — a partition that was small when the read was written and is not any more.
+
 ### 3. Declare the store
 
 ```ts

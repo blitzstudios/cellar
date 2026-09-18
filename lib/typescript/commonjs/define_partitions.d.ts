@@ -4,7 +4,7 @@
  * a write bumps.
  */
 import { RawQuery } from './write/fetch_ingest';
-import { Read, ReadDef, ReadGroupedDef, ReadManyDef, VarySpec } from './read/surface';
+import { PrimeChoice, Read, ReadDef, ReadGroupedDef, ReadManyDef, VarySpec } from './read/surface';
 import { RowShape, RowTable } from './table/types';
 import { BoundMemos, MemoDeclaration } from './caches';
 import { VersionAtom } from './reactivity/version_atom';
@@ -117,10 +117,10 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
      * second takes the read itself — separately, because that is what leaves TypeScript free to infer `varyBy` from the
      * list a read spells, which is how `select` comes to see those fields and no others.
      */
-    read: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V>) => Read<A, T>;
-    readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+    read: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V> & PrimeChoice<A, V>) => Read<A, T>;
+    readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V> & PrimeChoice<A, V>) => Read<A, T>;
     /** One group of candidates per thing the caller asks about; `select` gets them back in those groups. */
-    readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+    readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V> & PrimeChoice<A, V>) => Read<A, T>;
     /**
      * Every value this store memoizes, declared in one block and bound to these partitions: each memo takes a key and
      * derives the rest of its own key and the version it holds against, so a hydration names the partition and the

@@ -38,6 +38,26 @@ export interface ReadSurfaceKernel<Key> {
 /** A read's `varyBy`, either way it can be spelled: the args fields it names, or a value it computes from them. */
 export type VarySpec<Args> = readonly VaryField<Args>[] | ((args: Args) => readonly VaryValue[]);
 /**
+ * What a read does about a partition holding no rows yet. Spelled as a word rather than `true` because the two
+ * settings are not the same size of act: `'partition'` fetches the *whole* partition however little of it this read
+ * goes on to select, which is the whole cost of a cold read and the thing a call site cannot see.
+ */
+export type PrimeSetting = 'partition' | false;
+/**
+ * Makes `prime` a required answer for a read that declares a `varyBy`, and leaves it optional otherwise.
+ *
+ * A `varyBy` is the read saying it wants a *slice* of its partition. That is exactly the shape where priming is a
+ * gamble the declaration cannot settle on its own — a partition is as large as the store made it, and a read of
+ * twenty ids out of a league's whole roster fetches the roster. A read with no `varyBy` wants the partition entire,
+ * so priming it is plainly right and nothing is asked. This is a type-level question, not a rule: either answer is
+ * fine, but a narrowing read has to have been asked it.
+ */
+export type PrimeChoice<Args, V extends VarySpec<Args>> = V extends readonly [] ? {
+    prime?: PrimeSetting;
+} : {
+    prime: PrimeSetting;
+};
+/**
  * What a read's `select` is handed, which is the fields it named in `varyBy` and nothing else: reaching an arg the read
  * never declared is what would serve one caller's value to another, so it does not typecheck. Each field is
  * non-nullable, since the read does not run until every one has arrived. A `varyBy` computed by a function names no
@@ -68,8 +88,12 @@ interface CommonDef<Args, T, V extends VarySpec<Args>> {
     isEqual?: (left: T, right: T) => boolean;
     /** Sizes this read's value cache, keyed by partition and args together. Default 256, shared by every subscriber. */
     getCacheMax?: number;
-    /** Whether reading a cold partition fetches it. Default true; set false for a guess at partitions, or a selector. */
-    prime?: boolean;
+    /**
+     * Whether reading a cold partition fetches it. Defaults to `'partition'`; set `false` for a guess at partitions,
+     * or a selector. A read declaring a `varyBy` must answer this rather than take the default — see
+     * {@link PrimeChoice}, which is intersected onto the published signature and is where that requirement lives.
+     */
+    prime?: PrimeSetting;
 }
 /**
  * Declares a read of one partition, which is the shape nearly every read in a store has: a call's args name a single
@@ -140,9 +164,9 @@ export declare function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>): 
      * second takes the read itself — separately, because that is what leaves TypeScript free to infer `varyBy` from the
      * list a read spells, which is how `select` comes to see those fields and no others.
      */
-    read: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadDef<Args, Key, T, V>) => Read<Args, T>;
-    readMany: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadManyDef<Args, Key, T, V>) => Read<Args, T>;
-    readGrouped: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadGroupedDef<Args, Key, T, V>) => Read<Args, T>;
+    read: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadDef<Args, Key, T, V> & PrimeChoice<Args, V>) => Read<Args, T>;
+    readMany: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadManyDef<Args, Key, T, V> & PrimeChoice<Args, V>) => Read<Args, T>;
+    readGrouped: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadGroupedDef<Args, Key, T, V> & PrimeChoice<Args, V>) => Read<Args, T>;
     has: (key: Key) => boolean;
 };
 export {};

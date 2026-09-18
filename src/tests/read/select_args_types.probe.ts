@@ -25,6 +25,7 @@ const rows = definePartitions<Row, { region: string }, Args>({
 export const declaredFieldsArrive = () =>
   rows.read<Args, string>()({
     varyBy: ['cohort'],
+    prime: 'partition',
     select: (args) => args.cohort.toUpperCase(),
     empty: '',
   });
@@ -33,6 +34,7 @@ export const declaredFieldsArrive = () =>
 export const undeclaredFieldIsUnreachable = () =>
   rows.read<Args, string>()({
     varyBy: ['cohort'],
+    prime: 'partition',
     // @ts-expect-error `ids` is not one of the fields this read declared it varies by
     select: (args) => args.ids.join(),
     empty: '',
@@ -50,12 +52,14 @@ export const noVaryByReachesNothing = () =>
 export const setReadsNarrowToo = () => {
   rows.readMany<Args, string>()({
     varyBy: ['ids'],
+    prime: 'partition',
     partitions: (args) => [{ region: args.region }],
     select: (args, keys) => `${args.ids.length}:${keys.length}`,
     empty: '',
   });
   rows.readGrouped<Args, string>()({
     varyBy: ['cohort'],
+    prime: 'partition',
     groups: (args) => [[{ region: args.region }]],
     // @ts-expect-error `ids` is not one of the fields this read declared it varies by
     select: (args, groups) => `${args.ids.length}:${groups.length}`,
@@ -67,6 +71,36 @@ export const setReadsNarrowToo = () => {
 export const computedVaryByKeepsTheArgs = () =>
   rows.read<Args, string>()({
     varyBy: (args: Args) => [args.cohort, args.ids],
+    prime: 'partition',
     select: (args) => `${args.region}${args.cohort ?? ''}${args.ids?.length ?? 0}`,
+    empty: '',
+  });
+
+/**
+ * A read that narrows within its partition has to say what it does about priming. It is the slice-of-a-partition
+ * shape that makes the question worth forcing: the read selects a few rows and priming fetches every row the
+ * partition holds, and only the author knows whether that trade is worth making.
+ */
+export const narrowingReadMustAnswerPriming = () =>
+  // @ts-expect-error a read declaring a `varyBy` must declare `prime`
+  rows.read<Args, string>()({
+    varyBy: ['cohort'],
+    select: (args) => args.cohort.toUpperCase(),
+    empty: '',
+  });
+
+/** And a read that takes its partition whole is not asked, because for it priming is plainly the right thing. */
+export const wholePartitionReadNeedNotAnswerPriming = () =>
+  rows.read<Args, string>()({
+    select: (_args, key) => key.region,
+    empty: '',
+  });
+
+/** `false` is the other answer: read whatever the partition already holds, and never fetch it on this read's behalf. */
+export const narrowingReadMayDeclineToPrime = () =>
+  rows.read<Args, string>()({
+    varyBy: ['cohort'],
+    prime: false,
+    select: (args) => args.cohort.toUpperCase(),
     empty: '',
   });
