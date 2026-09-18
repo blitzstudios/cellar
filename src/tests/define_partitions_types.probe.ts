@@ -45,3 +45,10 @@ export const strictWithinTheRecord = () => {
   // @ts-expect-error `week` is one of the fields this partition is addressed by
   byRecord.lifecycle.usePrimeAndVersion({ locator: { region: 'us' } });
 };
+
+/** A subscriber that another caller feeds keeps the version and declines the fetch, and cannot ask for one. */
+export const passiveSubscriber = () => {
+  byFields.lifecycle.usePrimeAndVersion({ region: 'us' }, { prime: false });
+  // @ts-expect-error only `false` — a call site may decline priming, never demand it
+  byFields.lifecycle.usePrimeAndVersion({ region: 'us' }, { prime: true });
+};

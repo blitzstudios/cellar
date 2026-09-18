@@ -74,6 +74,7 @@ interface PartitionLifecycle<Args> {
     /** The version as a `DataResult`, primed as a read would, for a derivation that then reads imperatively. */
     usePrimeAndVersion: (args: Loose<Args> | undefined, options?: {
         enabled?: boolean;
+        prime?: false;
     }) => DataResult<number>;
     /** Whether the partition holds rows. Tracks. */
     has: (args: Args) => boolean;

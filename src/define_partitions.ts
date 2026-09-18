@@ -80,7 +80,7 @@ interface PartitionLifecycle<Args> {
   usePrime: (args: Loose<Args> | undefined, options?: { enabled?: boolean }) => PrimeState;
   usePrimeMany: (args: readonly Args[], options?: { enabled?: boolean }) => PrimeState;
   /** The version as a `DataResult`, primed as a read would, for a derivation that then reads imperatively. */
-  usePrimeAndVersion: (args: Loose<Args> | undefined, options?: { enabled?: boolean }) => DataResult<number>;
+  usePrimeAndVersion: (args: Loose<Args> | undefined, options?: { enabled?: boolean; prime?: false }) => DataResult<number>;
   /** Whether the partition holds rows. Tracks. */
   has: (args: Args) => boolean;
   /** The partition's version, 0 if never written. Tracks. */
@@ -281,11 +281,12 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
    */
   const keyOfHookArgs = (args: Loose<Args>): Key => keyOfArgs(args as Args);
 
-  function usePrimeAndVersion(args: Loose<Args> | undefined, options?: { enabled?: boolean }): DataResult<number> {
+  function usePrimeAndVersion(args: Loose<Args> | undefined, options?: { enabled?: boolean; prime?: false }): DataResult<number> {
     const key = args === undefined ? undefined : keyOfHookArgs(args);
     const parts = key === undefined ? NO_PARTS : toParts(key);
     const isEnabled = (options?.enabled ?? true) && key !== undefined && addressesPartition(parts);
-    const prime = usePriming(key, isEnabled);
+    // `prime: false` keeps the version subscription and drops only the fetch, the same split `ReadCallOptions` makes.
+    const prime = usePriming(key, isEnabled && options?.prime !== false);
     const ver = version.useVersion(parts, isEnabled);
     const partsKey = cacheKey(...parts);
     const status = runSubscribed(() => offHeapStatus(isEnabled, isEnabled && surface.has(key as Key), prime));
