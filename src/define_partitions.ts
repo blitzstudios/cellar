@@ -38,6 +38,13 @@ export interface PartitionKeySpec<Row extends RowShape, Key, Args, Descriptor> {
   of?: (args: Loose<Args>) => MaybePartition<Descriptor>;
   /** The key a partition record addresses its rows by. Must be stable and must not collide. */
   id?: (descriptor: Descriptor) => Key;
+  /**
+   * The partition record a key names — the reverse of {@link id} — for a store whose keys are parseable.
+   * Optional, and worth supplying: the record⇄key pairings are bounded, so without this a partition evicted
+   * while nothing was reading it cannot be fetched again for the life of the process. With it, eviction costs
+   * a parse.
+   */
+  from?: (key: Key) => MaybePartition<Descriptor>;
   /** The rows one partition holds, as a `WHERE` over the table. */
   where: (key: Key) => Partial<Row>;
 }
@@ -195,8 +202,24 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
   const describe = (key: Key): Descriptor => {
     if (!interned) return key as unknown as Descriptor;
     const partition = interned.get(key as unknown as string);
-    if (!partition) throw new Error(`${name}_store: unknown partition ${String(key)}`);
-    return partition;
+    if (partition) return partition;
+
+    // Evicted, so re-derive it if the store can. Re-interned on the way past, since something is asking about
+    // this partition again and the next ask should be a hit.
+    const reparsed = keySpec.from?.(key);
+    if (reparsed != null) {
+      interned.set(key as unknown as string, reparsed);
+      return reparsed;
+    }
+
+    // Nothing else in the kernel fails a read outright, and this is the one bound that can. A store whose keys
+    // are parseable should declare `from`; one whose keys are not needs a larger `internMax`.
+    reportStoreDegradation({
+      scope: `partitions.intern_evicted.${name}`,
+      context: `${name}_store: partition ${String(key)} left the key table, so it cannot be addressed again`,
+      extra: { internMax: config.internMax ?? INTERN_MAX },
+    });
+    throw new Error(`${name}_store: unknown partition ${String(key)}`);
   };
 
   /** How a read and every `lifecycle` member gets from args to the key; `key.of` reads them at their loosest. */

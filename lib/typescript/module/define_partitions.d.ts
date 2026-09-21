@@ -29,6 +29,13 @@ export interface PartitionKeySpec<Row extends RowShape, Key, Args, Descriptor> {
     of?: (args: Loose<Args>) => MaybePartition<Descriptor>;
     /** The key a partition record addresses its rows by. Must be stable and must not collide. */
     id?: (descriptor: Descriptor) => Key;
+    /**
+     * The partition record a key names — the reverse of {@link id} — for a store whose keys are parseable.
+     * Optional, and worth supplying: the record⇄key pairings are bounded, so without this a partition evicted
+     * while nothing was reading it cannot be fetched again for the life of the process. With it, eviction costs
+     * a parse.
+     */
+    from?: (key: Key) => MaybePartition<Descriptor>;
     /** The rows one partition holds, as a `WHERE` over the table. */
     where: (key: Key) => Partial<Row>;
 }
