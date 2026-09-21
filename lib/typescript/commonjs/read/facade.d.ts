@@ -34,6 +34,11 @@ export interface PairedRead<Params, T> {
  * Publishes a read as its reactive and imperative halves, from a thunk resolving it on whichever backend is bound.
  * Params are the read's own args, loosely: the read's {@link Read.requires} says which of them it waits on, and it
  * stays inert until a caller has them all, so a service publishing it names nothing the store already declared.
+ *
+ * The halves return the same value but do not fetch alike, so swapping one for the other is not free. `useValue`
+ * primes through React Query and refetches on its staleness; `getValue` fetches a partition that has never been
+ * fetched and otherwise leaves it, because a one-shot call has no subscription for staleness to act on and a
+ * getter in a loop would otherwise drive the network.
  */
 export declare function pairRead<Args, T>(read: () => Read<Args, T>): PairedRead<Loose<Args>, T>;
 //# sourceMappingURL=facade.d.ts.map

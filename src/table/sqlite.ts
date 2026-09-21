@@ -1,6 +1,6 @@
 /** The row table on SQLite: rows live in the database, and become JS objects at the moment a read materializes them. */
 
-import { cacheKey } from '../args_key';
+import { cacheKey, cacheKeyOf } from '../args_key';
 import { chunkList } from '../collections';
 import { createPresence, whereMapKey } from './presence';
 import { columnNames, FindOpts, IndexDef, RowShape, RowTable, RowTableSchema, SqlValue } from './types';
@@ -95,7 +95,7 @@ export function createSqliteRowTable<Row extends RowShape>(
   const metaCache = new Map<string, string | undefined>();
   let metaLoaded = false;
   const metaKey = (where: Partial<Row>): string =>
-    schema.meta ? cacheKey(...schema.meta.keyColumns.map((column) => String(where[column as keyof Row] ?? ''))) : '';
+    schema.meta ? cacheKeyOf(schema.meta.keyColumns.map((column) => String(where[column as keyof Row] ?? ''))) : '';
   function ensureMetaLoaded(meta: NonNullable<typeof schema.meta>): void {
     if (metaLoaded) return;
     const cols = [...meta.keyColumns, meta.column];

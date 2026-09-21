@@ -1,7 +1,8 @@
 /** Key derivation for reads: a read's cache key is its partition plus the values it is scoped by. */
-export { cacheKey, KEY_SEP } from './key';
+export { cacheKey, cacheKeyOf, KEY_SEP } from './key';
 /** A string that identifies a value by its content, with object keys sorted so equal content yields one key. */
 export declare function stableKey(value: unknown): string;
+export declare function identityOf(part: object): string;
 /**
  * A value a read varies by: anything `select` reads beyond the partition itself. An object or an array keys by its
  * content, so a read can vary by a config or an options object without the caller serializing one — but it must be

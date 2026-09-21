@@ -107,3 +107,36 @@ describe('isVaryPresent', () => {
     expect(present.every(isVaryPresent)).toBe(true);
   });
 });
+
+/**
+ * The exact strings, not just the distinctions. A key is persisted nowhere, but it is the identity of every cache
+ * entry on the read path, so an encoding that shifts silently turns every warm entry cold — and two keys that
+ * newly collide return one read's value to another. Any refactor here has to leave these byte-identical.
+ */
+describe('key encoding', () => {
+  const NUL = '\u0000';
+  const GROUP = '\u0001';
+
+  it('encodes each kind of value exactly', () => {
+    expect(stableKey('abc')).toBe('"abc"');
+    expect(stableKey(7)).toBe('7');
+    expect(stableKey(true)).toBe('true');
+    expect(stableKey(null)).toBe('null');
+    expect(stableKey(undefined)).toBe('u');
+    expect(stableKey([1, 'a', null])).toBe('[1,"a",null]');
+    expect(stableKey({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
+    expect(stableKey({ a: { c: [1, { d: 'x' }] } })).toBe('{"a":{"c":[1,{"d":"x"}]}}');
+  });
+
+  it('joins parts and groups exactly', () => {
+    expect(cacheKey('nfl', '2025')).toBe(`nfl${NUL}2025`);
+    expect(varyKey(['nfl'], [])).toBe('nfl');
+    expect(varyKey(['nfl', '2025'], ['x', 3, { a: 1 }])).toBe(`nfl${NUL}2025${NUL}"x"${NUL}3${NUL}{"a":1}`);
+    expect(
+      partitionsKey([
+        ['nfl', '1'],
+        ['nba', '2'],
+      ]),
+    ).toBe(`nfl${NUL}1${GROUP}nba${NUL}2`);
+  });
+});

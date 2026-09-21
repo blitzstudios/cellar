@@ -59,6 +59,7 @@ function makeHarness() {
       spies.has.push(key);
       return present.has(key);
     },
+    hasFetched: (key) => fetchedAt.has(key),
     ingest: {
       usePrime: (key, enabled) => {
         spies.usePrime.push({ key: key as string, enabled });
@@ -89,6 +90,13 @@ function makeHarness() {
     isEqual: shallowEqualRecord,
   };
 
+  /** Rows arriving by socket push: present, but this partition has never had its body fetched. */
+  const push = (key: string, slice: Slice) => {
+    slices.set(key, slice);
+    present.add(key);
+    atom.bump([key]);
+  };
+
   const land = (key: string, slice: Slice, at = 1000) => {
     slices.set(key, slice);
     present.add(key);
@@ -103,7 +111,7 @@ function makeHarness() {
     failed.add(key);
   };
 
-  return { atom, slices, present, failed, fetchedAt, spies, kernel, EMPTY, surface, read, sliceDef, land, fail };
+  return { atom, slices, present, failed, fetchedAt, spies, kernel, EMPTY, surface, read, sliceDef, land, push, fail };
 }
 
 describe('createReadSurface — getValue registers its partition with the tracking scope', () => {
@@ -359,6 +367,17 @@ describe('createReadSurface — get (imperative)', () => {
     const read = harness.read(harness.sliceDef);
 
     expect(read.getValue({ key: 'p1' })).toBe(harness.EMPTY);
+    expect(harness.spies.ensure).toContain('p1');
+  });
+
+  it('still fetches a partition a socket seeded, whose rows are not its body', () => {
+    const harness = makeHarness();
+    const read = harness.read(harness.sliceDef);
+    harness.push('p1', { a: { score: 1 } });
+
+    read.getValue({ key: 'p1' });
+
+    // Rows are present, so a presence check would call this warm and leave it on that one row all session.
     expect(harness.spies.ensure).toContain('p1');
   });
 

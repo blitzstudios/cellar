@@ -14,3 +14,11 @@ export const KEY_SEP = '\u0000';
 export function cacheKey(...parts: readonly string[]): string {
   return parts.join(KEY_SEP);
 }
+
+/**
+ * The same key from parts a caller already holds as an array. `cacheKey(...parts)` spreads that array into rest
+ * arguments, allocating a second one per call purely to join it, and the read path builds keys per read per render.
+ */
+export function cacheKeyOf(parts: readonly string[]): string {
+  return parts.join(KEY_SEP);
+}

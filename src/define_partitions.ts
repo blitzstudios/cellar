@@ -6,7 +6,7 @@
 
 import { useCallback } from 'react';
 
-import { cacheKey, partitionLabel } from './args_key';
+import { cacheKey, partitionLabel, cacheKeyOf } from './args_key';
 import { createFetchIngest, FetchIngest, RawQuery } from './write/fetch_ingest';
 import { createReadSurface, Read, ReadDef, ReadGroupedDef, ReadManyDef, useResult, VarySpec } from './read/surface';
 import { RowShape, RowTable } from './table/types';
@@ -240,7 +240,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
         count = inJs();
       }
     }
-    fetchedAt.set(cacheKey(...toParts(key)), Date.now());
+    fetchedAt.set(cacheKeyOf(toParts(key)), Date.now());
     return count;
   }
 
@@ -263,6 +263,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     version,
     toParts,
     has: (key) => table.has(where(key)),
+    hasFetched: (key) => fetchedAt.get(cacheKeyOf(toParts(key))) !== undefined,
     defaultPartition: keySpec.of ? (keyOfArgs as (args: never) => Key) : fields,
     ingest,
   });
@@ -288,7 +289,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     // `prime: false` keeps the version subscription and drops only the fetch, the same split `ReadCallOptions` makes.
     const prime = usePriming(key, isEnabled && options?.prime !== false);
     const ver = version.useVersion(parts, isEnabled);
-    const partsKey = cacheKey(...parts);
+    const partsKey = cacheKeyOf(parts);
     const status = runSubscribed(() => offHeapStatus(isEnabled, isEnabled && surface.has(key as Key), prime));
     const doRefetch = useCallback(() => {
       if (key !== undefined) ingest?.refetch(key);
@@ -342,7 +343,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
         const parts = toParts(keyOfArgs(args));
         // Read for its tracking side effect, so a derivation gating on this getter hears about the change.
         version.get(parts);
-        return fetchedAt.get(cacheKey(...parts)) ?? 0;
+        return fetchedAt.get(cacheKeyOf(parts)) ?? 0;
       },
       fetch: (args, options) => (ingest ? ingest.prefetch(keyOfArgs(args), options).then(() => undefined) : Promise.resolve()),
       refetch: (args) => ingest?.refetch(keyOfArgs(args)),

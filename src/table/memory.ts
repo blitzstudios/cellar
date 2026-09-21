@@ -1,6 +1,6 @@
 /** The row table held in JS `Map`s, which is the backend on web and in every test. */
 
-import { cacheKey } from '../args_key';
+import { cacheKey, cacheKeyOf } from '../args_key';
 import { createPresence, whereMapKey } from './presence';
 import { FindOpts, RowShape, RowTable, RowTableSchema } from './types';
 import { assertRowsMatchWhere, comparator, digestColumns, digestRow, matchesWhere } from './query';
@@ -18,7 +18,7 @@ export function createMemoryRowTable<Row extends RowShape>(schema: RowTableSchem
   const meta = new Map<string, string>();
   const digestCols = digestColumns(schema);
 
-  const pkOf = (row: Row): string => cacheKey(...schema.primaryKey.map((column) => String(row[column])));
+  const pkOf = (row: Row): string => cacheKeyOf(schema.primaryKey.map((column) => String(row[column])));
   const allRows = (): Iterable<Row> => (hasPk ? byPk.values() : rowsList);
 
   function removeWhere(where: Partial<Row>): void {

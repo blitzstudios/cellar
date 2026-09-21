@@ -5,7 +5,7 @@
 
 import { useCallback, useMemo } from 'react';
 
-import { cacheKey, EMPTY_VARY, isVaryPresent, KEY_SEP, partitionsKey, VaryValue, varyKey } from '../args_key';
+import { cacheKey, EMPTY_VARY, isVaryPresent, KEY_SEP, partitionsKey, VaryValue, varyKey, cacheKeyOf } from '../args_key';
 import { getOrCreate } from '../collections';
 import { PartitionField, partitionKeyOf, requiredFieldsOf, VaryField, varyValuesOf } from './partition_fields';
 import { createVersionedCache, shallowEqualValue } from '../caches';
@@ -37,6 +37,11 @@ export interface ReadSurfaceKernel<Key> {
   toParts: (key: Key) => readonly string[];
   /** Whether a partition holds rows. Gates `select`. */
   has: (key: Key) => boolean;
+  /**
+   * Whether a partition's rows came from a fetch. Rows alone do not say: a socket push writes into a partition
+   * nothing ever fetched, and in a store fed by both, one pushed row would otherwise stand in for the body.
+   */
+  hasFetched?: (key: Key) => boolean;
   /**
    * What a read falls back on when it declares no `partition`: the store's key fields, or a function for a store
    * whose key arrives whole in one arg. Supplying the function promises every `read`'s args carry the key.
@@ -303,12 +308,18 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   /** Whether each partition holds rows, keyed by partition and shared by every read on this surface. */
   const presenceByVersion = createVersionedCache<boolean>(PRESENCE_CACHE_MAX);
   // Memoizable per version because presence only flips on a write, and every write bumps.
-  const hasOne = (key: Key, parts: readonly string[]): boolean => presenceByVersion.read(cacheKey(...parts), kernel.version.get(parts), () => kernel.has(key));
+  const hasOne = (key: Key, parts: readonly string[]): boolean => presenceByVersion.read(cacheKeyOf(parts), kernel.version.get(parts), () => kernel.has(key));
   const hasAny = (entries: readonly PartitionEntry<Key>[]): boolean => entries.some((entry) => addressesPartition(entry.parts) && hasOne(entry.key, entry.parts));
 
-  /** Starts a cold partition's fetch. Only `getValue` needs it; a reactive read primes through `usePrime`. */
+  /**
+   * Starts an unfetched partition's fetch. Only `getValue` needs it; a reactive read primes through `usePrime`.
+   * Cold means never fetched, not empty: a partition holding rows a socket pushed into it has never had its body,
+   * and gating on rows would leave it on that one row for the session.
+   */
   const primeIfCold = (key: Key, parts: readonly string[]): void => {
-    if (ingest && !hasOne(key, parts)) ingest.ensure(key);
+    if (!ingest) return;
+    const fetched = kernel.hasFetched ? kernel.hasFetched(key) : hasOne(key, parts);
+    if (!fetched) ingest.ensure(key);
   };
 
   const makeValueCache = <T>(def: { getCacheMax?: number; isEqual?: (left: T, right: T) => boolean }) =>

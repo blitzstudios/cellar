@@ -310,9 +310,9 @@ same replacement from an undecoded response body.
 
 | export | what it gives you |
 | --- | --- |
-| `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about |
+| `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about. A `varyBy` value that is an object or an array keys by its content, and its identity is remembered per reference so a caller holding one across a list serializes it once — which is why `__DEV__` freezes it: a key remembered for a reference is only sound while the content holds still |
 | `partitions.project()` | a view-model shape built one row at a time: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply the row-to-view-model function; a bump then rebuilds only the rows whose content moved and hands back the previous reference for the rest, so the readers of an unchanged row don't repaint. Reads of the same shape share one projection, so a row is built once however many ask |
-| `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares |
+| `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares. They return the same value but do not fetch alike: `useValue` refetches on React Query's staleness, `getValue` fetches a partition that has never been fetched and otherwise leaves it |
 | `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
 | `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |
 | `DataResult<T>`, `makeResult` | the envelope a read hands back, and the builder for a bespoke read the surface can't express |

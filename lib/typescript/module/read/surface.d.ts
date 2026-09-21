@@ -32,6 +32,11 @@ export interface ReadSurfaceKernel<Key> {
     /** Whether a partition holds rows. Gates `select`. */
     has: (key: Key) => boolean;
     /**
+     * Whether a partition's rows came from a fetch. Rows alone do not say: a socket push writes into a partition
+     * nothing ever fetched, and in a store fed by both, one pushed row would otherwise stand in for the body.
+     */
+    hasFetched?: (key: Key) => boolean;
+    /**
      * What a read falls back on when it declares no `partition`: the store's key fields, or a function for a store
      * whose key arrives whole in one arg. Supplying the function promises every `read`'s args carry the key.
      */

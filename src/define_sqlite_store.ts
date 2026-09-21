@@ -1,6 +1,5 @@
 /** Declares a store that runs on SQLite where the platform provides it and on an in-memory row table elsewhere. */
 
-import { createOnceGuard } from './diagnostics/once_guard';
 import { reportStoreDegradation } from './diagnostics/telemetry';
 import { createVersionAtom, VersionAtom } from './reactivity/version_atom';
 import { createMemoryRowTable } from './table/memory';
@@ -55,7 +54,6 @@ export interface SqliteStore<Row extends RowShape, Backend extends StoreBackendS
 
 const NO_CAPS = {} as const;
 
-const lateBindGuard = createOnceGuard();
 
 /**
  * How a store declares itself: one descriptor, and both platforms are wired. What comes back already runs on an
@@ -80,13 +78,17 @@ export function defineSqliteStore<Row extends RowShape, Backend extends StoreBac
   };
 
   const setBackend = (backend: Backend): void => {
-    if (__DEV__ && hasBeenRead && !lateBindGuard.seen('late_bind')) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        'store_backend_slot.late_bind: a store backend was registered after something had already read from it. Backends bind once, during ' +
-          'startup, before the first read — reads taken against the previous backend are still holding its rows and versions, and nothing ' +
-          're-renders when it is replaced. Move the `bindOffHeapStore` call earlier in startup.',
-      );
+    // Reported rather than warned: in a release build this is silent, and the symptom — a screen that is
+    // simply always empty for some users — is one nobody would trace back to startup ordering.
+    // `reportStoreDegradation` dedupes per scope and writes the dev console line itself.
+    if (hasBeenRead) {
+      reportStoreDegradation({
+        scope: 'store_backend_slot.late_bind',
+        context:
+          'a store backend was registered after something had already read from it. Backends bind once, during startup, before the ' +
+          'first read — reads taken against the previous backend are still holding its rows and versions, and nothing re-renders when ' +
+          'it is replaced. Move the `bindOffHeapStore` call earlier in startup.',
+      });
     }
     active = backend;
   };

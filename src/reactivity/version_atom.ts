@@ -4,7 +4,7 @@ import { DependencyList, useCallback, useMemo, useRef } from 'react';
 import { useSyncExternalStore } from 'use-sync-external-store/shim';
 import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/with-selector';
 
-import { cacheKey, GROUP_SEP, partitionsKey } from '../args_key';
+import { cacheKey, GROUP_SEP, partitionsKey, cacheKeyOf } from '../args_key';
 import { getOrCreate } from '../collections';
 import { readGateRuntime } from '../runtime';
 import { Dep, runSubscribed, trackDependency } from './tracking';
@@ -57,7 +57,7 @@ type VersionEntry = { value: number; listeners: Set<() => void> };
  * and one per partition, so a write wakes every reader of that partition and no reader of any other.
  */
 export function createVersionAtom(root: string): VersionAtom {
-  const specifier = (parts: readonly string[]): string => cacheKey(...parts);
+  const specifier = (parts: readonly string[]): string => cacheKeyOf(parts);
   const key = (parts: readonly string[]): [string, string] => [root, specifier(parts)];
 
   const entries = new Map<string, VersionEntry>();

@@ -1,9 +1,9 @@
 /** Key derivation for reads: a read's cache key is its partition plus the values it is scoped by. */
 
 import { createOnceGuard } from './diagnostics/once_guard';
-import { cacheKey, KEY_SEP } from './key';
+import { cacheKey, cacheKeyOf, KEY_SEP } from './key';
 
-export { cacheKey, KEY_SEP } from './key';
+export { cacheKey, cacheKeyOf, KEY_SEP } from './key';
 
 /**
  * A `Map`, a `Set` or a class instance keys as `{}`, since none of what it holds is an own enumerable property — so two
@@ -37,6 +37,46 @@ export function stableKey(value: unknown): string {
 }
 
 /**
+ * Freezes what {@link stableKey} walked, so a part whose identity is remembered cannot drift from it. Mirrors that
+ * walk rather than freezing everything reachable: a `Map`, a `Set` or a class instance is not content-addressed —
+ * `stableKey` warns about it instead — and freezing one would break invariants it maintains for its owner.
+ */
+function freezeKeyPart(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+  if (Array.isArray(value)) {
+    Object.freeze(value);
+    for (const entry of value) freezeKeyPart(entry);
+    return;
+  }
+  const proto = Object.getPrototypeOf(value) as unknown;
+  if (proto !== Object.prototype && proto !== null) return;
+  Object.freeze(value);
+  for (const entry of Object.values(value as Record<string, unknown>)) freezeKeyPart(entry);
+}
+
+/**
+ * The content identity of a part, remembered per reference. Callers that hold one part across a loop -- ranking a
+ * page of rows re-keys the same shape object once per row -- otherwise re-serialize an unchanged object every time,
+ * and the part carrying a whole metric config makes that the most expensive thing on the read path.
+ *
+ * Shared across keyers because {@link stableKey} is a pure function of the part. Only the serialization is skipped:
+ * the id still comes from the content, so an equal part built fresh keys the same as one held, and a reference whose
+ * id was evicted re-mints exactly as it would have.
+ */
+const identities = new WeakMap<object, string>();
+
+export function identityOf(part: object): string {
+  const known = identities.get(part);
+  if (known !== undefined) return known;
+  const identity = stableKey(part);
+  // Reading a reference's identity from cache is only sound while its content holds still. Nothing here can detect a
+  // later mutation, so dev makes it impossible rather than letting a stale key through a release build unnoticed.
+  if (__DEV__) freezeKeyPart(part);
+  identities.set(part, identity);
+  return identity;
+}
+
+/**
  * A value a read varies by: anything `select` reads beyond the partition itself. An object or an array keys by its
  * content, so a read can vary by a config or an options object without the caller serializing one — but it must be
  * plain data, since only own enumerable properties count towards the key (see {@link stableKey}).
@@ -55,7 +95,7 @@ export const GROUP_SEP = '\u0001';
  * part of the key, so the same partitions named differently are a different set.
  */
 export function partitionsKey(partitions: readonly (readonly string[])[]): string {
-  return partitions.map((parts) => cacheKey(...parts)).join(GROUP_SEP);
+  return partitions.map(cacheKeyOf).join(GROUP_SEP);
 }
 
 /** A partition's parts as a human reads them. Never as a key: `:` occurs inside a part (`region:us-west`). */
@@ -76,5 +116,15 @@ export function isVaryPresent(value: VaryValue): boolean {
  * by its content and a caller rebuilding one per render still hits.
  */
 export function varyKey(parts: readonly string[], vary: readonly VaryValue[]): string {
-  return vary.length ? cacheKey(...parts, ...vary.map(stableKey)) : cacheKey(...parts);
+  if (!vary.length) return cacheKeyOf(parts);
+  // One array rather than three: `cacheKey(...parts, ...vary.map(stableKey))` allocates the mapped list and a
+  // spread of both. Structured values go through {@link identityOf}, so a caller holding an options object across
+  // a list serializes it once instead of once per row.
+  const joined = new Array<string>(parts.length + vary.length);
+  for (let index = 0; index < parts.length; index++) joined[index] = parts[index];
+  for (let index = 0; index < vary.length; index++) {
+    const value = vary[index];
+    joined[parts.length + index] = value !== null && typeof value === 'object' ? identityOf(value) : stableKey(value);
+  }
+  return cacheKeyOf(joined);
 }

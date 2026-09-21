@@ -10,4 +10,9 @@ export declare const KEY_SEP = "\0";
  * collide two different keys as soon as a part contains `:` itself (`region:us-west`).
  */
 export declare function cacheKey(...parts: readonly string[]): string;
+/**
+ * The same key from parts a caller already holds as an array. `cacheKey(...parts)` spreads that array into rest
+ * arguments, allocating a second one per call purely to join it, and the read path builds keys per read per render.
+ */
+export declare function cacheKeyOf(parts: readonly string[]): string;
 //# sourceMappingURL=key.d.ts.map
