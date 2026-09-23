@@ -46,8 +46,17 @@ export interface SqliteStore<Row extends RowShape, Surface extends StoreSurface,
     readonly reads: Surface['reads'];
     readonly push: NonNullable<Surface['push']>;
     readonly lifecycle: NonNullable<Surface['lifecycle']>;
-    /** Moves the store onto SQLite over `conn`. Once, during startup, before anything reads it. */
-    bindSqlite: (conn: SqliteConnection) => void;
+    /**
+     * Moves the store onto SQLite over `conn`. Once, during startup, before anything reads it. With `recovery`, a SQLite
+     * failure mid-session reopens the database rather than falling back onto an in-memory table.
+     */
+    bindSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
+    /**
+     * Moves a store that is already running — on the in-memory table it started or fell back on — onto SQLite over
+     * `conn`, forgetting what the table it leaves had fetched and having every reader look again. Throws, leaving the
+     * store where it was, if the store cannot be built over `conn`.
+     */
+    moveToSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
     /** Drops the store back onto an in-memory table and tells every reader to look again; idempotent, and deferred to a microtask. */
     degrade: (reason: {
         context: string;
@@ -64,10 +73,20 @@ export interface SqliteStore<Row extends RowShape, Surface extends StoreSurface,
         reset: () => void;
     };
 }
+/** How a store gets its database back when SQLite fails under it mid-session. */
+export interface SqliteRecovery {
+    /** A fresh connection to the same database; `discard` deletes the database first, for one that is corrupt. */
+    reopen: (options: {
+        discard: boolean;
+    }) => SqliteConnection;
+    /** Told when the store stopped trying and fell back onto an in-memory table, so a later retry can pick it up. */
+    onFallback?: () => void;
+}
 /**
  * How a store declares itself: one descriptor, and both platforms are wired. What comes back already runs on an
  * in-memory row table, so web and tests need nothing further; mobile calls `bindSqlite` with an open connection during
- * startup, and a SQLite failure mid-session drops the store back onto an in-memory table.
+ * startup. A SQLite failure mid-session reopens the database when the bind said how, and falls back onto an in-memory
+ * table when it did not or reopening keeps failing.
  */
 export declare function defineSqliteStore<Row extends RowShape, Surface extends StoreSurface, Caps extends StoreCapabilities = Record<string, never>>(config: SqliteStoreConfig<Row, Surface, Caps>): SqliteStore<Row, Surface, Caps>;
 //# sourceMappingURL=define_sqlite_store.d.ts.map

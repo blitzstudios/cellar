@@ -55,8 +55,17 @@ export interface SqliteStore<Row extends RowShape, Surface extends StoreSurface,
   readonly reads: Surface['reads'];
   readonly push: NonNullable<Surface['push']>;
   readonly lifecycle: NonNullable<Surface['lifecycle']>;
-  /** Moves the store onto SQLite over `conn`. Once, during startup, before anything reads it. */
-  bindSqlite: (conn: SqliteConnection) => void;
+  /**
+   * Moves the store onto SQLite over `conn`. Once, during startup, before anything reads it. With `recovery`, a SQLite
+   * failure mid-session reopens the database rather than falling back onto an in-memory table.
+   */
+  bindSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
+  /**
+   * Moves a store that is already running — on the in-memory table it started or fell back on — onto SQLite over
+   * `conn`, forgetting what the table it leaves had fetched and having every reader look again. Throws, leaving the
+   * store where it was, if the store cannot be built over `conn`.
+   */
+  moveToSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
   /** Drops the store back onto an in-memory table and tells every reader to look again; idempotent, and deferred to a microtask. */
   degrade: (reason: { context: string; error?: unknown; extra?: Record<string, unknown> }) => void;
   /** For tests, which put their own rows behind a store. Nothing outside a test calls these. */
@@ -70,7 +79,25 @@ export interface SqliteStore<Row extends RowShape, Surface extends StoreSurface,
   };
 }
 
+/** How a store gets its database back when SQLite fails under it mid-session. */
+export interface SqliteRecovery {
+  /** A fresh connection to the same database; `discard` deletes the database first, for one that is corrupt. */
+  reopen: (options: { discard: boolean }) => SqliteConnection;
+  /** Told when the store stopped trying and fell back onto an in-memory table, so a later retry can pick it up. */
+  onFallback?: () => void;
+}
+
 const NO_CAPS = {} as const;
+
+/**
+ * Reopens a store gets per session before it falls back onto an in-memory table. A database that fails again straight
+ * after a reopen is failing for a reason a reopen does not fix, and each attempt costs a refetch of every partition.
+ */
+const MAX_REOPENS = 2;
+
+/** An error that means the file itself is unusable, so reopening it would only fail the same way. */
+const CORRUPTION = /SQLITE_CORRUPT|SQLITE_NOTADB|malformed|not a database/i;
+const isCorruption = (error: unknown): boolean => CORRUPTION.test(String((error as { message?: unknown })?.message ?? error));
 
 /**
  * A view of one group of the running surface, looked up at each access so that a bind or a degrade reaches every
@@ -97,47 +124,64 @@ function delegate<T extends object>(group: () => T | undefined, label: string): 
 /**
  * How a store declares itself: one descriptor, and both platforms are wired. What comes back already runs on an
  * in-memory row table, so web and tests need nothing further; mobile calls `bindSqlite` with an open connection during
- * startup, and a SQLite failure mid-session drops the store back onto an in-memory table.
+ * startup. A SQLite failure mid-session reopens the database when the bind said how, and falls back onto an in-memory
+ * table when it did not or reopening keeps failing.
  */
 export function defineSqliteStore<Row extends RowShape, Surface extends StoreSurface, Caps extends StoreCapabilities = Record<string, never>>(
   config: SqliteStoreConfig<Row, Surface, Caps>,
 ): SqliteStore<Row, Surface, Caps> {
   const version = createVersionAtom(`${config.name}_version`);
+  const extra = (more?: Record<string, unknown>) => ({ store: config.name, table: config.schema.table, ...more });
+
+  let running: Surface | undefined;
+  let hasBeenRead = false;
+  let degraded = false;
+  let reopens = 0;
+  // What each table the store has run on primed, so leaving it can have the next one fetch for itself.
+  let resets: Array<() => void> = [];
+
+  const install = (surface: Surface): Surface => {
+    const forget = surface.lifecycle?.forget;
+    if (forget) resets.push(forget);
+    running = surface;
+    return surface;
+  };
+
+  /** Forgets what the running table fetched, then runs the store on what `next` builds and has every reader read from it. */
+  const replaceRunning = (next: () => Surface): void => {
+    const previous = resets;
+    resets = [];
+    previous.forEach((reset) => reset());
+    install(next());
+    version.bumpAll();
+  };
+
   const buildInMemory = (): Surface => config.build(createMemoryRowTable(config.schema), version, NO_CAPS);
 
   // Built on first read, so a platform that binds never builds it, and swapped before that read, so a hook that
   // resolves through it every render keeps resolving to the same thing.
-  let running: Surface | undefined;
-  let hasBeenRead = false;
   const current = (): Surface => {
     hasBeenRead = true;
-    return (running ??= buildInMemory());
+    return running ?? install(buildInMemory());
   };
-
-  let degraded = false;
-  let resets: Array<() => void> = [];
 
   const degrade = (reason: { context: string; error?: unknown; extra?: Record<string, unknown> }): void => {
     if (degraded) return;
     degraded = true;
     reportStoreDegradation({ scope: `${config.name}.runtime`, context: reason.context, error: reason.error, extra: reason.extra });
-    queueMicrotask(() => {
-      resets.forEach((reset) => reset());
-      running = buildInMemory();
-      version.bumpAll();
-    });
+    queueMicrotask(() => replaceRunning(buildInMemory));
   };
 
-  const bindSqlite = (conn: SqliteConnection): void => {
-    // Guarded before anything is built on it, so a failure below degrades the store.
+  const fallBack = (context: string, error: unknown, recovery: SqliteRecovery | undefined, more?: Record<string, unknown>): void => {
+    degrade({ context, error, extra: extra(more) });
+    recovery?.onFallback?.();
+  };
+
+  /** The store over SQLite on `conn`, guarded so that a failure on it reopens the database or falls back. */
+  const buildOnSqlite = (conn: SqliteConnection, recovery: SqliteRecovery | undefined): Surface => {
     const guarded = guardedConnection(
       conn,
-      (error, op) =>
-        degrade({
-          context: `SQLite \`${op}\` failed mid-session; the store is now on an in-memory table and will refetch`,
-          error,
-          extra: { store: config.name, table: config.schema.table, op },
-        }),
+      (error, op) => onSqliteFailure(error, op, recovery),
       (error, op) =>
         reportStoreDegradation({
           scope: `${config.name}.contention`,
@@ -145,12 +189,65 @@ export function defineSqliteStore<Row extends RowShape, Surface extends StoreSur
             `SQLite \`${op}\` was refused because another statement held the connection — absorbed rather than degraded, but the ` +
             'store is one connection short of where it should be, which usually means its dedicated reader never opened',
           error,
-          extra: { store: config.name, table: config.schema.table, op },
+          extra: extra({ op }),
         }),
     );
-    const onSqlite = config.build(createSqliteRowTable(config.schema, guarded, config.nativeShredSpec), version, config.sqliteCapabilities?.(guarded) ?? NO_CAPS);
-    const forget = onSqlite.lifecycle?.forget;
-    if (forget) resets.push(forget);
+    return config.build(createSqliteRowTable(config.schema, guarded, config.nativeShredSpec), version, config.sqliteCapabilities?.(guarded) ?? NO_CAPS);
+  };
+
+  /**
+   * A statement failed, and the connection it ran on answers nothing from here. The store reopens the database — or,
+   * when the file is what failed, deletes it and starts empty — and refetches into it; only a store that cannot reopen
+   * falls back onto an in-memory table. Deferred, so the failing statement's caller unwinds first.
+   */
+  const onSqliteFailure = (error: unknown, op: string, recovery: SqliteRecovery | undefined): void => {
+    if (!recovery || reopens >= MAX_REOPENS) {
+      const why = recovery ? `and ${MAX_REOPENS} reopens have already failed` : 'with no way to reopen it';
+      fallBack(`SQLite \`${op}\` failed mid-session ${why}; the store is now on an in-memory table and will refetch`, error, recovery, { op });
+      return;
+    }
+    reopens += 1;
+    queueMicrotask(() => {
+      const discard = isCorruption(error);
+      try {
+        const conn = recovery.reopen({ discard });
+        // A write that failed may have left rows short of what their ETag vouches for, so each partition's next fetch
+        // brings a whole body rather than a 304.
+        if (!discard && config.schema.meta) {
+          try {
+            conn.execute(`DELETE FROM ${config.schema.meta.table};`);
+          } catch {
+            /* a database with no meta table yet has no ETags to clear */
+          }
+        }
+        const surface = buildOnSqlite(conn, recovery);
+        replaceRunning(() => surface);
+        reportStoreDegradation({
+          scope: `${config.name}.reopened`,
+          context: `SQLite \`${op}\` failed mid-session; the store reopened its database${discard ? ', deleting it first,' : ''} and will refetch into it`,
+          error,
+          extra: extra({ op, discard, reopens }),
+          severity: 'info',
+        });
+      } catch (reopenError) {
+        fallBack(`SQLite \`${op}\` failed mid-session and reopening the database failed too; the store is now on an in-memory table`, reopenError, recovery, {
+          op,
+          discard,
+          firstError: String((error as { message?: unknown })?.message ?? error),
+        });
+      }
+    });
+  };
+
+  const moveToSqlite = (conn: SqliteConnection, recovery?: SqliteRecovery): void => {
+    const surface = buildOnSqlite(conn, recovery);
+    degraded = false;
+    reopens = 0;
+    replaceRunning(() => surface);
+  };
+
+  const bindSqlite = (conn: SqliteConnection, recovery?: SqliteRecovery): void => {
+    const onSqlite = buildOnSqlite(conn, recovery);
 
     // Reported rather than warned: in a release build this is silent, and the symptom — a screen that is simply always
     // empty for some users — is one nobody would trace back to startup ordering.
@@ -163,7 +260,7 @@ export function defineSqliteStore<Row extends RowShape, Surface extends StoreSur
           'it moves. Move the `bindOffHeapStore` call earlier in startup.',
       });
     }
-    running = onSqlite;
+    install(onSqlite);
   };
 
   return {
@@ -171,6 +268,7 @@ export function defineSqliteStore<Row extends RowShape, Surface extends StoreSur
     push: delegate(() => current().push, `${config.name}.push`) as NonNullable<Surface['push']>,
     lifecycle: delegate(() => current().lifecycle, `${config.name}.lifecycle`) as NonNullable<Surface['lifecycle']>,
     bindSqlite,
+    moveToSqlite,
     degrade,
     testing: {
       over: (table = createMemoryRowTable(config.schema), options = {}) => config.build(table, options.version ?? version, options.caps ?? NO_CAPS),
@@ -181,6 +279,7 @@ export function defineSqliteStore<Row extends RowShape, Surface extends StoreSur
         running = undefined;
         hasBeenRead = false;
         degraded = false;
+        reopens = 0;
         resets = [];
       },
     },

@@ -1,1 +1,1 @@
-{"version":3,"file":"index.d.ts","sourceRoot":"","sources":["../../../../src/nitro/index.ts"],"names":[],"mappings":"AAAA;;;GAGG;AAEH,OAAO,EAAE,mBAAmB,EAAE,wBAAwB,EAAE,eAAe,EAAE,MAAM,oBAAoB,CAAC"}
+{"version":3,"file":"index.d.ts","sourceRoot":"","sources":["../../../../src/nitro/index.ts"],"names":[],"mappings":"AAAA;;;GAGG;AAEH,OAAO,EAAE,mBAAmB,EAAE,wBAAwB,EAAE,eAAe,EAAE,iBAAiB,EAAE,MAAM,oBAAoB,CAAC"}

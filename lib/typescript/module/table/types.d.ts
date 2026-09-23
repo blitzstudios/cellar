@@ -15,6 +15,11 @@ export type ColumnType = 'TEXT' | 'INTEGER' | 'REAL';
 export interface ColumnDef {
     type: ColumnType;
     notNull?: boolean;
+    /**
+     * Read only by SQL the store writes itself — a score column a ranked scan sums, say — and never by a heap read. The
+     * in-memory table neither stores nor compares it, so a store builds it only for a table whose `engine` is `sqlite`.
+     */
+    sqliteOnly?: boolean;
 }
 /** A secondary index over the columns a read filters on, named so `init` and a bulk write can create and drop it by name. */
 export interface IndexDef<Row extends RowShape> {
@@ -61,6 +66,8 @@ export interface FindOpts<Row extends RowShape> {
  * write whose payload matches the table changes nothing and reports an empty change set.
  */
 export interface RowTable<Row extends RowShape> {
+    /** Where the rows live, which decides whether a row needs its `sqliteOnly` columns built at all. */
+    readonly engine: 'sqlite' | 'memory';
     init(): void;
     /**
      * The schema's primary key, so a caller holding only the table can work out what identifies a row without being
@@ -104,4 +111,6 @@ export interface RowTable<Row extends RowShape> {
 }
 /** A schema's columns in declaration order, which is the order an `INSERT` binds them and the order the fingerprint hashes. */
 export declare function columnNames<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string>;
+/** The columns the in-memory table holds and compares: every one but those marked `sqliteOnly`. */
+export declare function memoryColumns<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string>;
 //# sourceMappingURL=types.d.ts.map

@@ -8,6 +8,7 @@
 import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { PinnedConnection, reportStoreDegradation, ShredSpec, SqliteConnection } from '../index';
+import type { SqliteRecovery } from '../define_sqlite_store';
 
 /** Matched verbatim by `sqliteExecute` in our `react-native-nitro-sqlite` fork (`cpp/shred.cpp`). */
 const NITRO_SHRED_SENTINEL = '-- nitro_shred_v1';
@@ -203,30 +204,120 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
  */
 let openedDuringBind: Set<string> | undefined;
 
-function guardedBind(label: string, bind: () => void): void {
+/** Runs one bind attempt, and returns what it threw, having closed whatever the attempt had opened. */
+function attemptBind(bind: () => void): unknown {
   const outer = openedDuringBind;
   const opened = new Set<string>();
   openedDuringBind = opened;
   try {
     bind();
+    return undefined;
   } catch (error) {
     // A half-bound store would otherwise keep its handles for the life of the process, and a secondary handle's name is
     // exclusive: whatever opens next could not have its reader back, and would report a handle collision on top of the
     // failure that actually happened.
     for (const name of opened) closeNitroConnection(name);
-    reportStoreDegradation({
-      scope: `nitro_connection.bind.${label}`,
-      context:
-        'failed to bind SQLite — the store stays on an in-memory table, so its working set is on the JS heap for this session',
-      error,
-      extra: { label },
-    });
+    return error ?? new Error('bind failed');
   } finally {
     openedDuringBind = outer;
   }
 }
 
-/** Opens `dbName` and moves `store` onto it, or leaves the store on its in-memory table and reports why. */
-export function bindSqliteStore(label: string, dbName: string, store: { bindSqlite: (conn: SqliteConnection) => void }, opts?: { dedicatedReader?: boolean }): void {
-  guardedBind(label, () => store.bindSqlite(openNitroConnection(dbName, opts)));
+/**
+ * Deletes `name`'s database and the WAL files beside it, so the next open starts empty; a WAL left behind would replay
+ * the old pages into the new file. Best effort per file: one that is not there is already what this wants.
+ */
+function discardNitroDatabase(name: string): void {
+  closeNitroConnection(name);
+  for (const file of [name, `${name}-wal`, `${name}-shm`]) {
+    try {
+      NitroSQLite.native.drop(file);
+    } catch {
+      /* not there, or not removable; the open that follows says which */
+    }
+  }
+}
+
+interface BindableStore {
+  bindSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
+  moveToSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
+}
+
+interface StoreBinding {
+  label: string;
+  dbName: string;
+  store: BindableStore;
+  opts?: { dedicatedReader?: boolean };
+}
+
+/** Stores running on an in-memory table because their database would not open or kept failing, by database name. */
+const onHeap = new Map<string, StoreBinding>();
+const retriesByDb = new Map<string, number>();
+/** Each retry that fails again costs a full refetch of the store, so a database that never opens stops being retried. */
+const MAX_RETRIES = 3;
+
+function recoveryFor(binding: StoreBinding): SqliteRecovery {
+  return {
+    reopen: ({ discard }) => {
+      if (discard) discardNitroDatabase(binding.dbName);
+      return openNitroConnection(binding.dbName, binding.opts);
+    },
+    onFallback: () => onHeap.set(binding.dbName, binding),
+  };
+}
+
+/**
+ * Opens `dbName` and moves `store` onto it. A database that will not open or migrate is retried once from empty, since
+ * it is only a cache and a damaged file is the likeliest reason; a store that still cannot bind stays on its in-memory
+ * table until {@link retrySqliteStores}. Once bound, a failure mid-session reopens the database before giving up on it.
+ */
+export function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts?: { dedicatedReader?: boolean }): void {
+  const binding: StoreBinding = { label, dbName, store, opts };
+  const bind = () => store.bindSqlite(openNitroConnection(dbName, opts), recoveryFor(binding));
+  const firstError = attemptBind(bind);
+  if (firstError === undefined) return;
+
+  discardNitroDatabase(dbName);
+  const secondError = attemptBind(bind);
+  if (secondError === undefined) {
+    reportStoreDegradation({
+      scope: `nitro_connection.bind_fresh.${label}`,
+      context: 'failed to bind SQLite, then bound after deleting the database — the store starts empty and refetches',
+      error: firstError,
+      extra: { label },
+      severity: 'info',
+    });
+    return;
+  }
+
+  onHeap.set(dbName, binding);
+  reportStoreDegradation({
+    scope: `nitro_connection.bind.${label}`,
+    context:
+      'failed to bind SQLite, and again after deleting the database — the store runs on an in-memory table until a retry binds it',
+    error: firstError,
+    extra: { label, afterDeleting: String((secondError as { message?: unknown })?.message ?? secondError) },
+  });
+}
+
+/**
+ * Tries every store running on an in-memory table — one whose bind failed, or that gave up on SQLite mid-session — on
+ * its database again. For the app to call on returning to the foreground: a launch in the background, before the
+ * device's first unlock after a restart, is one where the database cannot be opened and later can.
+ */
+export function retrySqliteStores(): void {
+  for (const [dbName, binding] of onHeap) {
+    const retries = (retriesByDb.get(dbName) ?? 0) + 1;
+    if (retries > MAX_RETRIES) continue;
+    retriesByDb.set(dbName, retries);
+    const error = attemptBind(() => binding.store.moveToSqlite(openNitroConnection(dbName, binding.opts), recoveryFor(binding)));
+    if (error !== undefined) continue;
+    onHeap.delete(dbName);
+    reportStoreDegradation({
+      scope: `nitro_connection.rebound.${binding.label}`,
+      context: 'a store that was running on an in-memory table is back on SQLite, and refetches into it',
+      extra: { label: binding.label, retries },
+      severity: 'info',
+    });
+  }
 }

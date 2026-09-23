@@ -3,4 +3,4 @@
  * store to it. Kept behind its own entry point so the core stays runnable off-device.
  */
 
-export { openNitroConnection, getOpenSqliteConnections, bindSqliteStore } from './nitro_connection';
+export { openNitroConnection, getOpenSqliteConnections, bindSqliteStore, retrySqliteStores } from './nitro_connection';

@@ -299,6 +299,7 @@ export function createSqliteRowTable<Row extends RowShape>(
   }
 
   return {
+    engine: 'sqlite',
     primaryKey: schema.primaryKey,
     unit: schema.unit,
 

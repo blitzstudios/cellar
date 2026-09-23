@@ -2,9 +2,9 @@ import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { configureDataKernel } from '../index';
 import { resetOnceGuards } from '../diagnostics/once_guard';
-import { bindSqliteStore, getOpenSqliteConnections, openNitroConnection } from './nitro_connection';
+import { bindSqliteStore, getOpenSqliteConnections, openNitroConnection, retrySqliteStores } from './nitro_connection';
 
-jest.mock('react-native-nitro-sqlite', () => ({ open: jest.fn(), openSecondary: jest.fn(), NitroSQLite: { native: { close: jest.fn() } } }));
+jest.mock('react-native-nitro-sqlite', () => ({ open: jest.fn(), openSecondary: jest.fn(), NitroSQLite: { native: { close: jest.fn(), drop: jest.fn() } } }));
 
 const mockOpen = open as jest.MockedFunction<typeof open>;
 const mockOpenSecondary = openSecondary as jest.MockedFunction<typeof openSecondary>;
@@ -12,7 +12,8 @@ const mockNativeClose = NitroSQLite.native.close as jest.MockedFunction<typeof N
 /** What nitro throws when a secondary handle's name is still registered — the only marker that says so. */
 const handleInUse = () => new Error("handle 'things:reader' is already in use by an open connection");
 const captureException = jest.fn();
-configureDataKernel({ errors: { captureException, captureMessage: jest.fn() } });
+const captureMessage = jest.fn();
+configureDataKernel({ errors: { captureException, captureMessage } });
 
 /** What the adapter reported: the scope it filed under, and the context line it filed. */
 function lastReport(): { scope: string; context: string } {
@@ -286,22 +287,23 @@ describe('binding a store', () => {
       bindSqlite: () => {
         throw new Error('no such file or directory');
       },
+      moveToSqlite: jest.fn(),
     };
 
     expect(() => bindSqliteStore('leaderboard', 'metrics.db', store)).not.toThrow();
-    expect(lastReport().context).toContain('stays on an in-memory table');
+    expect(lastReport().context).toContain('runs on an in-memory table');
   });
 
   it('opens the database and binds the store to the connection', () => {
     mockOpen.mockReturnValue(fakeHandle() as never);
     mockOpenSecondary.mockReturnValue(fakeHandle() as never);
-    const store = { bindSqlite: jest.fn() };
+    const store = { bindSqlite: jest.fn(), moveToSqlite: jest.fn() };
 
     bindSqliteStore('leaderboard', 'metrics.db', store, { dedicatedReader: true });
 
     expect(mockOpen).toHaveBeenCalledWith({ name: 'metrics.db' });
     expect(mockOpenSecondary).toHaveBeenCalled();
-    expect(store.bindSqlite).toHaveBeenCalledWith(expect.objectContaining({ execute: expect.any(Function) }));
+    expect(store.bindSqlite).toHaveBeenCalledWith(expect.objectContaining({ execute: expect.any(Function) }), expect.objectContaining({ reopen: expect.any(Function) }));
   });
 
   it('registers the connection under its database name, which is what the dev overlay dumps', () => {
@@ -326,18 +328,20 @@ describe('binding a store — the handles a failure opened', () => {
       bindSqlite: () => {
         throw new Error('a schema change forces a rebuild');
       },
+      moveToSqlite: jest.fn(),
     };
     bindSqliteStore('metrics', name, store, { dedicatedReader: true });
   };
 
-  it('closes both of them, handing back the names the next attempt has to open', () => {
+  it('closes both of them after each attempt, handing back the names the next attempt has to open', () => {
     const writer = fakeHandle();
     const reader = fakeHandle();
 
     failingBind('metrics.db', writer, reader);
 
-    expect(writer.close).toHaveBeenCalledTimes(1);
-    expect(reader.close).toHaveBeenCalledTimes(1);
+    // Twice: the bind is retried once on a deleted database, and that attempt opens and closes its own.
+    expect(writer.close).toHaveBeenCalledTimes(2);
+    expect(reader.close).toHaveBeenCalledTimes(2);
   });
 
   it('forgets the connection, so nothing later reads through a handle that is closed', () => {
@@ -350,7 +354,7 @@ describe('binding a store — the handles a failure opened', () => {
     failingBind('metrics.db', fakeHandle(), fakeHandle());
 
     expect(lastReport().scope).toBe('nitro_connection.bind.metrics');
-    expect(lastReport().context).toContain('stays on an in-memory table');
+    expect(lastReport().context).toContain('runs on an in-memory table');
   });
 
   it('leaves a connection another store already had open alone', () => {
@@ -373,8 +377,8 @@ describe('binding a store — the handles a failure opened', () => {
     const reader = fakeHandle();
     failingBind('again.db', writer, reader);
 
-    expect(writer.close).toHaveBeenCalledTimes(1);
-    expect(reader.close).toHaveBeenCalledTimes(1);
+    expect(writer.close).toHaveBeenCalledTimes(2);
+    expect(reader.close).toHaveBeenCalledTimes(2);
     expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain('again.db');
   });
 
@@ -382,7 +386,7 @@ describe('binding a store — the handles a failure opened', () => {
     const writer = fakeHandle();
     mockOpen.mockReturnValue(writer as never);
 
-    bindSqliteStore('metrics', 'kept.db', { bindSqlite: () => {} });
+    bindSqliteStore('metrics', 'kept.db', { bindSqlite: () => {}, moveToSqlite: jest.fn() });
 
     expect(writer.close).not.toHaveBeenCalled();
     expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('kept.db');
@@ -448,5 +452,87 @@ describe('reopening a database this process already holds', () => {
     expect(writers[0].close).not.toHaveBeenCalled();
     expect(readers[0].close).not.toHaveBeenCalled();
     expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('untouched.db');
+  });
+});
+
+describe('binding a store — getting SQLite back', () => {
+  const mockDrop = NitroSQLite.native.drop as jest.MockedFunction<typeof NitroSQLite.native.drop>;
+  const lastMessage = () => {
+    const calls = captureMessage.mock.calls;
+    return String(calls[calls.length - 1]?.[0] ?? '');
+  };
+
+  beforeEach(() => {
+    mockOpen.mockReturnValue(fakeHandle() as never);
+    mockOpenSecondary.mockReturnValue(fakeHandle() as never);
+    mockDrop.mockClear();
+  });
+
+  it('retries a failed bind once on a deleted database, WAL files and all', () => {
+    const bindSqlite = jest.fn().mockImplementationOnce(() => {
+      throw new Error('file is not a database');
+    });
+
+    bindSqliteStore('fresh', 'fresh.db', { bindSqlite, moveToSqlite: jest.fn() });
+
+    expect(bindSqlite).toHaveBeenCalledTimes(2);
+    expect(mockDrop.mock.calls.map(([file]) => file)).toEqual(['fresh.db', 'fresh.db-wal', 'fresh.db-shm']);
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('fresh.db');
+    expect(lastMessage()).toContain('nitro_connection.bind_fresh.fresh');
+  });
+
+  it('hands the store a reopen that deletes the database only when asked to', () => {
+    const bindSqlite = jest.fn();
+    bindSqliteStore('reopening', 'reopening.db', { bindSqlite, moveToSqlite: jest.fn() });
+    const recovery = bindSqlite.mock.calls[0][1];
+
+    recovery.reopen({ discard: false });
+    expect(mockDrop).not.toHaveBeenCalled();
+    recovery.reopen({ discard: true });
+    expect(mockDrop.mock.calls.map(([file]) => file)).toEqual(['reopening.db', 'reopening.db-wal', 'reopening.db-shm']);
+  });
+
+  it('moves a store that never bound onto SQLite when the app retries, and then stops retrying it', () => {
+    const moveToSqlite = jest.fn();
+    bindSqliteStore('locked', 'locked.db', {
+      bindSqlite: () => {
+        throw new Error('unable to open database file');
+      },
+      moveToSqlite,
+    });
+
+    retrySqliteStores();
+    retrySqliteStores();
+
+    expect(moveToSqlite).toHaveBeenCalledTimes(1);
+    expect(moveToSqlite).toHaveBeenCalledWith(expect.objectContaining({ execute: expect.any(Function) }), expect.objectContaining({ reopen: expect.any(Function) }));
+    expect(lastMessage()).toContain('nitro_connection.rebound.locked');
+  });
+
+  it('retries a store that gave up on SQLite mid-session', () => {
+    const bindSqlite = jest.fn();
+    const moveToSqlite = jest.fn();
+    bindSqliteStore('gave_up', 'gave_up.db', { bindSqlite, moveToSqlite });
+
+    bindSqlite.mock.calls[0][1].onFallback();
+    retrySqliteStores();
+
+    expect(moveToSqlite).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops retrying a database that never opens, since each attempt costs the store a refetch', () => {
+    const moveToSqlite = jest.fn(() => {
+      throw new Error('unable to open database file');
+    });
+    bindSqliteStore('never', 'never.db', {
+      bindSqlite: () => {
+        throw new Error('unable to open database file');
+      },
+      moveToSqlite,
+    });
+
+    for (let attempt = 0; attempt < 6; attempt += 1) retrySqliteStores();
+
+    expect(moveToSqlite).toHaveBeenCalledTimes(3);
   });
 });
