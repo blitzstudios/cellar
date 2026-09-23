@@ -12,6 +12,7 @@ const schema: RowTableSchema<Row> = {
   table: 'rows',
   columns: { region: { type: 'TEXT' }, cohort: { type: 'TEXT' }, id: { type: 'TEXT' } },
   primaryKey: ['id'],
+  unit: 'id',
 };
 
 const rows = definePartitions<Row, { region: string }, Args>({

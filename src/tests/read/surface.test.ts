@@ -114,33 +114,36 @@ function makeHarness() {
   return { atom, slices, present, failed, fetchedAt, spies, kernel, EMPTY, surface, read, sliceDef, land, push, fail };
 }
 
-describe('createReadSurface — getValue registers its partition with the tracking scope', () => {
+describe('createReadSurface — getValue reports what it depends on to the tracking scope', () => {
   const depsOf = (fn: () => unknown): string[] => runTracked(fn).deps.map((dep) => dep.id);
+  const partition = (key: string) => `read_surface_test_version\u0000${key}`;
+  const presence = (key: string) => `${partition(key)}\u0001\u0001`;
 
-  it('on a cache hit, which is the read that would otherwise look like it touched nothing', () => {
+  it('on a cache hit as on a miss: presence, and the partition, since this select reads rows off the table itself', () => {
     const harness = makeHarness();
     const read = harness.read(harness.sliceDef);
     harness.land('p1', { a: { score: 1 } });
 
-    read.getValue({ key: 'p1' });
+    const first = depsOf(() => read.getValue({ key: 'p1' }));
     const second = depsOf(() => read.getValue({ key: 'p1' }));
 
-    expect(second).toEqual(['read_surface_test_version\u0000p1']);
+    expect(second).toEqual([presence('p1'), partition('p1')]);
+    expect(second).toEqual(first);
   });
 
-  it('while the read is disabled, since the thing that will enable it is a write to that partition', () => {
+  it('while the read is disabled: presence, so a caller still hears when the partition lands', () => {
     const harness = makeHarness();
     const read = harness.read({ ...harness.sliceDef, enabled: () => false });
     harness.land('p1', { a: { score: 1 } });
 
-    expect(depsOf(() => read.getValue({ key: 'p1' }))).toEqual(['read_surface_test_version\u0000p1']);
+    expect(depsOf(() => read.getValue({ key: 'p1' }))).toEqual([presence('p1')]);
   });
 
-  it('while the partition holds no rows yet, which is exactly when a caller is waiting on the fetch', () => {
+  it('while the partition holds no rows yet: presence alone, which is what moves when the fetch it waits on lands', () => {
     const harness = makeHarness();
     const read = harness.read(harness.sliceDef);
 
-    expect(depsOf(() => read.getValue({ key: 'cold' }))).toEqual(['read_surface_test_version\u0000cold']);
+    expect(depsOf(() => read.getValue({ key: 'cold' }))).toEqual([presence('cold')]);
   });
 
   it('but registers nothing for a partition that is not addressable', () => {
@@ -150,7 +153,7 @@ describe('createReadSurface — getValue registers its partition with the tracki
     expect(depsOf(() => read.getValue({ key: '' }))).toEqual([]);
   });
 
-  it('and readMany registers every live partition while skipping the dead ones', () => {
+  it('and readMany reports the presence of every live partition while skipping the dead ones', () => {
     const harness = makeHarness();
     const read = harness.surface.readMany<{ keys: string[] }, Slice>()({
       partitions: (args: { keys: string[] }) => args.keys,
@@ -158,7 +161,7 @@ describe('createReadSurface — getValue registers its partition with the tracki
       empty: {},
     });
 
-    expect(depsOf(() => read.getValue({ keys: ['p1', '', 'p2'] }))).toEqual(['read_surface_test_version\u0000p1', 'read_surface_test_version\u0000p2']);
+    expect(depsOf(() => read.getValue({ keys: ['p1', '', 'p2'] }))).toEqual([presence('p1'), presence('p2')]);
   });
 });
 
@@ -239,7 +242,11 @@ describe('createReadSurface — a read declared by field name', () => {
 
     expect(read.getValue({ key: 'us', id: 'a' })).toEqual({ a: { score: 1 } });
     expect(read.getValue({ key: 'us', id: 'b' })).toEqual({ b: { score: 2 } });
-    expect(runTracked(() => read.getValue({ key: 'us', id: 'a' })).deps.map((dep) => dep.id)).toEqual(['read_surface_field_version\u0000us']);
+    // The partition the fields named, as presence and as the partition its select reads rows from.
+    expect(runTracked(() => read.getValue({ key: 'us', id: 'a' })).deps.map((dep) => dep.id)).toEqual([
+      'read_surface_field_version\u0000us\u0001\u0001',
+      'read_surface_field_version\u0000us',
+    ]);
   });
 
   it('gates on an absent named vary field, exactly as a varyBy function does', () => {

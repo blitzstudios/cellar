@@ -7,7 +7,7 @@ import { RowTableSchema } from '../table/types';
 
 type Row = { region: string; id: string };
 
-const schema: RowTableSchema<Row> = { table: 'rows', columns: { region: { type: 'TEXT' }, id: { type: 'TEXT' } }, primaryKey: ['id'] };
+const schema: RowTableSchema<Row> = { table: 'rows', columns: { region: { type: 'TEXT' }, id: { type: 'TEXT' } }, primaryKey: ['id'], unit: 'id' };
 const table = createMemoryRowTable(schema);
 const version = createVersionAtom('probe_version');
 

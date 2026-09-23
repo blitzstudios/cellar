@@ -2,6 +2,7 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { createVersionAtom } from '../../reactivity/version_atom';
+import { useTrackedValue } from '../../reactivity/tracked_value';
 import { configureDataKernel, INERT_GATE, ReadGate } from '../../runtime';
 
 /* global globalThis */
@@ -62,6 +63,7 @@ describe('the read gate on a subscription', () => {
     const computes = { count: 0 };
     const compute = () => {
       computes.count += 1;
+      atom.get(US);
       return state.value;
     };
     const write = (next: string) =>
@@ -69,7 +71,7 @@ describe('the read gate on a subscription', () => {
         state.value = next;
         atom.bump(US);
       });
-    return { atom, computes, write, read: () => atom.useSelect(US, true, ['k'], compute, Object.is, 'empty') };
+    return { atom, computes, write, read: () => useTrackedValue(compute, ['k'], { enabled: true, isEqual: Object.is, empty: 'empty' }) };
   }
 
   it('holds the value a gated read already had, and does not recompute it', () => {

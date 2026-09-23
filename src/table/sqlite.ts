@@ -1,10 +1,13 @@
 /** The row table on SQLite: rows live in the database, and become JS objects at the moment a read materializes them. */
 
-import { cacheKey, cacheKeyOf } from '../args_key';
+import { cacheKeyOf } from '../args_key';
 import { chunkList } from '../collections';
 import { createPresence, whereMapKey } from './presence';
+import { noteTableRead } from './read_coverage';
 import { columnNames, FindOpts, IndexDef, RowShape, RowTable, RowTableSchema, SqlValue } from './types';
-import { assertRowsMatchWhere, comparator, digestColumns, whereClause } from './query';
+import { assertRowsMatchWhere, assertUnitColumn, comparator, whereClause } from './query';
+import { ALL_UNITS, NO_CHANGES, unionChanges, WriteResult } from './change_set';
+import { stageNames, unitDiffSql, UnitDiffSql, WriteMode } from './unit_diff_sql';
 import {
   addColumnSql,
   addedColumns,
@@ -18,7 +21,7 @@ import {
   schemaFingerprint,
   schemaStructureStamp,
 } from './schema';
-import { NativeShredSpec } from '../write/shred_spec';
+import { NativeShredSpec, ShredSpec } from '../write/shred_spec';
 import { BatchCommand, readRows, runBatch, runBatchAsync, SqliteConnection } from './connection';
 import { reportStoreDegradation } from '../diagnostics/telemetry';
 
@@ -38,6 +41,20 @@ function yieldToEventLoop(): Promise<void> {
 
 /** A shred spec whose wiring is wrong: a bug, and the one shred failure that propagates past the fallback. */
 class ShredSpecMisconfigured extends Error {}
+
+/** Files a write whose diff never ran, once per table: the first says the connection is failing, and the rest say the same. */
+function createDiffLostReporter(table: string): () => void {
+  let reported = false;
+  return () => {
+    if (reported) return;
+    reported = true;
+    reportStoreDegradation({
+      scope: `row_table.diff_lost.${table}`,
+      context: 'a write found no record of its own diff, so it reported every unit changed; readers repaint rather than show stale rows',
+      extra: { table },
+    });
+  };
+}
 
 /** Dev-only: `deleteWhere` must name exactly the filter's columns, so the native and JS paths replace the same rows. */
 function assertDeleteWhereMatches(table: string, variant: string, spec: { deleteWhere: ReadonlyArray<{ column: string }> }, where: Partial<RowShape>): void {
@@ -79,15 +96,56 @@ export function createSqliteRowTable<Row extends RowShape>(
   conn: SqliteConnection,
   nativeShredSpec?: NativeShredSpec,
 ): RowTable<Row> {
+  if (__DEV__) assertUnitColumn(schema);
   const cols = columnNames(schema);
-  const hasPk = schema.primaryKey.length > 0;
-  const colList = cols.join(', ');
-  const placeholders = bindList(cols.length);
-  const insertVerb = hasPk ? 'INSERT OR REPLACE' : 'INSERT';
 
-  const rowsPerInsert = Math.max(1, Math.floor(MAX_BIND_VARIABLES / cols.length));
-  const insertSql = (rowCount: number): string =>
-    `${insertVerb} INTO ${schema.table} (${colList}) VALUES ${new Array(rowCount).fill(`(${placeholders})`).join(', ')};`;
+  const stageFingerprint = schemaFingerprint(schema);
+  const asyncStage = stageNames(schema.table, stageFingerprint, 'async');
+  const asyncDiff = unitDiffSql(schema, asyncStage, MAX_BIND_VARIABLES);
+  const syncDiff = unitDiffSql(schema, stageNames(schema.table, stageFingerprint, 'sync'), MAX_BIND_VARIABLES);
+
+  /**
+   * Async writes run one at a time. Each stages its rows and then diffs the stage in a second step, and the native
+   * shred cannot join the diff's transaction, so a second write starting in between would empty or refill the stage
+   * the first one is about to diff. SQLite serializes writes on the one writer handle anyway, so this costs nothing.
+   */
+  let writeTail: Promise<unknown> = Promise.resolve();
+  function serialized<T>(write: () => Promise<T>): Promise<T> {
+    const run = writeTail.then(write, write);
+    writeTail = run.catch(() => undefined);
+    return run;
+  }
+
+  let lastWriteId = 0;
+  const nextWriteId = (): number => {
+    lastWriteId += 1;
+    return lastWriteId;
+  };
+
+  const diffLost = createDiffLostReporter(schema.table);
+
+  /**
+   * Reads back what one write changed. The summary row is always written, so finding none means the transaction never
+   * ran — a guarded connection in release answers a failed statement with silence — and the write reports every unit
+   * rather than none: a reader woken for nothing costs a render, and one left asleep shows stale data.
+   */
+  function readBack(sql: UnitDiffSql, writeId: number): WriteResult {
+    const [statement, params] = sql.readBack(writeId);
+    const result = conn.execute(statement, params);
+    const rows = (result.rows?._array ?? []) as Array<{ unit: SqlValue; rows: number | null }>;
+    result.dispose?.();
+    let count: number | undefined;
+    const changed = new Set<string>();
+    for (const row of rows) {
+      if (row.rows != null) count = row.rows;
+      else if (row.unit != null) changed.add(String(row.unit));
+    }
+    if (count === undefined) {
+      diffLost();
+      return { changes: ALL_UNITS, rows: 0 };
+    }
+    return { changes: changed.size ? changed : NO_CHANGES, rows: count };
+  }
 
   const presence = createPresence();
 
@@ -135,12 +193,62 @@ export function createSqliteRowTable<Row extends RowShape>(
     }
   }
 
-  function deleteWhereCmd(where: Partial<Row>): BatchCommand {
-    const { sql, params } = whereClause(where);
-    return [`DELETE FROM ${schema.table}${sql};`, params];
+  /**
+   * The declared spec pointed at the stage, one copy per variant. The declared spec is never edited: its table name is
+   * part of the schema stamps, and changing it would rebuild every installed database. Held by identity, since the
+   * native adapter caches a spec's serialization by the object.
+   */
+  const stageSpecs = new Map<string, ShredSpec>();
+  const stageSpecFor = (variant: string, spec: ShredSpec): ShredSpec => {
+    let staged = stageSpecs.get(variant);
+    if (!staged) stageSpecs.set(variant, (staged = { ...spec, table: asyncStage.stage }));
+    return staged;
+  };
+
+  /** Stages `rows` and applies them in one transaction, then reads back what changed. */
+  async function stageAndApply(mode: WriteMode, where: Partial<Row>, rows: readonly Row[]): Promise<WriteResult> {
+    const writeId = nextWriteId();
+    await runBatchAsync(conn, [...asyncDiff.ensure, asyncDiff.clear, ...asyncDiff.stageRows(rows), ...asyncDiff.diff(mode, where, writeId)]);
+    return readBack(asyncDiff, writeId);
   }
 
-  async function shredOrParse(where: Partial<Row>, rawJson: string, parseRows: (rawJson: string) => Row[]): Promise<number> {
+  /**
+   * Whether the partition holds no rows, asked of the writer so it sees every write before it. An empty partition has
+   * nothing to compare against, so its write skips the stage and lands straight in the table: every unit it brings is
+   * new. That is a first load — a cold start, a new week — and it is the one write where staging would double the cost.
+   */
+  const partitionIsEmpty = (where: Partial<Row>): boolean => {
+    const { sql, params } = whereClause(where);
+    const result = conn.execute(`SELECT 1 AS one FROM ${schema.table}${sql} LIMIT 1;`, params);
+    const empty = !(result.rows?._array ?? []).length;
+    result.dispose?.();
+    return empty;
+  };
+
+  const unitsOf = (rows: readonly Row[]): ReadonlySet<string> => (rows.length ? new Set(rows.map((row) => String(row[schema.unit]))) : NO_CHANGES);
+
+  /** The units a direct write landed, read back from the table, since the native shred's rows never reach JS. */
+  const unitsLanded = (where: Partial<Row>, rows: number): WriteResult => {
+    const { sql, params } = whereClause(where);
+    const result = conn.execute(`SELECT DISTINCT ${schema.unit} AS unit FROM ${schema.table}${sql};`, params);
+    const units = new Set(((result.rows?._array ?? []) as Array<{ unit: SqlValue }>).map((row) => String(row.unit)));
+    result.dispose?.();
+    // Rows landed but none can be found: the read failed silently, so say everything changed rather than nothing.
+    if (rows > 0 && !units.size) {
+      diffLost();
+      return { changes: ALL_UNITS, rows };
+    }
+    return { changes: units.size ? units : NO_CHANGES, rows };
+  };
+
+  /** A whole-partition replace written straight into the table, the way every write worked before change sets. */
+  const replaceDirectly = (where: Partial<Row>, rows: readonly Row[]): BatchCommand[] => {
+    const { sql, params } = whereClause(where);
+    return [[`DELETE FROM ${schema.table}${sql};`, params], ...syncDiff.insertInto(schema.table, rows)];
+  };
+
+  async function shredOrParse(where: Partial<Row>, rawJson: string, parseRows: (rawJson: string) => Row[]): Promise<WriteResult> {
+    const direct = partitionIsEmpty(where);
     if (conn.shredJsonArrayAsync && nativeShredSpec) {
       try {
         const variant = nativeShredSpec.variant(where as Record<string, SqlValue>);
@@ -149,9 +257,19 @@ export function createSqliteRowTable<Row extends RowShape>(
         if (!spec) throw new Error(`row_table: shred variant '${variant}' is not in the spec table`);
         if (__DEV__) assertDeleteWhereMatches(schema.table, variant, spec, where);
         const binds = nativeShredSpec.binds(where as Record<string, SqlValue>);
-        const count = await conn.shredJsonArrayAsync(spec, rawJson, binds);
+        let result: WriteResult;
+        if (direct) {
+          const landed = await conn.shredJsonArrayAsync(spec, rawJson, binds);
+          result = unitsLanded(where, landed);
+        } else {
+          await runBatchAsync(conn, [...asyncDiff.ensure, asyncDiff.clear]);
+          await conn.shredJsonArrayAsync(stageSpecFor(variant, spec), rawJson, binds);
+          const writeId = nextWriteId();
+          await runBatchAsync(conn, asyncDiff.diff('replace', where, writeId));
+          result = readBack(asyncDiff, writeId);
+        }
         presence.afterDelete(where);
-        return count;
+        return result;
       } catch (error) {
         if (error instanceof ShredSpecMisconfigured) throw error;
         reportStoreDegradation({
@@ -164,19 +282,15 @@ export function createSqliteRowTable<Row extends RowShape>(
     }
     const rows = parseRows(rawJson);
     if (__DEV__) assertRowsMatchWhere(schema.table, where, rows);
-    await runBatchAsync(conn, [deleteWhereCmd(where), ...insertCmds(rows)]);
+    let result: WriteResult;
+    if (direct) {
+      await runBatchAsync(conn, replaceDirectly(where, rows));
+      result = { changes: unitsOf(rows), rows: rows.length };
+    } else {
+      result = await stageAndApply('replace', where, rows);
+    }
     presence.afterDelete(where);
-    return rows.length;
-  }
-
-  function insertCmds(rows: readonly Row[]): BatchCommand[] {
-    return chunkList(rows, rowsPerInsert).map((group) => {
-      const params: SqlValue[] = [];
-      for (const row of group) {
-        for (const col of cols) params.push(row[col] ?? null);
-      }
-      return [insertSql(group.length), params];
-    });
+    return result;
   }
 
   function selectRows(where: Partial<Row>): Row[] {
@@ -184,34 +298,9 @@ export function createSqliteRowTable<Row extends RowShape>(
     return readRows<Row>(conn, `SELECT * FROM ${schema.table}${sql};`, params);
   }
 
-  /** Built once: `char(1)` is {@link DIGEST_SEP}, and `ifnull` makes a null read empty, as the JS twin does. */
-  const digestExpr = digestColumns(schema)
-    .map((column) => `ifnull(${column},'')`)
-    .join(" || char(1) || ");
-
-  function readDigests(where: Partial<Row>, column: keyof Row & string, values?: readonly string[]): Map<string, string> {
-    const out = new Map<string, string>();
-    const filter = whereClause(where);
-    const select = `SELECT ${column} AS id, ${digestExpr} AS digest FROM ${schema.table}`;
-    if (!values) {
-      for (const row of readRows<{ id: SqlValue; digest: SqlValue }>(conn, `${select}${filter.sql};`, filter.params)) {
-        out.set(String(row.id), String(row.digest));
-      }
-      return out;
-    }
-    if (!values.length) return out;
-    const prefix = filter.sql ? `${filter.sql} AND ` : ' WHERE ';
-    for (const chunk of chunkList(values, DEFAULT_IN_CHUNK)) {
-      const sql = `${select}${prefix}${column} IN (${bindList(chunk.length)});`;
-      for (const row of readRows<{ id: SqlValue; digest: SqlValue }>(conn, sql, [...filter.params, ...chunk])) {
-        out.set(String(row.id), String(row.digest));
-      }
-    }
-    return out;
-  }
-
   return {
     primaryKey: schema.primaryKey,
+    unit: schema.unit,
 
     init(): void {
       const live = readLiveSchema(conn, schema.table);
@@ -239,43 +328,57 @@ export function createSqliteRowTable<Row extends RowShape>(
       if (plan !== 'none') conn.execute(`PRAGMA user_version = ${schemaFingerprint(schema, nativeShredSpec)};`);
     },
 
-    async upsert(rows: readonly Row[], opts?: { chunk?: number }): Promise<number> {
-      if (!rows.length) return 0;
+    async upsert(rows: readonly Row[], opts?: { chunk?: number }): Promise<WriteResult> {
+      if (!rows.length) return { changes: NO_CHANGES, rows: 0 };
       const size = opts?.chunk ?? DEFAULT_UPSERT_CHUNK;
       const chunks = chunkList(rows, size);
+      let changes = NO_CHANGES as WriteResult['changes'];
       for (let index = 0; index < chunks.length; index += 1) {
         // eslint-disable-next-line no-await-in-loop -- sequential by design: one transaction per chunk
-        await runBatchAsync(conn, insertCmds(chunks[index]));
+        const chunk = await serialized(() => stageAndApply('merge', {}, chunks[index]));
+        changes = unionChanges(changes, chunk.changes);
         // eslint-disable-next-line no-await-in-loop -- release the JS thread between chunks
         if (index < chunks.length - 1) await yieldToEventLoop();
       }
       presence.afterInsert();
-      return rows.length;
+      return { changes, rows: rows.length };
     },
 
-    overwrite(where: Partial<Row>, rows: readonly Row[]): number {
+    overwrite(where: Partial<Row>, rows: readonly Row[]): WriteResult {
       if (__DEV__) assertRowsMatchWhere(schema.table, where, rows);
-      runBatch(conn, [deleteWhereCmd(where), ...insertCmds(rows)]);
+      if (partitionIsEmpty(where)) {
+        runBatch(conn, replaceDirectly(where, rows));
+        presence.afterDelete(where);
+        return { changes: unitsOf(rows), rows: rows.length };
+      }
+      const writeId = nextWriteId();
+      runBatch(conn, [...syncDiff.ensure, syncDiff.clear, ...syncDiff.stageRows(rows), ...syncDiff.diff('replace', where, writeId)]);
+      const result = readBack(syncDiff, writeId);
       presence.afterDelete(where);
-      return rows.length;
+      return result;
     },
 
-    async shred(where: Partial<Row>, rawJson: string, parseRows: (rawJson: string) => Row[]): Promise<number> {
-      return withDeferredIndexes(() => shredOrParse(where, rawJson, parseRows));
+    async shred(where: Partial<Row>, rawJson: string, parseRows: (rawJson: string) => Row[]): Promise<WriteResult> {
+      // Deferral outside the queue, so overlapping ingests into an empty table share one drop and one rebuild while
+      // their writes take turns inside it.
+      return withDeferredIndexes(() => serialized(() => shredOrParse(where, rawJson, parseRows)));
     },
 
     getOne(where: Partial<Row>): Row | undefined {
+      noteTableRead();
       const { sql, params } = whereClause(where);
       return readRows<Row>(conn, `SELECT * FROM ${schema.table}${sql} LIMIT 1;`, params)[0];
     },
 
     find(where: Partial<Row>, opts?: FindOpts<Row>): Row[] {
+      noteTableRead();
       const out = selectRows(where);
       if (opts?.orderBy) out.sort(comparator<Row>(opts.orderBy));
       return out;
     },
 
     findIn(where: Partial<Row>, column: keyof Row & string, values: readonly string[], opts?: { chunk?: number }): Row[] {
+      noteTableRead();
       if (!values.length) return [];
       const rowFilter = whereClause(where);
       const prefix = rowFilter.sql ? `${rowFilter.sql} AND ` : ' WHERE ';
@@ -289,6 +392,7 @@ export function createSqliteRowTable<Row extends RowShape>(
     },
 
     has(where: Partial<Row>): boolean {
+      noteTableRead();
       const cached = presence.get(where);
       if (cached !== undefined) return cached;
       const { sql, params } = whereClause(where);
@@ -297,8 +401,10 @@ export function createSqliteRowTable<Row extends RowShape>(
       return !!row;
     },
 
-    digests(where: Partial<Row>, column: keyof Row & string, values?: readonly string[]): Map<string, string> {
-      return readDigests(where, column, values);
+    unitsWhere(where: Partial<Row>): string[] {
+      noteTableRead();
+      const { sql, params } = whereClause(where);
+      return readRows<{ unit: SqlValue }>(conn, `SELECT DISTINCT ${schema.unit} AS unit FROM ${schema.table}${sql};`, params).map((row) => String(row.unit));
     },
 
     getMeta(where: Partial<Row>): string | undefined {

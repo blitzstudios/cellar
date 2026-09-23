@@ -1,46 +1,22 @@
 /**
- * A {@link VersionAtom} for tests: real `subscribe` and `bump`, hooks that recompute on every call, and a `bumped`
- * log naming every partition bumped, in order.
+ * A {@link VersionAtom} for tests: the real one, so reads report and subscribe exactly as they do in the app, plus a
+ * `bumped` log naming every partition bumped, in order, and `bumpedWith` holding the units each bump carried.
  */
 
-import { VersionAtom } from '../reactivity/version_atom';
+import { createVersionAtom, VersionAtom } from '../reactivity/version_atom';
+import { ALL_UNITS, ChangeSet, isUnchanged } from '../table/change_set';
 
-export function createTestVersionAtom(): VersionAtom & { bumped: string[] } {
-  const versions = new Map<string, number>();
-  const listeners = new Map<string, Set<() => void>>();
+export function createTestVersionAtom(root = 'test_version'): VersionAtom & { bumped: string[]; bumpedWith: ChangeSet[] } {
+  const atom = createVersionAtom(root);
+  const realBump = atom.bump;
   const bumped: string[] = [];
-  const spec = (parts: readonly string[]): string => parts.join(':');
-
-  const bumpSpec = (key: string): number => {
-    const next = (versions.get(key) ?? 0) + 1;
-    versions.set(key, next);
-    bumped.push(key);
-    listeners.get(key)?.forEach((listener) => listener());
-    return next;
+  const bumpedWith: ChangeSet[] = [];
+  const bump: VersionAtom['bump'] = (parts, changes = ALL_UNITS) => {
+    if (!isUnchanged(changes)) {
+      bumped.push(parts.join(':'));
+      bumpedWith.push(changes);
+    }
+    return realBump(parts, changes);
   };
-
-  const atom: VersionAtom = {
-    key: (parts) => ['v', spec(parts)],
-    get: (parts) => versions.get(spec(parts)) ?? 0,
-    bump: (parts) => bumpSpec(spec(parts)),
-    bumpAll: () => [...new Set([...versions.keys(), ...listeners.keys()])].forEach(bumpSpec),
-    subscribe: (parts, listener) => {
-      const key = spec(parts);
-      let set = listeners.get(key);
-      if (!set) {
-        set = new Set();
-        listeners.set(key, set);
-      }
-      set.add(listener);
-      return () => {
-        set?.delete(listener);
-        if (set && set.size === 0) listeners.delete(key);
-      };
-    },
-    useVersion: (parts) => versions.get(spec(parts)) ?? 0,
-    useSelect: (_parts, enabled, _deps, compute, _isEqual, empty) => (enabled ? compute() : empty),
-    useSelectMany: (_partsList, enabled, _deps, compute, _isEqual, empty) => (enabled ? compute() : empty),
-  };
-
-  return Object.assign(atom, { bumped });
+  return Object.assign(atom, { bump, bumped, bumpedWith });
 }

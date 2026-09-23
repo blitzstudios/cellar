@@ -9,6 +9,7 @@ import { notifyManager } from '@tanstack/query-core';
 import { chunkList, getOrCreate } from '../collections';
 import { RowShape, RowTable } from '../table/types';
 import { reportStoreDegradation } from '../diagnostics/telemetry';
+import { ChangeSet, isUnchanged, NO_CHANGES, unionChanges } from '../table/change_set';
 
 const DEFAULT_CHUNK = 250;
 const DEFAULT_RETRY_DELAY_MS = 1000;
@@ -24,8 +25,9 @@ export interface PushIngestConfig<Item, Row extends RowShape, Key> {
   where: (key: Key) => Partial<Row>;
   idOf: (item: Item) => string;
   toRows: (key: Key, items: readonly Item[]) => Row[];
-  bump: (key: Key) => void;
-  /** Runs for each partition a write touched, before its readers wake; a store keeping an ETag retires it here. */
+  /** Bumps a partition with the units a flush changed in it. Never called for a flush that changed nothing there. */
+  bump: (key: Key, changes: ChangeSet) => void;
+  /** Runs for each partition a write changed, before its readers wake; a store keeping an ETag retires it here. */
   onWrite: (key: Key) => void;
   chunk?: number;
   retryDelayMs?: number;
@@ -92,20 +94,20 @@ export function createPushIngest<Item, Row extends RowShape, Key>(config: PushIn
         // A held partition stays pending; its release is what schedules the flush that finally writes it.
         if (!partitions.length) break;
         partitions.forEach(([key]) => pending.delete(key));
-        const touched: Key[] = [];
+        const touched: Array<[Key, ChangeSet]> = [];
         for (let index = 0; index < partitions.length; index += 1) {
           const [key, byId] = partitions[index];
           const items = Array.from(byId.values());
           const batches = chunkList(items, chunk);
-          let wrote = false;
+          let changes: ChangeSet = NO_CHANGES;
           let written = 0;
           for (const batch of batches) {
             const rows = toRows(key, batch);
             if (rows.length) {
               try {
                 // eslint-disable-next-line no-await-in-loop -- sequential by design: bound the JS thread per frame
-                await table.upsert(rows, { chunk });
-                wrote = true;
+                const result = await table.upsert(rows, { chunk });
+                changes = unionChanges(changes, result.changes);
               } catch (error) {
                 const unwritten = items.slice(written);
                 requeue(key, unwritten);
@@ -121,8 +123,8 @@ export function createPushIngest<Item, Row extends RowShape, Key>(config: PushIn
             }
             written += batch.length;
           }
-          // Only where rows landed: a batch that filtered down to empty leaves its readers as they are.
-          if (wrote) touched.push(key);
+          // Only where rows changed: a push repeating what the table holds, or filtering down to nothing, wakes nobody.
+          if (!isUnchanged(changes)) touched.push([key, changes]);
           if (failed) {
             for (let rest = index + 1; rest < partitions.length; rest += 1) {
               requeue(partitions[rest][0], Array.from(partitions[rest][1].values()));
@@ -132,10 +134,10 @@ export function createPushIngest<Item, Row extends RowShape, Key>(config: PushIn
         }
 
         if (touched.length) {
-          for (const key of touched) onWrite(key);
+          for (const [key] of touched) onWrite(key);
           // Batched so a flush that touched several partitions wakes each listener once.
           notifyManager.batch(() => {
-            for (const key of touched) bump(key);
+            for (const [key, changes] of touched) bump(key, changes);
           });
         }
         if (failed) break;

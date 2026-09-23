@@ -14,6 +14,7 @@ const schema: RowTableSchema<Thing> = {
   table: 'things',
   columns: { scope: { type: 'TEXT' }, id: { type: 'TEXT' }, name: { type: 'TEXT' }, n: { type: 'INTEGER' } },
   primaryKey: ['scope', 'id'],
+  unit: 'id',
 };
 
 const nativeShredSpec: NativeShredSpec = {
@@ -191,7 +192,7 @@ describe('shred — the native shred branch', () => {
       table.init();
 
       // eslint-disable-next-line no-await-in-loop -- two shapes, sequentially, for the comparison below
-      const count = await table.shred({ scope: 's' }, raw, parseRows);
+      const { rows: count } = await table.shred({ scope: 's' }, raw, parseRows);
       results.push({ capabilities, shredCalls: conn.calls.shredJsonArrayAsync, rows: table.find({ scope: 's' }), count });
       conn.close();
     }
@@ -222,7 +223,7 @@ describe('shred — the native shred branch', () => {
     const table = createSqliteRowTable(schema, conn, nativeShredSpec);
     table.init();
 
-    const count = await table.shred({ scope: 's' }, raw, parseRows);
+    const { rows: count } = await table.shred({ scope: 's' }, raw, parseRows);
 
     expect(count).toBe(2);
     expect(table.find({ scope: 's' }).map((row) => row.id)).toEqual(['a', 'b']);

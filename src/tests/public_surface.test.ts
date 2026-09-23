@@ -28,16 +28,16 @@ function exportedFrom(entry: string): string[] {
 describe('the core entry point', () => {
   it('exports what a store, a service or a screen writes against, and nothing else', () => {
     expect(exportedFrom('index.ts')).toEqual([
-      'ColumnDef', 'DATA_RESULT_KEYS', 'DataResult', 'DataStatus', 'Dep', 'Loose', 'MaybeId', 'MemoDeclaration',
-      'MemoFactory', 'MemoPart', 'MemoSource', 'NativeShredSpec', 'PinnedConnection', 'PrimeState', 'QueryClient', 'QuerySpec',
-      'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM', 'RawQuery', 'ReadGate', 'ReadGateRuntime', 'ReadOptions', 'RowOf', 'RowProjection', 'RowProjectionDef',
-      'RowTable', 'RowTableSchema',
-      'ShredColumn', 'ShredColumns', 'ShredOp', 'ShredSpec', 'SqlValue', 'SqliteConnection', 'VersionAtom',
-      'WindowedBlock', 'bySource', 'byVersion', 'configureDataKernel', 'createMemoryRowTable', 'createOnceGuard',
-      'createPushIngest', 'createSqliteRowTable', 'createTrackedSelector', 'createWindowedList', 'definePartitions',
-      'defineShredColumns', 'defineSqliteStore', 'makeResult', 'pairRead', 'pinnedReader', 'readRows',
-      'reportStoreDegradation', 'rowsOf', 'runSubscribed', 'runTracked', 'shallowEqualArray', 'shallowEqualRecord',
-      'shallowEqualStruct', 'shallowEqualValue',
+      'ALL_UNITS', 'ChangeSet', 'ColumnDef', 'DATA_RESULT_KEYS', 'DataResult', 'DataStatus', 'Dep', 'Loose',
+      'MaybeId', 'MemoDeclaration', 'MemoFactory', 'MemoPart', 'NO_CHANGES', 'NativeShredSpec', 'PinnedConnection',
+      'PrimeState', 'QueryClient', 'QuerySpec', 'QueryStatus', 'RAW_TEXT_RESPONSE_TRANSFORM', 'RawQuery', 'ReadGate',
+      'ReadGateRuntime', 'ReadOptions', 'RowOf', 'RowProjection', 'RowProjectionDef', 'RowTable', 'RowTableSchema',
+      'ShredColumn', 'ShredColumns', 'ShredOp', 'ShredSpec', 'SqlValue', 'SqliteConnection', 'TrackedValueOptions',
+      'VersionAtom', 'WindowedBlock', 'WriteResult', 'byUnit', 'byVersion', 'configureDataKernel',
+      'createMemoryRowTable', 'createOnceGuard', 'createPushIngest', 'createSqliteRowTable', 'createTrackedSelector',
+      'createWindowedList', 'definePartitions', 'defineShredColumns', 'defineSqliteStore', 'makeResult', 'pairRead',
+      'pinnedReader', 'readRows', 'reportStoreDegradation', 'rowsOf', 'runSubscribed', 'runTracked',
+      'shallowEqualArray', 'shallowEqualRecord', 'shallowEqualStruct', 'shallowEqualValue', 'useTrackedValue',
     ]);
   });
 

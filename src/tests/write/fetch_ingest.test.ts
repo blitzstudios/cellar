@@ -7,6 +7,10 @@ import { createFetchIngest, FetchIngestConfig, RawFetchResponse, RAW_TEXT_RESPON
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { VersionAtom } from '../../reactivity/version_atom';
 import { clearIngestTimings, getIngestTimings, rollupIngestTimings } from '../../diagnostics/ingest_timing';
+import { ALL_UNITS, NO_CHANGES, WriteResult } from '../../table/change_set';
+
+/** An ingest that landed `rows` rows and, like every ingest before change sets, reports every unit changed. */
+const ingested = (rows: number): WriteResult => ({ changes: ALL_UNITS, rows });
 
 /* global globalThis */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -65,7 +69,7 @@ function makeCfg(over: Partial<FetchIngestConfig<string>> = {}) {
     setEtag: jest.fn((_key, etag) => {
       state.etag = etag;
     }),
-    ingestRaw: jest.fn(async () => 5),
+    ingestRaw: jest.fn(async () => ingested(5)),
     // Present by default: the unchanged-body guard only runs for a store taking concurrent socket writes.
     holdWrites: jest.fn(() => () => {}),
     ...over,
@@ -259,6 +263,30 @@ describe('createFetchIngest — a 200 carrying no body', () => {
   });
 });
 
+describe('createFetchIngest — a body that changed nothing', () => {
+  it('bumps nothing when the ingest reports no units changed, so no reader wakes to republish what it holds', async () => {
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => ({ changes: NO_CHANGES, rows: 3 })) });
+    harness.setResponse({ data: '[{"x":1}]', etag: 'e2' });
+
+    const result = await createFetchIngest(harness.cfg).prefetch('week');
+
+    expect(harness.version.bump).not.toHaveBeenCalled();
+    expect(result).toEqual({ version: harness.state.version, count: 3 });
+    // The etag still moves: the body was real and ingested, it just matched what the table held.
+    expect(harness.cfg.setEtag).toHaveBeenCalledWith('week', 'e2');
+  });
+
+  it('bumps with the units the ingest reports', async () => {
+    const changes = new Set(['p7']);
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => ({ changes, rows: 3 })) });
+    harness.setResponse({ data: '[{"x":1}]' });
+
+    await createFetchIngest(harness.cfg).prefetch('week');
+
+    expect(harness.version.bump).toHaveBeenCalledWith(['week'], changes);
+  });
+});
+
 describe('createFetchIngest — 304 / etag short-circuit', () => {
   it('skips the shred, etag persist, and version bump when the API reports __etagMatch', async () => {
     const harness = makeCfg();
@@ -330,7 +358,7 @@ describe('createFetchIngest — ingest timing', () => {
     const captureMessage = jest.fn();
     configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const harness = makeCfg({ ingestRaw: jest.fn(async () => 31_430) });
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(31_430)) });
     harness.setResponse({ data: '[{"id":1}]' });
     const ingest = createFetchIngest(harness.cfg);
 
@@ -350,7 +378,7 @@ describe('createFetchIngest — ingest timing', () => {
   it('says nothing when a caller asked for the whole partition, since those rows are what it wanted', async () => {
     const captureMessage = jest.fn();
     configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
-    const harness = makeCfg({ ingestRaw: jest.fn(async () => 31_430) });
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(31_430)) });
     harness.setResponse({ data: '[{"id":1}]' });
     const ingest = createFetchIngest(harness.cfg);
 
@@ -367,7 +395,7 @@ describe('createFetchIngest — ingest timing', () => {
     const captureMessage = jest.fn();
     configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const harness = makeCfg({ ingestRaw: jest.fn(async () => 31_430) });
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(31_430)) });
     harness.setResponse({ data: '[{"id":1}]' });
     const ingest = createFetchIngest(harness.cfg);
 
@@ -383,7 +411,7 @@ describe('createFetchIngest — ingest timing', () => {
   it('leaves an ordinary partition alone, so the report stays worth reading', async () => {
     const captureMessage = jest.fn();
     configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
-    const harness = makeCfg({ ingestRaw: jest.fn(async () => 12) });
+    const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(12)) });
     harness.setResponse({ data: '[{"id":1}]' });
 
     await createFetchIngest(harness.cfg).prefetch('us');
@@ -457,7 +485,7 @@ describe('createFetchIngest — holdWrites', () => {
     }));
     harness.cfg.ingestRaw = jest.fn(async () => {
       held.order.push('ingest');
-      return 1;
+      return ingested(1);
     });
 
     await createFetchIngest(harness.cfg).prefetch('us');

@@ -1,6 +1,7 @@
 /** The fetch side of a store: runs the request, shreds the response into rows, and bumps the partition. */
 import { VersionAtom } from '../reactivity/version_atom';
 import { PrimeState } from '../prime_state';
+import { ChangeSet, WriteResult } from '../table/change_set';
 /**
  * What the ingest reads off a store's request, and so the shape a `write/raw_query.ts` has to hand back: the undecoded
  * body, the ETag to keep for the next conditional request, and the flag the API layer sets when the server answered
@@ -29,8 +30,9 @@ export interface FetchIngestConfig<Key> {
     rawQuery: (key: Key, etag?: string) => RawQuery;
     getEtag: (key: Key) => string | undefined;
     setEtag: (key: Key, etag: string) => void;
-    ingestRaw: (key: Key, rawJson: string) => Promise<number>;
-    bump?: (key: Key) => number;
+    /** Replaces the partition's rows, reporting which units that changed and how many rows the body held. */
+    ingestRaw: (key: Key, rawJson: string) => Promise<WriteResult>;
+    bump?: (key: Key, changes: ChangeSet) => number;
     /** Held for the length of the request: `ingestRaw` replaces the partition, so socket writes queue behind it. */
     holdWrites?: (key: Key) => () => void;
 }

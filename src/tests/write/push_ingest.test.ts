@@ -1,6 +1,7 @@
 import { RowTable } from '../../table/types';
 import { createPushIngest } from '../../write/push_ingest';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
+import { ChangeSet, NO_CHANGES } from '../../table/change_set';
 
 interface Item {
   id: string;
@@ -18,6 +19,8 @@ function makeTable() {
   const batches: Row[][] = [];
   const replaced: { scope: Partial<Row>; rows: Row[] }[] = [];
   let failures = 0;
+  /** Ids whose next push repeats what the table holds, so the table reports them unchanged. */
+  const unchanged = new Set<string>();
   const table = {
     upsert: jest.fn(async (rows: readonly Row[]) => {
       if (failures > 0) {
@@ -25,7 +28,8 @@ function makeTable() {
         throw new Error('write failed');
       }
       batches.push([...rows]);
-      return rows.length;
+      const changed = new Set(rows.map((row) => row.id).filter((id) => !unchanged.has(id)));
+      return { changes: changed.size ? changed : NO_CHANGES, rows: rows.length };
     }),
     overwrite: jest.fn((scope: Partial<Row>, rows: readonly Row[]) => {
       replaced.push({ scope, rows: [...rows] });
@@ -40,12 +44,14 @@ function makeTable() {
     failNext: (count: number) => {
       failures = count;
     },
+    repeatWhatIsHeld: (...ids: string[]) => ids.forEach((id) => unchanged.add(id)),
   };
 }
 
 function setup(over: { chunk?: number; retryDelayMs?: number } = {}) {
   const harness = makeTable();
   const bumps: string[] = [];
+  const bumpedWith: ChangeSet[] = [];
   const writes: string[] = [];
   const push = createPushIngest<Item, Row, string>({
     name: 'test_store',
@@ -53,12 +59,15 @@ function setup(over: { chunk?: number; retryDelayMs?: number } = {}) {
     where: (key) => ({ partition_key: key }),
     idOf: (item) => item.id,
     toRows: (key, items) => items.map((index) => ({ id: index.id, partition_key: key, value: index.value })),
-    bump: (key) => bumps.push(key),
+    bump: (key, changes) => {
+      bumps.push(key);
+      bumpedWith.push(changes);
+    },
     onWrite: (key) => writes.push(key),
     chunk: over.chunk ?? 2,
     retryDelayMs: over.retryDelayMs ?? 1000,
   });
-  return { ...harness, push, bumps, writes };
+  return { ...harness, push, bumps, bumpedWith, writes };
 }
 
 /** The flush is a 0ms timer plus an async write, so both the timer queue and the microtask queue have to drain. */
@@ -94,6 +103,28 @@ describe('create_push_ingest', () => {
     ]);
     expect(harness.bumps).toEqual(['us:1', 'us:2']);
     expect(harness.writes).toEqual(['us:1', 'us:2']);
+  });
+
+  it('bumps each partition with the units its flush changed, chunks included', async () => {
+    const harness = setup({ chunk: 1 });
+    harness.push.queue('us:1', { id: 'a', value: 1 });
+    harness.push.queue('us:1', { id: 'b', value: 2 });
+    await flush();
+
+    expect(harness.upsert).toHaveBeenCalledTimes(2);
+    expect(harness.bumps).toEqual(['us:1']);
+    expect([...(harness.bumpedWith[0] as ReadonlySet<string>)].sort()).toEqual(['a', 'b']);
+  });
+
+  it('wakes nobody and keeps the etag for a push that repeats what the table already holds', async () => {
+    const harness = setup();
+    harness.repeatWhatIsHeld('a');
+    harness.push.queue('us:1', { id: 'a', value: 1 });
+    await flush();
+
+    expect(harness.upsert).toHaveBeenCalledTimes(1);
+    expect(harness.bumps).toEqual([]);
+    expect(harness.writes).toEqual([]);
   });
 
   it('keeps the last item under an id, so a burst repeating one thing is still one row', async () => {

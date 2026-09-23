@@ -3,6 +3,8 @@ import TestRenderer, { act } from 'react-test-renderer';
 
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { runTracked } from '../../reactivity/tracking';
+import { useTrackedValue } from '../../reactivity/tracked_value';
+import { NO_CHANGES } from '../../table/change_set';
 
 /* global globalThis */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -173,62 +175,204 @@ describe('createVersionAtom — reactive hooks', () => {
   });
 });
 
-describe('createVersionAtom — useSelect value bail-out', () => {
-  it('re-renders only when the selected value changes, not on every partition bump', () => {
+describe('createVersionAtom — units', () => {
+  /** A written partition: its first write counts every unit changed, which is not what these cases are about. */
+  const written = () => {
     const atom = createVersionAtom('test_store_version');
-    const rows = new Map<string, { id: string; score: number }>();
-    rows.set('me', { id: 'me', score: 10 });
-    const readMine = () => rows.get('me');
+    atom.bump(US);
+    return atom;
+  };
+  const listenTo = (atom: ReturnType<typeof createVersionAtom>, read: () => unknown) => {
+    const listener = jest.fn();
+    for (const dep of runTracked(read).deps) dep.subscribe(listener);
+    return listener;
+  };
 
-    const probe = renderHook(() => atom.useSelect(US, true, ['me'], readMine, Object.is, undefined));
-    expect(probe.current?.score).toBe(10);
+  it('moves a unit version only when a write changed that unit', () => {
+    const atom = written();
+    const before = atom.getUnit(US, 'p1');
+    atom.bump(US, new Set(['p2']));
+    expect(atom.getUnit(US, 'p1')).toBe(before);
+    atom.bump(US, new Set(['p1']));
+    expect(atom.getUnit(US, 'p1')).toBe(atom.get(US));
+  });
+
+  it('wakes a unit reader for its unit and no other, and a partition reader for every write', () => {
+    const atom = written();
+    const unitReader = listenTo(atom, () => atom.getUnit(US, 'p1'));
+    const partitionReader = listenTo(atom, () => atom.get(US));
+
+    atom.bump(US, new Set(['p2']));
+    expect(unitReader).not.toHaveBeenCalled();
+    expect(partitionReader).toHaveBeenCalledTimes(1);
+
+    atom.bump(US, new Set(['p1', 'p3']));
+    expect(unitReader).toHaveBeenCalledTimes(1);
+    expect(partitionReader).toHaveBeenCalledTimes(2);
+  });
+
+  it('wakes a listener on several changed units once per write', () => {
+    const atom = written();
+    const listener = listenTo(atom, () => [atom.getUnit(US, 'p1'), atom.getUnit(US, 'p2')]);
+
+    atom.bump(US, new Set(['p1', 'p2']));
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('wakes every unit reader for a write that could not say which units it changed', () => {
+    const atom = written();
+    const unitReader = listenTo(atom, () => atom.getUnit(US, 'p1'));
+
+    atom.bump(US);
+
+    expect(unitReader).toHaveBeenCalledTimes(1);
+    expect(atom.getUnit(US, 'p1')).toBe(atom.get(US));
+  });
+
+  it('counts a partition first write as every unit changed, since nothing was held before it', () => {
+    const atom = createVersionAtom('test_store_version');
+    const unitReader = listenTo(atom, () => atom.getUnit(US, 'p1'));
+
+    atom.bump(US, new Set(['p2']));
+
+    expect(unitReader).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing for a write that changed nothing', () => {
+    const atom = written();
+    const partitionReader = listenTo(atom, () => atom.get(US));
+    const version = atom.get(US);
+
+    expect(atom.bump(US, NO_CHANGES)).toBe(version);
+    expect(partitionReader).not.toHaveBeenCalled();
+  });
+
+  it('moves presence on a first write and on a write of every unit, and not for a write of named units', () => {
+    const atom = createVersionAtom('test_store_version');
+    const presence = listenTo(atom, () => atom.getPresence(US));
+
+    atom.bump(US, new Set(['p1']));
+    expect(presence).toHaveBeenCalledTimes(1);
+    atom.bump(US, new Set(['p1']));
+    expect(presence).toHaveBeenCalledTimes(1);
+    atom.bump(US);
+    expect(presence).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps unit, presence and partition descriptors apart, so tracking one never stands in for another', () => {
+    const atom = written();
+    const ids = [
+      runTracked(() => atom.get(US)).deps[0].id,
+      runTracked(() => atom.getUnit(US, 'p1')).deps[0].id,
+      runTracked(() => atom.getPresence(US)).deps[0].id,
+    ];
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it('forgets which units changed past its bound by counting every unit changed, which wakes rather than strands', () => {
+    const atom = written();
+    const unitReader = listenTo(atom, () => atom.getUnit(US, 'untouched'));
+
+    atom.bump(US, new Set(Array.from({ length: 9000 }, (_, index) => `p${index}`)));
+
+    expect(unitReader).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useTrackedValue', () => {
+  it('re-renders only when a unit it read changes, and not for a write to another unit', () => {
+    const atom = createVersionAtom('test_store_version');
+    atom.bump(US);
+    const scores = new Map([
+      ['me', 10],
+      ['other', 1],
+    ]);
+    const readMine = () => {
+      atom.getUnit(US, 'me');
+      return scores.get('me');
+    };
+
+    const probe = renderHook(() => useTrackedValue(readMine, [], { enabled: true, isEqual: Object.is, empty: undefined }));
+    expect(probe.current).toBe(10);
     const rendersAfterMount = probe.renders;
 
     act(() => {
-      rows.set('other', { id: 'other', score: 99 });
-      atom.bump(US);
+      scores.set('other', 99);
+      atom.bump(US, new Set(['other']));
     });
-    expect(probe.current?.score).toBe(10);
     expect(probe.renders).toBe(rendersAfterMount);
 
     act(() => {
-      rows.set('me', { id: 'me', score: 20 });
-      atom.bump(US);
+      scores.set('me', 20);
+      atom.bump(US, new Set(['me']));
     });
-    expect(probe.current?.score).toBe(20);
+    expect(probe.current).toBe(20);
     expect(probe.renders).toBe(rendersAfterMount + 1);
 
     probe.unmount();
   });
 
-  it('useSelectMany bails when a shallow-equal map is returned across a bump', () => {
+  it('bails the render when a recompute returns an equal value', () => {
     const atom = createVersionAtom('test_store_version');
     const entryA = { id: 'a' };
-    const entryB = { id: 'b' };
-    let map: Record<string, { id: string }> = { a: entryA, b: entryB };
-    const read = () => map;
-    const shallow = (left: Record<string, { id: string }>, right: Record<string, { id: string }>): boolean => {
-      const leftKeys = Object.keys(left);
-      if (leftKeys.length !== Object.keys(right).length) return false;
-      return leftKeys.every((key) => Object.is(left[key], right[key]));
+    const read = () => {
+      atom.get(US);
+      return { a: entryA };
     };
+    const shallow = (left: Record<string, unknown>, right: Record<string, unknown>) => Object.keys(left).every((key) => Object.is(left[key], right[key]));
 
-    const probe = renderHook(() => atom.useSelectMany([US, EU], true, ['ab'], read, shallow, {}));
+    const probe = renderHook(() => useTrackedValue(read, [], { enabled: true, isEqual: shallow, empty: {} }));
     const rendersAfterMount = probe.renders;
 
     act(() => {
-      map = { a: entryA, b: entryB };
       atom.bump(US);
     });
     expect(probe.renders).toBe(rendersAfterMount);
 
-    act(() => {
-      map = { a: entryA, b: { id: 'b2' } };
-      atom.bump(EU);
-    });
-    expect(probe.current.b.id).toBe('b2');
-    expect(probe.renders).toBe(rendersAfterMount + 1);
+    probe.unmount();
+  });
 
+  it('follows what it reads: a unit it stops reading no longer wakes it', () => {
+    const atom = createVersionAtom('test_store_version');
+    atom.bump(US);
+    let unit = 'p1';
+    const read = () => atom.getUnit(US, unit);
+    let rerender = () => {};
+    const probe = renderHook(() => {
+      const [, setTick] = React.useState(0);
+      rerender = () => setTick((tick) => tick + 1);
+      return useTrackedValue(read, [unit], { enabled: true, isEqual: Object.is, empty: 0 });
+    });
+
+    act(() => {
+      unit = 'p2';
+      rerender();
+    });
+    const rendersAfterSwitch = probe.renders;
+    act(() => {
+      atom.bump(US, new Set(['p1']));
+    });
+    expect(probe.renders).toBe(rendersAfterSwitch);
+    act(() => {
+      atom.bump(US, new Set(['p2']));
+    });
+    expect(probe.renders).toBe(rendersAfterSwitch + 1);
+
+    probe.unmount();
+  });
+
+  it('returns `empty` and subscribes to nothing while disabled', () => {
+    const atom = createVersionAtom('test_store_version');
+    const read = jest.fn(() => atom.get(US));
+
+    const probe = renderHook(() => useTrackedValue(read, [], { enabled: false, isEqual: Object.is, empty: -1 }));
+    act(() => {
+      atom.bump(US);
+    });
+
+    expect(probe.current).toBe(-1);
+    expect(read).not.toHaveBeenCalled();
     probe.unmount();
   });
 });

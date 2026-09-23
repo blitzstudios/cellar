@@ -23,11 +23,13 @@ export { DATA_RESULT_KEYS, makeResult } from './store_result';
 export type { PrimeState } from './prime_state';
 
 // What a store memoizes, declared through its partitions (`stats.memos({ … })`) so no caller builds a key.
-export type { MemoDeclaration, MemoFactory, MemoPart, MemoSource } from './caches';
-export { byVersion, bySource, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
+export type { MemoDeclaration, MemoFactory, MemoPart } from './caches';
+export { byVersion, byUnit, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
 
 // The table a store's schema describes, and the rows it holds.
 export type { SqlValue, ColumnDef, RowTableSchema, RowTable } from './table/types';
+export type { ChangeSet, WriteResult } from './table/change_set';
+export { ALL_UNITS, NO_CHANGES } from './table/change_set';
 export { createMemoryRowTable } from './table/memory';
 export { createSqliteRowTable } from './table/sqlite';
 export type { SqliteConnection, PinnedConnection } from './table/connection';
@@ -54,6 +56,8 @@ export type { VersionAtom } from './reactivity/version_atom';
 export type { Dep } from './reactivity/tracking';
 export { runTracked, runSubscribed } from './reactivity/tracking';
 export { createTrackedSelector } from './reactivity/tracked_selector';
+export type { TrackedValueOptions } from './reactivity/tracked_value';
+export { useTrackedValue } from './reactivity/tracked_value';
 
 export { reportStoreDegradation } from './diagnostics/telemetry';
 export { createOnceGuard } from './diagnostics/once_guard';

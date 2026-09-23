@@ -29,6 +29,7 @@ const schema: RowTableSchema<TestRow> = {
     num: { type: 'INTEGER' },
   },
   primaryKey: ['region', 'id'],
+  unit: 'id',
   indexes: [{ name: 'idx_things_cohort', columns: ['region', 'cohort'] }],
   meta: { table: 'things_meta', keyColumns: ['region'], column: 'etag' },
 };
@@ -118,6 +119,8 @@ function makeConn(): {
   const conn: SqliteConnection = {
     execute(sql, params) {
       calls.push({ sql, params });
+      // A recording fake runs no diff, so a write's read-back finds its summary row and no changed units.
+      if (/RETURNING unit, rows;$/.test(sql)) return { rows: { _array: [{ unit: null, rows: 0 }] } };
       return { rows: { _array: reader(sql, params) } };
     },
     executeBatch(commands) {
@@ -481,17 +484,35 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     });
   });
 
-  it('overwrite emits DELETE(scope) + one grouped INSERT OR REPLACE in one batch, and marks has()', () => {
+  it('overwrite writes a first load straight into the table, since an empty partition has nothing to compare', () => {
     const { conn, batches } = makeConn();
+    const db = createSqliteRowTable(schema, conn);
+    const { changes } = db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 2), row('b', 'us', 'KC', 1)]);
+    expect(batches).toHaveLength(1);
+    expect(batches[0][0]).toEqual(['DELETE FROM things WHERE region = ?;', ['us']]);
+    expect(batches[0][1][0]).toBe('INSERT OR REPLACE INTO things (id, region, cohort, num) VALUES (?, ?, ?, ?), (?, ?, ?, ?);');
+    expect(batches[0].some(([sql]) => sql.includes('_stage_'))).toBe(false);
+    expect([...(changes as ReadonlySet<string>)].sort()).toEqual(['a', 'b']);
+  });
+
+  it('overwrite stages, diffs and applies in one batch, reads back what changed, and marks has()', () => {
+    const { conn, batches, calls, setReader } = makeConn();
+    setReader((sql) => (sql.startsWith('SELECT 1 AS one') ? [{ one: 1 }] : [])); // the partition already holds rows
     const db = createSqliteRowTable(schema, conn);
     db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 2), row('b', 'us', 'KC', 1)]);
     expect(batches).toHaveLength(1);
-    const batch = batches[0];
-    expect(batch[0][0]).toBe('DELETE FROM things WHERE region = ?;');
-    expect(batch[0][1]).toEqual(['us']);
-    expect(batch).toHaveLength(2);
-    expect(batch[1][0]).toBe('INSERT OR REPLACE INTO things (id, region, cohort, num) VALUES (?, ?, ?, ?), (?, ?, ?, ?);');
-    expect(batch[1][1]).toEqual(['a', 'us', 'NE', 2, 'b', 'us', 'KC', 1]);
+    const statements = batches[0].map(([sql]) => sql);
+
+    // Staged in one grouped insert, never written straight into the table.
+    const staged = batches[0].find(([sql]) => sql.startsWith('INSERT OR REPLACE INTO temp.things__sync_stage_'));
+    expect(staged?.[0]).toMatch(/\(id, region, cohort, num\) VALUES \(\?, \?, \?, \?\), \(\?, \?, \?, \?\);$/);
+    expect(staged?.[1]).toEqual(['a', 'us', 'NE', 2, 'b', 'us', 'KC', 1]);
+    expect(statements.some((sql) => sql.startsWith('INSERT INTO things') || sql.startsWith('INSERT OR REPLACE INTO things (id'))).toBe(true);
+    // The table is only ever touched for the units the diff recorded.
+    expect(statements.filter((sql) => sql.startsWith('DELETE FROM things '))).toEqual([
+      expect.stringMatching(/^DELETE FROM things WHERE region = \? AND id IN \(SELECT unit FROM temp\.things__changes/),
+    ]);
+    expect(last(calls)?.sql).toMatch(/^DELETE FROM temp\.things__changes WHERE write_id = \? RETURNING unit, rows;$/);
     expect(db.has({ region: 'us' })).toBe(true);
   });
 
@@ -638,8 +659,24 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     deleteWhere: [{ column: 'region', bindIndex: 0 }],
   };
 
+  it('shreds a first load natively straight into the table, with the spec exactly as declared', async () => {
+    const { conn, setReader } = makeConn();
+    setReader((sql) => (sql.startsWith('SELECT DISTINCT id') ? [{ unit: 'p1' }] : []));
+    const shredJsonArrayAsync = jest.fn(async () => 1);
+    const db = createSqliteRowTable(
+      schema,
+      { ...conn, shredJsonArrayAsync },
+      { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.region)] },
+    );
+    const { changes, rows } = await db.shred({ region: 'us' }, '[{"id":"p1"}]', () => []);
+    expect(shredJsonArrayAsync).toHaveBeenCalledWith(shredSpec, '[{"id":"p1"}]', ['us']);
+    expect([...(changes as ReadonlySet<string>)]).toEqual(['p1']);
+    expect(rows).toBe(1);
+  });
+
   it('shred prefers the native shred spec when the connection supports it (no JS object graph)', async () => {
-    const { conn } = makeConn();
+    const { conn, setReader } = makeConn();
+    setReader((sql) => (sql.startsWith('SELECT 1 AS one') ? [{ one: 1 }] : [])); // populated, so the shred stages
     const shredJsonArrayAsync = jest.fn(async () => 2);
     const db = createSqliteRowTable(
       schema,
@@ -647,10 +684,15 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       { specs: { all: shredSpec }, variant: () => 'all', binds: (scope) => [String(scope.region)] },
     );
     const parseRows = jest.fn(() => [] as TestRow[]);
-    const count = await db.shred({ region: 'us' }, '[{"id":"p1"}]', parseRows);
-    expect(shredJsonArrayAsync).toHaveBeenCalledWith(shredSpec, '[{"id":"p1"}]', ['us']);
+    await db.shred({ region: 'us' }, '[{"id":"p1"}]', parseRows);
+    // The declared spec pointed at the stage, never edited in place: its table name is part of the schema stamps.
+    expect(shredJsonArrayAsync).toHaveBeenCalledWith(
+      { ...shredSpec, table: expect.stringMatching(/^temp\.things__async_stage_[0-9a-z]+$/) },
+      '[{"id":"p1"}]',
+      ['us'],
+    );
+    expect(shredSpec.table).toBe('things');
     expect(parseRows).not.toHaveBeenCalled();
-    expect(count).toBe(2);
   });
 
   describe('secondary indexes are deferred across a shred into an empty table', () => {
@@ -741,8 +783,12 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       const table = makeShredStore(conn, shred);
 
       const ingests = [table.shred({ region: 'us' }, '[{"id":"p1"}]', () => []), table.shred({ region: 'eu' }, '[{"id":"p2"}]', () => [])];
-      await drain();
-      gates.forEach((open) => open());
+      // The writes take turns, so each shred's gate appears once the one before it has landed.
+      for (let opened = 0; opened < 2; opened += 1) {
+        // eslint-disable-next-line no-await-in-loop -- each gate appears only after the previous write lands
+        await drain();
+        gates[opened]();
+      }
       await Promise.all(ingests);
 
       expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_cohort;', 'CREATE INDEX IF NOT EXISTS idx_things_cohort ON things (region, cohort);']);
@@ -757,10 +803,12 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
       const ingests = [table.shred({ region: 'us' }, '[{"id":"p1"}]', () => []), table.shred({ region: 'eu' }, '[{"id":"p2"}]', () => [])];
       await drain();
-      expect(gates).toHaveLength(2);
+      // The writes take turns, so the second shred starts only once the first has landed.
+      expect(gates).toHaveLength(1);
 
       gates[0]();
       await drain();
+      expect(gates).toHaveLength(2);
       expect(ddl(calls)).toEqual(['DROP INDEX IF EXISTS idx_things_cohort;']);
 
       gates[1]();
@@ -771,15 +819,15 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   });
 
   it('shred falls back to parseRows when the native shred spec throws', async () => {
-    const { conn, batches } = makeConn();
+    const { conn, batches, setReader } = makeConn();
+    setReader((sql) => (sql.startsWith('SELECT 1 AS one') ? [{ one: 1 }] : []));
     const shredJsonArrayAsync = jest.fn(async () => {
       throw new Error('unsupported op on this build');
     });
     const db = createSqliteRowTable(schema, { ...conn, shredJsonArrayAsync }, { specs: { all: shredSpec }, variant: () => 'all', binds: () => ['us'] });
-    const count = await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
-    expect(count).toBe(1);
-    expect(batches[0][0][0]).toBe('DELETE FROM things WHERE region = ?;');
-    expect(batches[0][1][0]).toContain('INSERT OR REPLACE INTO things');
+    await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
+    const staged = batches.flat().find(([sql]) => sql.startsWith('INSERT OR REPLACE INTO temp.things__async_stage_'));
+    expect(staged?.[1]).toEqual(['a', 'us', 'NE', 1]);
   });
 
   it('shred falls back to parseRows when the scope names a variant the spec table has no entry for', async () => {
@@ -791,10 +839,9 @@ describe('row_table — sqlite backend (generated SQL)', () => {
       { specs: { all: shredSpec }, variant: () => 'nonexistent', binds: () => ['us'] },
     );
 
-    const count = await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
+    await db.shred({ region: 'us' }, '[]', () => [row('a', 'us', 'NE', 1)]);
 
     expect(shredJsonArrayAsync).not.toHaveBeenCalled();
-    expect(count).toBe(1);
   });
 
   it('shred reports the shred fallback, since callers cannot observe it', async () => {
@@ -818,12 +865,13 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   });
 
   it('shred shreds via parseRows + insert when there is no native shred spec', async () => {
-    const { conn, batches } = makeConn();
+    const { conn, batches, setReader } = makeConn();
+    setReader((sql) => (sql.startsWith('SELECT 1 AS one') ? [{ one: 1 }] : []));
     const db = createSqliteRowTable(schema, conn);
-    const count = await db.shred({ region: 'us' }, 'raw', () => [row('a', 'us', 'NE', 1)]);
-    expect(count).toBe(1);
-    expect(batches[0][0][0]).toBe('DELETE FROM things WHERE region = ?;');
-    expect(batches[0][1][0]).toContain('INSERT OR REPLACE INTO things');
+    await db.shred({ region: 'us' }, 'raw', () => [row('a', 'us', 'NE', 1)]);
+    expect(batches).toHaveLength(1);
+    const staged = batches[0].find(([sql]) => sql.startsWith('INSERT OR REPLACE INTO temp.things__async_stage_'));
+    expect(staged?.[1]).toEqual(['a', 'us', 'NE', 1]);
   });
 });
 
@@ -841,7 +889,7 @@ describe('row_table — inserts are grouped into multi-row statements', () => {
     // One chunk holding every row, so the split under test is the bind ceiling rather than the chunk size.
     await createSqliteRowTable(schema, conn).upsert(seed(600), { chunk: 600 });
 
-    const inserts = batches[0];
+    const inserts = batches[0].filter(([sql]) => sql.startsWith('INSERT OR REPLACE INTO temp.things__async_stage_'));
     expect(inserts).toHaveLength(3); // 249 + 249 + 102
     expect(inserts[0][1]).toHaveLength(ROWS_PER_INSERT * 4);
     expect(inserts[2][1]).toHaveLength((600 - 2 * ROWS_PER_INSERT) * 4);
@@ -853,7 +901,8 @@ describe('row_table — inserts are grouped into multi-row statements', () => {
     await createSqliteRowTable(schema, conn).upsert(seed(600), { chunk: 250 });
 
     // Three chunks of 250, 250, 100, each still split at the bind ceiling inside its own transaction.
-    expect(batches.map((batch) => batch.length)).toEqual([2, 2, 1]);
+    const stagedPerBatch = batches.map((batch) => batch.filter(([sql]) => sql.startsWith('INSERT OR REPLACE INTO temp.things__async_stage_')).length);
+    expect(stagedPerBatch).toEqual([2, 2, 1]);
   });
 
   it('lands every row through real SQLite', async () => {
@@ -930,70 +979,47 @@ describe('row_table — memory and SQLite answer the same `where`', () => {
   });
 });
 
-describe('row_table — digests say which rows moved', () => {
+describe('row_table — unitsWhere names the units a filter holds', () => {
   beforeAll(async () => {
     await initSqlJs();
   });
 
   const seed: TestRow[] = [row('a', 'us', 'NE', 2), row('b', 'us', null, 1), row('c', 'us', 'KC', null)];
 
-  const memoryWith = (rows: readonly TestRow[]): ReturnType<typeof createMemoryRowTable<TestRow>> => {
-    const db = createMemoryRowTable(schema);
-    db.overwrite({ region: 'us' }, rows as TestRow[]);
-    return db;
+  const both = () => {
+    const memory = createMemoryRowTable(schema);
+    memory.overwrite({ region: 'us' }, seed);
+    const sqlite = createSqliteRowTable(schema, createSqlJsConnection({ capabilities: 'full' }));
+    sqlite.init();
+    sqlite.overwrite({ region: 'us' }, seed);
+    return { memory, sqlite };
   };
 
-  const sqliteWith = (rows: readonly TestRow[]) => {
+  it('agrees between the backends', () => {
+    const { memory, sqlite } = both();
+    expect(memory.unitsWhere({ region: 'us' }).sort()).toEqual(['a', 'b', 'c']);
+    expect(sqlite.unitsWhere({ region: 'us' }).sort()).toEqual(memory.unitsWhere({ region: 'us' }).sort());
+  });
+
+  it('narrows to the filter, a null constraint included, and answers nothing for a partition it does not hold', () => {
+    const { memory, sqlite } = both();
+    for (const db of [memory, sqlite]) {
+      expect(db.unitsWhere({ region: 'us', cohort: 'KC' })).toEqual(['c']);
+      expect(db.unitsWhere({ region: 'us', cohort: null })).toEqual(['b']);
+      expect(db.unitsWhere({ region: 'eu' })).toEqual([]);
+    }
+  });
+
+  it('names the units and never reads the rows behind them', () => {
     const conn = createSqlJsConnection({ capabilities: 'full' });
     const db = createSqliteRowTable(schema, conn);
     db.init();
-    db.overwrite({ region: 'us' }, rows as TestRow[]);
+    db.overwrite({ region: 'us' }, seed);
     conn.executed.length = 0;
-    return { db, conn };
-  };
 
-  it('agrees between the backends, including over the null columns each spells its own way', () => {
-    const memory = memoryWith(seed).digests({ region: 'us' }, 'id');
-    const { db } = sqliteWith(seed);
-    expect([...memory.keys()].sort()).toEqual(['a', 'b', 'c']);
-    expect(db.digests({ region: 'us' }, 'id')).toEqual(memory);
-  });
+    db.unitsWhere({ region: 'us' });
 
-  it('moves a row digest when any column changes, and leaves every other row alone', () => {
-    const before = memoryWith(seed).digests({ region: 'us' }, 'id');
-    const after = memoryWith([row('a', 'us', 'NE', 2), row('b', 'us', 'NE', 1), row('c', 'us', 'KC', null)]).digests({ region: 'us' }, 'id');
-    expect(after.get('b')).not.toEqual(before.get('b'));
-    expect(after.get('a')).toEqual(before.get('a'));
-    expect(after.get('c')).toEqual(before.get('c'));
-  });
-
-  it('cannot be fooled by two rows whose values run together, which is what the separator is for', () => {
-    const digests = memoryWith([row('a', 'us', 'x', null), row('b', 'us', null, null)]).digests({ region: 'us' }, 'id');
-    expect(digests.get('a')).not.toEqual(digests.get('b'));
-  });
-
-  it('leaves a row the filter does not match absent, rather than digesting it as empty', () => {
-    const { db } = sqliteWith(seed);
-    expect([...db.digests({ region: 'us', cohort: 'KC' }, 'id').keys()]).toEqual(['c']);
-    expect(db.digests({ region: 'eu' }, 'id').size).toBe(0);
-  });
-
-  it('narrowed to named rows, answers for the ones it holds and stays silent on the rest', () => {
-    const { db } = sqliteWith(seed);
-    const digests = db.digests({ region: 'us' }, 'id', ['a', 'missing']);
-    expect([...digests.keys()]).toEqual(['a']);
-    expect(db.digests({ region: 'us' }, 'id', []).size).toBe(0);
-  });
-
-  it('never reads the rows themselves, which is the whole point of asking', () => {
-    const { db, conn } = sqliteWith(seed);
-    db.digests({ region: 'us' }, 'id');
-    db.digests({ region: 'us' }, 'id', ['a', 'b']);
-    expect(conn.executed).toHaveLength(2);
-    for (const sql of conn.executed) {
-      expect(sql).not.toContain('SELECT *');
-      expect(sql).toContain('char(1)');
-    }
+    expect(conn.executed).toEqual(['SELECT DISTINCT id AS unit FROM things WHERE region = ?;']);
   });
 });
 
@@ -1031,7 +1057,7 @@ describe('row_table — the shred spec must delete what the scope names', () => 
   it('shreds when the spec deletes exactly the scope', async () => {
     const db = shredding([{ column: 'region', bindIndex: 0 }]);
 
-    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => [])).resolves.toBe(1);
+    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => [])).resolves.toMatchObject({ rows: 1 });
   });
 
   itDev('rejects a spec that deletes less than the scope, which turns replace into append', async () => {
@@ -1053,7 +1079,7 @@ describe('row_table — the shred spec must delete what the scope names', () => 
     const db = shredding([]);
     const parsed = [row('a', 'us', null, null)];
 
-    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => parsed)).resolves.toBe(1);
+    await expect(db.shred({ region: 'us' }, '[{"id":"a"}]', () => parsed)).resolves.toMatchObject({ rows: 1 });
   });
 });
 
@@ -1076,7 +1102,7 @@ describe('row_table — a write must land inside the filter it replaced', () => 
     const db = createMemoryRowTable(schema);
     db.init();
 
-    expect(db.overwrite({ region: 'us' }, [row('a', 'us', 'SF', 1), row('b', 'us', 'KC', 2)])).toBe(2);
+    expect(db.overwrite({ region: 'us' }, [row('a', 'us', 'SF', 1), row('b', 'us', 'KC', 2)]).rows).toBe(2);
   });
 });
 

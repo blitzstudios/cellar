@@ -9,6 +9,7 @@ import { recordIngestTiming } from '../diagnostics/ingest_timing';
 import { createOnceGuard } from '../diagnostics/once_guard';
 import { reportStoreDegradation } from '../diagnostics/telemetry';
 import { queryRuntime } from '../runtime';
+import { ChangeSet, isUnchanged, WriteResult } from '../table/change_set';
 
 /**
  * What a change in the fetch's state is allowed to repaint a reader for. Deliberately short of every field
@@ -53,8 +54,9 @@ export interface FetchIngestConfig<Key> {
   rawQuery: (key: Key, etag?: string) => RawQuery;
   getEtag: (key: Key) => string | undefined;
   setEtag: (key: Key, etag: string) => void;
-  ingestRaw: (key: Key, rawJson: string) => Promise<number>;
-  bump?: (key: Key) => number;
+  /** Replaces the partition's rows, reporting which units that changed and how many rows the body held. */
+  ingestRaw: (key: Key, rawJson: string) => Promise<WriteResult>;
+  bump?: (key: Key, changes: ChangeSet) => number;
   /** Held for the length of the request: `ingestRaw` replaces the partition, so socket writes queue behind it. */
   holdWrites?: (key: Key) => () => void;
 }
@@ -211,7 +213,8 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
    */
   const detectsUnchangedBodies = !!cfg.holdWrites;
   const queryKey = (parts: readonly string[]): (string | undefined)[] => [cfg.ingestKeyRoot, ...parts];
-  const bump = (key: Key, parts: readonly string[]): number => (cfg.bump ? cfg.bump(key) : cfg.version.bump(parts));
+  const bump = (key: Key, parts: readonly string[], changes: ChangeSet): number =>
+    cfg.bump ? cfg.bump(key, changes) : cfg.version.bump(parts, changes);
 
   const runIngest = async (key: Key): Promise<{ version: number; count: number }> => {
     const release = cfg.holdWrites?.(key);
@@ -270,15 +273,17 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
       return { version: cfg.version.get(parts), count: ROWS_UNCHANGED };
     }
 
-    const count = await cfg.ingestRaw(key, rawJson);
-    recordTiming(count, rawJson.length);
+    const { changes, rows } = await cfg.ingestRaw(key, rawJson);
+    recordTiming(rows, rawJson.length);
     if (fingerprint) {
       if (ingestedBodies.size >= FINGERPRINT_CAPACITY) ingestedBodies.clear();
       ingestedBodies.set(partitionId, fingerprint);
     }
     // Only for a body that was ingested: an etag saved from a bodyless 200 would 304 every later launch.
     if (res?.etag) cfg.setEtag(key, res.etag);
-    return { version: bump(key, parts), count };
+    // A body that matched the table unit for unit changed nothing, so there is nobody to wake.
+    if (isUnchanged(changes)) return { version: cfg.version.get(parts), count: rows };
+    return { version: bump(key, parts, changes), count: rows };
   };
 
   /**

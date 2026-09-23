@@ -4,6 +4,7 @@ import { RowTable, RowTableSchema } from '../table/types';
 import { createVersionAtom } from '../reactivity/version_atom';
 import { definePartitions } from '../define_partitions';
 import { reportStoreDegradation } from '../diagnostics/telemetry';
+import { ALL_UNITS, ChangeSet, NO_CHANGES } from '../table/change_set';
 
 jest.mock('../diagnostics/telemetry', () => ({ reportStoreDegradation: jest.fn() }));
 
@@ -22,6 +23,7 @@ const SCHEMA: RowTableSchema<EventRow> = {
     event_id: { type: 'TEXT' },
   },
   primaryKey: ['region', 'year', 'item_type', 'event_id'],
+  unit: 'event_id',
   meta: { table: 'events_meta', keyColumns: ['region', 'year', 'item_type'], column: 'etag' },
 };
 
@@ -33,6 +35,7 @@ function makeEvents(over: { table?: RowTable<EventRow>; parse?: (key: EventKey, 
   table.init();
   const version = createVersionAtom('define_partitions_test');
   const changed: { key: EventKey; version: number }[] = [];
+  const changedUnits: ChangeSet[] = [];
   const body = over.body ?? '["g1","g2"]';
   // Typed loosely: the assertions below inspect the arity of each call, which a tuple type hides.
   const query = jest.fn((..._args: unknown[]) => ({ queryFn: async () => ({ data: body, etag: 'W/"v1"' }) }));
@@ -51,11 +54,14 @@ function makeEvents(over: { table?: RowTable<EventRow>; parse?: (key: EventKey, 
         over.parse ??
         ((key, raw) => (JSON.parse(raw) as string[]).map((id) => ({ region: key.region, year: key.year, item_type: key.itemType, event_id: id }))),
     },
-    onChanged: (key, version) => changed.push({ key, version: version }),
+    onChanged: (key, version, changes) => {
+      changed.push({ key, version });
+      changedUnits.push(changes);
+    },
     internMax: over.internMax,
   });
 
-  return { events, table, version, changed, query };
+  return { events, table, version, changed, changedUnits, query };
 }
 
 beforeEach(() => {
@@ -129,6 +135,29 @@ describe('definePartitions — bumping', () => {
     expect(harness.events.bump(US)).toBe(1);
     expect(harness.events.versionOf(US)).toBe(1);
     expect(harness.changed).toHaveLength(1);
+  });
+
+  it('hands `onChanged` the units the fetch changed', async () => {
+    const harness = makeEvents();
+
+    await harness.events.lifecycle.fetch(US);
+
+    expect([...(harness.changedUnits[0] as ReadonlySet<string>)].sort()).toEqual(['g1', 'g2']);
+  });
+
+  it('bumps nothing, and tells nobody, for a write that changed nothing', () => {
+    const harness = makeEvents();
+
+    expect(harness.events.bump(US, NO_CHANGES)).toBe(0);
+    expect(harness.changed).toEqual([]);
+  });
+
+  it('counts every unit changed for a store that bumps without saying which', () => {
+    const harness = makeEvents();
+
+    harness.events.bump(US);
+
+    expect(harness.changedUnits).toEqual([ALL_UNITS]);
   });
 
   it('keys the version by the field order it declared, so two partitions never share one', () => {
@@ -266,6 +295,7 @@ describe('definePartitions — a store whose key is an opaque string', () => {
     table: 'blobs',
     columns: { partition_key: { type: 'TEXT' }, id: { type: 'TEXT' } },
     primaryKey: ['partition_key', 'id'],
+    unit: 'id',
     meta: { table: 'blobs_meta', keyColumns: ['partition_key'], column: 'etag' },
   };
 
@@ -322,6 +352,7 @@ describe('definePartitions — a store whose partition is a record, interned to 
     table: 'metrics',
     columns: { partition_key: { type: 'TEXT' }, id: { type: 'TEXT' } },
     primaryKey: ['partition_key', 'id'],
+    unit: 'id',
     meta: { table: 'metrics_meta', keyColumns: ['partition_key'], column: 'etag' },
   };
 
@@ -479,6 +510,7 @@ describe('definePartitions — args that resolve to no partition at all', () => 
     table: 'loose',
     columns: { partition_key: { type: 'TEXT' }, id: { type: 'TEXT' } },
     primaryKey: ['partition_key', 'id'],
+    unit: 'id',
     meta: { table: 'loose_meta', keyColumns: ['partition_key'], column: 'etag' },
   };
 

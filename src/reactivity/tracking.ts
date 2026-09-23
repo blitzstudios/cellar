@@ -3,7 +3,7 @@
  * imperative getter must call it on every call, cache hits included, or its tracked consumer is silently stale.
  */
 
-import { KEY_SEP, partitionLabel } from '../args_key';
+import { GROUP_SEP, KEY_SEP, partitionLabel } from '../args_key';
 import { createOnceGuard } from '../diagnostics/once_guard';
 import { renderPhaseOwnerStack } from './render_phase';
 
@@ -51,10 +51,13 @@ const warnedSites = createOnceGuard();
 function warnIfUnsubscribedRenderRead(dep: Dep): void {
   const ownerStack = renderPhaseOwnerStack();
   if (ownerStack === null) return;
-  if (warnedSites.seen(`${dep.id}${ownerStack}`)) return;
+  // Named by partition: a unit or presence descriptor extends its partition's id, and one read reporting several of
+  // them is still one unsubscribed read.
+  const [partitionId] = dep.id.split(GROUP_SEP);
+  if (warnedSites.seen(`${partitionId}${ownerStack}`)) return;
   // eslint-disable-next-line no-console
   console.warn(
-    `[off-heap] read ${partitionLabel(dep.id.split(KEY_SEP))} during render without subscribing to it, so this ` +
+    `[off-heap] read ${partitionLabel(partitionId.split(KEY_SEP))} during render without subscribing to it, so this ` +
       `component will show the value it read now and never update it. Read through the store's \`useValue\` hook ` +
       `(it subscribes itself), or run the derivation inside \`useTrackedStores\` / wrap a \`connect\` component ` +
       `in \`withTrackedStores\`, which subscribe to whatever partitions the read touched. If you subscribed this ` +

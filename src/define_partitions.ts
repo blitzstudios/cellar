@@ -19,6 +19,7 @@ import { DataResult, offHeapStatus } from './store_result';
 import { reportStoreDegradation } from './diagnostics/telemetry';
 import { runSubscribed } from './reactivity/tracking';
 import type { Loose } from './read/facade';
+import { ALL_UNITS, ChangeSet, isUnchanged, WriteResult } from './table/change_set';
 
 /** No partition: args still being filled in, or a slot a caller left empty, which keeps its index in the result. */
 type MaybePartition<Descriptor> = Descriptor | null | undefined;
@@ -71,7 +72,8 @@ export interface PartitionsConfig<Row extends RowShape, Key, Args, Descriptor> {
   version: VersionAtom;
   key: PartitionKeySpec<Row, Key, Args, Descriptor>;
   fetch?: PartitionFetchSpec<Row, Key, Descriptor>;
-  onChanged?: (key: Key, version: number) => void;
+  /** Runs after a bump, with the units the write changed. Never runs for a write that changed nothing. */
+  onChanged?: (key: Key, version: number, changes: ChangeSet) => void;
   /** How many partitions to remember: record⇄key pairings and fetch timestamps. */
   internMax?: number;
 }
@@ -141,9 +143,9 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
    */
   memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
   /**
-   * Declares a view-model shape built one row at a time, in two calls like the reads: `project<Vm>()({ … })`. Every
-   * read handing back that shape goes through the one projection, so a row is built once however many ask, and a
-   * version bump only rebuilds the rows whose content actually moved. See {@link createRowProjection}.
+   * Declares a view-model shape built one unit at a time, in two calls like the reads: `project<Vm>()({ … })`. Every
+   * read handing back that shape goes through the one projection, so a unit is built once however many ask, and a
+   * write only rebuilds the units it changed. See {@link createRowProjection}.
    */
   project: <Vm>() => (def: RowProjectionDef<Row, Vm>) => RowProjection<Key, Row, Vm>;
   where: (key: Key) => Partial<Row>;
@@ -155,8 +157,11 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
   has: (key: Key) => boolean;
   /** The partition's version, 0 if never written. Tracks. */
   versionOf: (key: Key) => number;
-  /** Raises the version and runs `onChanged`, for a store that put rows in itself. */
-  bump: (key: Key) => number;
+  /**
+   * Raises the version and runs `onChanged`, for a store that put rows in itself. Pass the units its write changed;
+   * without them every unit counts as changed, and a write that changed nothing bumps nothing.
+   */
+  bump: (key: Key, changes?: ChangeSet) => number;
   /** Drops the partition's ETag, so its next fetch comes back with a whole body. */
   clearEtag: (key: Key) => void;
   lifecycle: PartitionLifecycle<Args>;
@@ -230,9 +235,11 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     : // The fields are named against `Key` and here pick out of `Args`, which `defaultPartition` already requires.
       partitionKeyOf<Args, Key>(fields as unknown as readonly PartitionField<Args>[]);
 
-  const bump = (key: Key): number => {
-    const next = version.bump(toParts(key));
-    config.onChanged?.(key, next);
+  const bump = (key: Key, changes: ChangeSet = ALL_UNITS): number => {
+    const parts = toParts(key);
+    if (isUnchanged(changes)) return version.get(parts);
+    const next = version.bump(parts, changes);
+    config.onChanged?.(key, next, changes);
     return next;
   };
 
@@ -240,19 +247,19 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
   const fetchedAt = createBoundedLru<number>(config.internMax ?? INTERN_MAX);
 
   /** Replaces the partition's rows, through the native shred where the body allows it and JS parsing otherwise. */
-  async function ingestRaw(key: Key, rawJson: string): Promise<number> {
+  async function ingestRaw(key: Key, rawJson: string): Promise<WriteResult> {
     const spec = fetchSpec as PartitionFetchSpec<Row, Key, Descriptor>;
     const partition = describe(key);
     const rowsWhere = where(key);
     const parse = (raw: string): Row[] => spec.parse(partition, raw, key) as Row[];
-    const inJs = (): number => table.overwrite(rowsWhere, parse(rawJson));
+    const inJs = (): WriteResult => table.overwrite(rowsWhere, parse(rawJson));
 
-    let count: number;
+    let result: WriteResult;
     if (spec.canShredNatively?.(partition) === false) {
-      count = inJs();
+      result = inJs();
     } else {
       try {
-        count = await table.shred(rowsWhere, rawJson, parse);
+        result = await table.shred(rowsWhere, rawJson, parse);
       } catch (error) {
         reportStoreDegradation({
           scope: `${name}_store.raw_ingest`,
@@ -260,11 +267,11 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
           error,
           extra: { store: name, partition: partitionLabel(toParts(key)) },
         });
-        count = inJs();
+        result = inJs();
       }
     }
     fetchedAt.set(cacheKeyOf(toParts(key)), Date.now());
-    return count;
+    return result;
   }
 
   const ingest: FetchIngest<Key> | undefined = fetchSpec
@@ -294,6 +301,8 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
   /** Whether the partition holds rows. Tracks, since the surface's probe takes the version on every call. */
   const has = (key: Key): boolean => surface.has(key);
   const versionOf = (key: Key): number => version.get(toParts(key));
+  /** What every memo this store declares is bound by: a partition's version, and each unit's. */
+  const memoBinding = { parts: toParts, version: versionOf, unitVersion: (key: Key, unit: string) => version.getUnit(toParts(key), unit) };
 
   // Bound once, so the hook a component calls is the same one on every render.
   const usePriming = ingest?.usePrime ?? NO_PRIMING;
@@ -339,13 +348,13 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     read: surface.read,
     readMany: readManyOf,
     readGrouped: readGroupedOf,
-    memos: (decls) => createMemos(name, { parts: toParts, version: versionOf }, decls),
+    memos: (decls) => createMemos(name, memoBinding, decls),
     project:
       <Vm,>() =>
       (def: RowProjectionDef<Row, Vm>) => {
-        const bound = createMemos(name, { parts: toParts, version: versionOf }, { [def.name]: rowVmMemo<Vm>(def.max) });
+        const bound = createMemos(name, memoBinding, { [def.name]: rowVmMemo<Vm>(def.max) });
         return createRowProjection<Row, Key, Vm>(
-          { store: name, table, filter: where, memo: bound[def.name] as RowVmMemo<Key, Vm> },
+          { store: name, table, filter: where, memo: bound[def.name] as RowVmMemo<Key, Vm>, trackPartition: versionOf },
           def,
         );
       },

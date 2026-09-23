@@ -13,5 +13,6 @@ export function testMemos<Key = string>(
   opts: { store?: string; parts?: (key: Key) => readonly string[] } = {},
 ): MemoFactory<Key> {
   const parts = opts.parts ?? ((key: Key) => [(key as unknown as string) ?? '']);
-  return (decls) => createMemos(opts.store ?? 'test', { parts, version: (key) => version.get(parts(key)) }, decls);
+  return (decls) =>
+    createMemos(opts.store ?? 'test', { parts, version: (key) => version.get(parts(key)), unitVersion: (key, unit) => version.getUnit(parts(key), unit) }, decls);
 }

@@ -3,6 +3,7 @@
  * chunks off the render path. A failed chunk is requeued behind any newer push under the same id.
  */
 import { RowShape, RowTable } from '../table/types';
+import { ChangeSet } from '../table/change_set';
 /**
  * What a socket-fed store hands the buffer so it can write on the store's behalf: where a partition's rows live, what
  * identifies one pushed item, how items become rows, and the bump and post-write hook a landed write runs. `idOf` has
@@ -14,8 +15,9 @@ export interface PushIngestConfig<Item, Row extends RowShape, Key> {
     where: (key: Key) => Partial<Row>;
     idOf: (item: Item) => string;
     toRows: (key: Key, items: readonly Item[]) => Row[];
-    bump: (key: Key) => void;
-    /** Runs for each partition a write touched, before its readers wake; a store keeping an ETag retires it here. */
+    /** Bumps a partition with the units a flush changed in it. Never called for a flush that changed nothing there. */
+    bump: (key: Key, changes: ChangeSet) => void;
+    /** Runs for each partition a write changed, before its readers wake; a store keeping an ETag retires it here. */
     onWrite: (key: Key) => void;
     chunk?: number;
     retryDelayMs?: number;

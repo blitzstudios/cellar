@@ -68,6 +68,8 @@ export const itemSchema: RowTableSchema<ItemRow> = {
   table: 'items',
   columns: itemShred.columnDefs,
   primaryKey: ['group_id', 'item_id'],
+  // What a view model is about: the grain every write reports its changes in, and a read subscribes at.
+  unit: 'item_id',
   indexes: [{ name: 'idx_items_group', columns: ['group_id'] }],
   // Where the per-slice ETag is kept, so a refetch can come back 304.
   meta: { table: 'items_meta', keyColumns: ['group_id'], column: 'etag' },
@@ -126,8 +128,8 @@ export function buildItemBackend(table: RowTable<ItemRow>, version: VersionAtom)
 }
 ```
 
-`select` runs only once the slice holds rows, and only when its version changes. `empty` is what callers get
-before that, so it has to be a stable reference.
+`select` runs only once the slice holds rows, and again only when something it read has changed. `empty` is what
+callers get before that, so it has to be a stable reference.
 
 #### Priming is by partition, not by what a read selects
 
@@ -245,7 +247,8 @@ Three words, and they nest:
 | term | what it is |
 | --- | --- |
 | **table** | the rows themselves — SQLite on device, a `Map` on web and in tests, behind one `RowTable` interface |
-| **partition** | one addressable slice of a table: the unit a fetch replaces, a version tracks, and an ETag belongs to |
+| **partition** | one addressable slice of a table: what a fetch replaces and an ETag belongs to |
+| **unit** | what a view model is about — an item, a player — declared on the schema. Every write reports the units it changed, and a read of named units depends on those alone. One unit may span several rows |
 | **store** | the module wrapping both, declared with `defineSqliteStore` |
 
 A store has as many partitions as its callers ask for — one per group, or thousands, one per entity.
@@ -260,12 +263,16 @@ A store has as many partitions as its callers ask for — one per group, or thou
 - **Schema migration with no migration to write.** `init` fingerprints the schema it built. A database whose
   fingerprint no longer matches is migrated on the spot — widened by `ALTER TABLE ADD COLUMN` when the change
   only added columns, rebuilt from the next fetch otherwise.
-- **Reactivity per slice, not per store.** Each partition carries a version, and a read subscribes to the
-  versions it touches. A write to one slice repaints its readers and nobody else's.
-- **Reactivity per row, where a read asks for it.** A version says the slice was written, not what changed in
-  it, and rows come back from SQLite as fresh objects — so a read rebuilding view models would repaint every
-  subscriber on every fetch. Declare the shape with `project` and the kernel digests the rows instead, rebuilds
-  only the ones that moved, and keeps the reference for the rest.
+- **Writes that say what they changed.** Every write compares what it was handed with what the table holds,
+  rewrites only the units that differ, and reports them. A refetch that brings back what the table already holds
+  changes nothing and wakes nobody; a live poll where four players moved wakes the readers of those four.
+- **Reactivity per unit, found by reading.** A read subscribes to exactly what it read, discovered by running it: a
+  read of named units through a projection or a unit memo depends on those units, and a read over the whole slice
+  depends on the slice. Nothing is declared, and a read that takes rows straight off the table falls back to its
+  whole slice, so precision is never bought with correctness.
+- **Stable references for free.** Rows come back from SQLite as fresh objects, so a read rebuilding view models
+  would repaint every subscriber. Declare the shape with `project` and the kernel keeps each unit's view model until
+  that unit changes, handing back the same reference until then.
 - **A fallback that keeps the app running.** Every store also runs over an in-memory row table. That is the web
   and test path, and it is where a store lands if SQLite fails mid-session, so a database error degrades
   performance instead of breaking reads.
@@ -290,12 +297,17 @@ Everything below is exported from the package root.
 | export | what it gives you |
 | --- | --- |
 | `createSqliteRowTable`, `createMemoryRowTable` | the two `RowTable` backends; same interface, different storage |
-| `RowTable` | `init`, three writes (`upsert`, `overwrite`, `shred`), reads (`getOne`, `find`, `findIn`, `has`) and the ETag pair (`getMeta`, `setMeta`) |
+| `RowTable` | `init`, three writes (`upsert`, `overwrite`, `shred`) that each return the units they changed, reads (`getOne`, `find`, `findIn`, `has`, `unitsWhere`) and the ETag pair (`getMeta`, `setMeta`) |
+| `ChangeSet`, `ALL_UNITS`, `NO_CHANGES` | what a write reports: the units it changed, every unit when it cannot say, or none |
 | `readRows`, `pinnedReader` | batch reads over a connection, and the opt-out that pins one to a single handle |
 
 The three writes differ in what they delete. `upsert` merges by primary key and removes nothing, which is what a
 socket delta wants. `overwrite(where, rows)` makes the slice matching `where` be exactly `rows`. `shred` is that
 same replacement from an undecoded response body.
+
+On SQLite each write lands its rows in a staging table and one transaction compares them with the table, every
+column and null-safe, then rewrites only the units that differ. A slice that holds nothing yet skips the stage:
+with nothing to compare against, its rows go straight in and every unit counts as new.
 
 ### Getting rows in
 
@@ -311,7 +323,7 @@ same replacement from an undecoded response body.
 | export | what it gives you |
 | --- | --- |
 | `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about. A `varyBy` value that is an object or an array keys by its content, and its identity is remembered per reference so a caller holding one across a list serializes it once — which is why `__DEV__` freezes it: a key remembered for a reference is only sound while the content holds still |
-| `partitions.project()` | a view-model shape built one row at a time: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply the row-to-view-model function; a bump then rebuilds only the rows whose content moved and hands back the previous reference for the rest, so the readers of an unchanged row don't repaint. Reads of the same shape share one projection, so a row is built once however many ask |
+| `partitions.project()` | a view-model shape built one unit at a time: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply the unit's-rows-to-view-model function; a write rebuilds only the units it changed and hands back the previous reference for the rest. `.one`, `.byIds` and `.mapByIds` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Reads of the same shape share one projection, so a unit is built once however many ask |
 | `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares. They return the same value but do not fetch alike: `useValue` refetches on React Query's staleness, `getValue` fetches a partition that has never been fetched and otherwise leaves it |
 | `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
 | `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |
@@ -323,14 +335,15 @@ same replacement from an undecoded response body.
 | --- | --- |
 | `runTracked`, `runSubscribed` | the tracking scopes an imperative read runs inside |
 | `createTrackedSelector` | off-heap-aware reselect, for reads reached from a Redux selector |
+| `useTrackedValue` | the hook every reactive read goes through: runs a derivation, subscribes to exactly what it read, and honours the read gate — for a derivation over several stores, or over Redux as well |
 
 ### Memoizing derived values
 
 | export | what it gives you |
 | --- | --- |
 | `partitions.memos({ … })` | every value a store derives onto the heap, declared in one reviewable block and keyed by the partition for you |
-| `byVersion` | dropped by every write to its partition; for a value several reads share |
-| `bySource` | keyed by the row it was built from, so one row changing doesn't re-derive its neighbours. Its `holds(…, source)` answers whether a key would rebuild *before* you query, so a read consulting it once per item can fetch inputs for only the items that moved rather than for every item a bump invalidated |
+| `byVersion` | dropped by every write that changed its partition; for a value derived from the whole slice |
+| `byUnit` | one entry per unit, kept until that unit changes; for a value built from one unit's rows. `readMany` answers what it holds and builds every miss in one call, so a read of a roster costs one query for the units that changed |
 | `shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct` | the `isEqual` family a read compares its value with |
 
 ### Host services and diagnostics

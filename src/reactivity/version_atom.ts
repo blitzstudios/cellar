@@ -1,13 +1,16 @@
-/** The per-partition version counter that stands in for change notification: a write bumps it, a reader watches it. */
+/**
+ * The change notification for a store: one counter per partition, and beneath it the version each unit last changed
+ * at. A write bumps with the units it changed; a reader depends on the units it read, or on the whole partition.
+ */
 
-import { DependencyList, useCallback, useMemo, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import { useSyncExternalStore } from 'use-sync-external-store/shim';
-import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/with-selector';
 
-import { cacheKey, GROUP_SEP, partitionsKey, cacheKeyOf } from '../args_key';
+import { cacheKey, GROUP_SEP, cacheKeyOf } from '../args_key';
 import { getOrCreate } from '../collections';
 import { readGateRuntime } from '../runtime';
-import { Dep, runSubscribed, trackDependency } from './tracking';
+import { Dep, trackDependency } from './tracking';
+import { ALL_UNITS, ChangeSet, isUnchanged } from '../table/change_set';
 
 /** Whether a part list addresses a real partition: at least one part, and every part filled in. */
 export const addressesPartition = (parts: readonly string[]): boolean => parts.length > 0 && parts.every(Boolean);
@@ -27,227 +30,260 @@ export function partitionEntries<Key>(keys: readonly Key[], toParts: (key: Key) 
 }
 
 /**
- * The change notification for a whole store, one integer per partition: a write bumps, a reactive reader subscribes
- * through `useVersion` / `useSelect`, and `get` reads imperatively while registering the partition with any active
- * tracking scope. A store is handed one by its spine and passes it to `definePartitions`.
+ * The change notification for a whole store. Three things can be depended on for each partition, and each reports
+ * itself to an active tracking scope when read:
+ *
+ * - `get` — the partition's version, which moves on every write that changed anything. A read over the whole partition
+ *   depends on this.
+ * - `getUnit` — the version one unit last changed at. A read of named units depends on these alone, so a write that
+ *   changed other units leaves it asleep.
+ * - `getPresence` — which moves only when the partition may have gained or lost rows altogether: its first write, and
+ *   any write that could not say which units it changed. Whether a partition holds rows at all is what gates a read.
  */
 export interface VersionAtom {
   key(parts: readonly string[]): [string, string];
-  /** 0 for a partition that has never been written. */
+  /** 0 for a partition that has never been written. Tracks the partition. */
   get(parts: readonly string[]): number;
-  bump(parts: readonly string[]): number;
+  /** The version `unit` last changed at, 0 if never. Tracks that unit alone. */
+  getUnit(parts: readonly string[], unit: string): number;
+  /** Moves when the partition may have gone from empty to holding rows, or back. Tracks presence alone. */
+  getPresence(parts: readonly string[]): number;
+  /** Raises the partition's version for a write that changed `changes`; every unit when omitted, nothing for none. */
+  bump(parts: readonly string[], changes?: ChangeSet): number;
   bumpAll(): void;
+  /** Listens for every write to the partition. */
   subscribe(parts: readonly string[], listener: () => void): () => void;
   useVersion(parts: readonly string[], enabled?: boolean): number;
-  useSelect<T>(parts: readonly string[], enabled: boolean, deps: DependencyList, compute: () => T, isEqual: (left: T, right: T) => boolean, empty: T): T;
-  useSelectMany<T>(
-    partsList: readonly (readonly string[])[],
-    enabled: boolean,
-    deps: DependencyList,
-    compute: () => T,
-    isEqual: (left: T, right: T) => boolean,
-    empty: T,
-  ): T;
 }
 
-type VersionEntry = { value: number; listeners: Set<() => void> };
+type Listener = () => void;
+
+interface VersionEntry {
+  value: number;
+  /** The version at which every unit last counted as changed: the first write, and every write of all units. */
+  epoch: number;
+  presence: number;
+  /** The units that changed since the epoch, with the version each changed at. */
+  changedAt: Map<string, number>;
+  listeners: Set<Listener>;
+  unitListeners: Map<string, Set<Listener>>;
+  presenceListeners: Set<Listener>;
+}
 
 /**
- * Builds the atom for one store, `root` naming it in the dependency ids its reads report. Its entries are module-level
- * and one per partition, so a write wakes every reader of that partition and no reader of any other.
+ * How many units a partition remembers changing since its epoch. Past this, a write moves the epoch instead, which
+ * counts every unit changed: safe, since it wakes readers rather than leaving them stale, and it keeps a long session
+ * over a large partition from holding a version for every unit it ever touched.
  */
+const UNIT_MEMORY = 8192;
+
+/** Builds the atom for one store, `root` naming it in the dependency ids its reads report. */
 export function createVersionAtom(root: string): VersionAtom {
   const specifier = (parts: readonly string[]): string => cacheKeyOf(parts);
   const key = (parts: readonly string[]): [string, string] => [root, specifier(parts)];
 
   const entries = new Map<string, VersionEntry>();
-  const ensure = (spec: string): VersionEntry => getOrCreate(entries, spec, () => ({ value: 0, listeners: new Set() }));
+  const ensure = (spec: string): VersionEntry =>
+    getOrCreate(entries, spec, () => ({
+      value: 0,
+      epoch: 0,
+      presence: 0,
+      changedAt: new Map(),
+      listeners: new Set(),
+      unitListeners: new Map(),
+      presenceListeners: new Set(),
+    }));
 
-  const getSpec = (spec: string): number => entries.get(spec)?.value ?? 0;
+  const valueOf = (spec: string): number => entries.get(spec)?.value ?? 0;
+  const unitValueOf = (spec: string, unit: string): number => {
+    const entry = entries.get(spec);
+    if (!entry) return 0;
+    return Math.max(entry.epoch, entry.changedAt.get(unit) ?? 0);
+  };
+  const presenceOf = (spec: string): number => entries.get(spec)?.presence ?? 0;
 
   /**
-   * One descriptor per partition rather than one per read. `root` is fixed for the atom and the closures capture
-   * nothing but `spec`, so what `get` used to build every call -- an id string, an object and two closures -- was
-   * identical each time, and `get` runs once per partition per read. {@link trackDependency} dedupes by `id` and
-   * only ever reads the descriptor, so one shared instance behaves the same as a fresh one.
-   *
-   * Held apart from `entries` because `get` deliberately does not create an entry: seeding one per read would widen
-   * what `bumpAll` bumps. Its keys are partitions, the same space `entries` occupies.
+   * Drops an entry nothing needs: never written, and nobody listening. A written entry must stay, since dropping it
+   * resets its versions to 0, and a value cached at version 0 would then read as current.
    */
-  const deps = new Map<string, Dep>();
-  const depFor = (spec: string): Dep =>
-    getOrCreate(deps, spec, () => ({
+  const release = (spec: string, entry: VersionEntry): void => {
+    if (entry.value !== 0 || entry.listeners.size || entry.unitListeners.size || entry.presenceListeners.size) return;
+    if (entries.get(spec) !== entry) return;
+    entries.delete(spec);
+    // The descriptors follow the entry. One already handed to a sink keeps working, since it reads `entries` through
+    // its spec on each call, and the next read rebuilds an identical one.
+    partitionDeps.delete(spec);
+    unitDeps.delete(spec);
+    presenceDeps.delete(spec);
+  };
+
+  const listen = (spec: string, pick: (entry: VersionEntry) => Set<Listener>, listener: Listener): (() => void) => {
+    const entry = ensure(spec);
+    const set = pick(entry);
+    set.add(listener);
+    return () => {
+      set.delete(listener);
+      release(spec, entry);
+    };
+  };
+
+  const subscribeUnit = (spec: string, unit: string, listener: Listener): (() => void) => {
+    const entry = ensure(spec);
+    const set = getOrCreate(entry.unitListeners, unit, () => new Set<Listener>());
+    set.add(listener);
+    return () => {
+      set.delete(listener);
+      if (!set.size && entry.unitListeners.get(unit) === set) entry.unitListeners.delete(unit);
+      release(spec, entry);
+    };
+  };
+
+  /**
+   * One descriptor per partition, per unit and per presence, rather than one per read: `trackDependency` dedupes by
+   * id and only ever reads the descriptor, so a shared instance behaves the same as a fresh one and costs nothing to
+   * report again. Held apart from `entries`, since reading must not create an entry: that would widen what `bumpAll`
+   * bumps.
+   */
+  const partitionDeps = new Map<string, Dep>();
+  const unitDeps = new Map<string, Map<string, Dep>>();
+  const presenceDeps = new Map<string, Dep>();
+
+  const partitionDep = (spec: string): Dep =>
+    getOrCreate(partitionDeps, spec, () => ({
       id: cacheKey(root, spec),
-      subscribe: (listener: () => void) => subscribeSpec(spec, listener),
-      getVersion: () => getSpec(spec),
+      subscribe: (listener: Listener) => listen(spec, (entry) => entry.listeners, listener),
+      getVersion: () => valueOf(spec),
+    }));
+  // A unit's id extends its partition's with a separator no part or unit carries, and presence doubles it, so none of
+  // the three can collide with another.
+  const unitDep = (spec: string, unit: string): Dep =>
+    getOrCreate(getOrCreate(unitDeps, spec, () => new Map<string, Dep>()), unit, () => ({
+      id: `${cacheKey(root, spec)}${GROUP_SEP}${unit}`,
+      subscribe: (listener: Listener) => subscribeUnit(spec, unit, listener),
+      getVersion: () => unitValueOf(spec, unit),
+    }));
+  const presenceDep = (spec: string): Dep =>
+    getOrCreate(presenceDeps, spec, () => ({
+      id: `${cacheKey(root, spec)}${GROUP_SEP}${GROUP_SEP}`,
+      subscribe: (listener: Listener) => listen(spec, (entry) => entry.presenceListeners, listener),
+      getVersion: () => presenceOf(spec),
     }));
 
   const get = (parts: readonly string[]): number => {
     const spec = specifier(parts);
-    trackDependency(depFor(spec));
-    return getSpec(spec);
+    trackDependency(partitionDep(spec));
+    return valueOf(spec);
   };
 
-  const bumpSpec = (spec: string): number => {
+  const getUnit = (parts: readonly string[], unit: string): number => {
+    const spec = specifier(parts);
+    trackDependency(unitDep(spec, unit));
+    return unitValueOf(spec, unit);
+  };
+
+  const getPresence = (parts: readonly string[]): number => {
+    const spec = specifier(parts);
+    trackDependency(presenceDep(spec));
+    return presenceOf(spec);
+  };
+
+  /**
+   * Raises the version and wakes exactly the listeners the write concerns: every partition listener, and the listeners
+   * of the units that changed — all of them when the write could not say which. A listener subscribed to several of
+   * the changed units is called once. Synchronous; ingest bumps inside `notifyManager.batch` so re-renders coalesce.
+   */
+  const bumpSpec = (spec: string, changes: ChangeSet): number => {
+    if (isUnchanged(changes)) return valueOf(spec);
     const entry = ensure(spec);
+    const firstWrite = entry.value === 0;
     entry.value += 1;
-    // Synchronous fan-out; ingest bumps inside `notifyManager.batch` so the re-renders coalesce.
-    entry.listeners.forEach((listener) => listener());
+    let effective = changes;
+    if (changes === ALL_UNITS || firstWrite || entry.changedAt.size + changes.size > UNIT_MEMORY) {
+      entry.epoch = entry.value;
+      entry.changedAt.clear();
+      effective = ALL_UNITS;
+    } else {
+      for (const unit of changes) entry.changedAt.set(unit, entry.value);
+    }
+
+    const wake = new Set<Listener>(entry.listeners);
+    if (effective === ALL_UNITS) {
+      entry.presence += 1;
+      for (const listener of entry.presenceListeners) wake.add(listener);
+      for (const set of entry.unitListeners.values()) for (const listener of set) wake.add(listener);
+    } else {
+      for (const unit of effective) {
+        const set = entry.unitListeners.get(unit);
+        if (set) for (const listener of set) wake.add(listener);
+      }
+    }
+    wake.forEach((listener) => listener());
     return entry.value;
   };
-  const bump = (parts: readonly string[]): number => bumpSpec(specifier(parts));
+
+  const bump = (parts: readonly string[], changes: ChangeSet = ALL_UNITS): number => bumpSpec(specifier(parts), changes);
 
   // Snapshotted first: a listener may write, and writing bumps, which mutates the map mid-walk.
-  const bumpAll = (): void => Array.from(entries.keys()).forEach(bumpSpec);
+  const bumpAll = (): void => Array.from(entries.keys()).forEach((spec) => bumpSpec(spec, ALL_UNITS));
 
-  const subscribeSpec = (spec: string, listener: () => void): (() => void) => {
-    const entry = ensure(spec);
-    entry.listeners.add(listener);
-    return () => {
-      entry.listeners.delete(listener);
-      // A written entry must stay: dropping it resets `get` to 0, and a value cached with version 0 reads as current.
-      if (entry.listeners.size === 0 && entry.value === 0 && entries.get(spec) === entry) {
-        entries.delete(spec);
-        // Follows the entry rather than outliving it. A descriptor already handed to a sink keeps working -- it
-        // reads `entries` through `spec` on each call -- and the next read rebuilds an identical one.
-        deps.delete(spec);
-      }
-    };
-  };
-
-  const sumOf = (specs: readonly string[]): number => {
-    let sum = 0;
-    for (const spec of specs) sum += getSpec(spec);
-    return sum;
-  };
+  const subscribe = (parts: readonly string[], listener: Listener): (() => void) =>
+    listen(specifier(parts), (entry) => entry.listeners, listener);
 
   /**
    * The host's read gate, applied to a subscription. While the gate is dead the subscription is dropped and the
    * version is HELD at what it was when the gate closed, so a read keeps showing the value it already had rather
    * than repainting with data nobody is looking at. When the gate goes live the subscription is restored and, only
    * if the version moved meanwhile, one notification is sent so the reader catches up in a single render.
-   *
-   * Holding the VERSION rather than the value is what makes this nearly free: both hooks below feed the version to
-   * `useSyncExternalStore*`, and the selector variant memoizes on that snapshot, so an unchanged version means the
-   * selector never re-runs and the prior value comes back by reference.
-   *
-   * Why the subscription and not the render: a read that returned `empty` while gated would blank the screen, and a
-   * read that re-rendered when the gate moved would wake every screen in the stack on each navigation. Gating here
-   * leaves the gate invisible to the render.
    */
-  function useHeldVersion(specs: readonly string[], activeKey: string, enabled: boolean) {
+  function useHeldVersion(spec: string, enabled: boolean) {
     const gate = readGateRuntime().useReadGate();
     // Non-null exactly while held. Written from the subscription below, never from `getSnapshot`, which stays pure.
     const held = useRef<number | null>(null);
 
-    const subscribe = useCallback(
+    const subscribeHeld = useCallback(
       (onChange: () => void) => {
         if (!enabled) return () => {};
-        let unsubs: (() => void)[] | null = null;
-        const attach = () => {
-          if (!unsubs) unsubs = specs.map((spec) => subscribeSpec(spec, onChange));
-        };
-        const detach = () => {
-          unsubs?.forEach((unsub) => unsub());
-          unsubs = null;
-        };
+        let unsub: (() => void) | null = null;
         const sync = (announce: boolean) => {
           if (gate.isLive()) {
             const wasHeld = held.current;
             held.current = null;
-            attach();
+            if (!unsub) unsub = listen(spec, (entry) => entry.listeners, onChange);
             // Nothing moved while away, so there is nothing to catch up on and no render to spend.
-            if (announce && wasHeld !== null && wasHeld !== sumOf(specs)) onChange();
+            if (announce && wasHeld !== null && wasHeld !== valueOf(spec)) onChange();
           } else {
             // Captured as the gate closes, so a bump arriving later cannot move what a held read shows.
-            held.current = sumOf(specs);
-            detach();
+            held.current = valueOf(spec);
+            unsub?.();
+            unsub = null;
           }
         };
         sync(false);
         const offGate = gate.onChange(() => sync(true));
         return () => {
-          detach();
+          unsub?.();
           offGate();
           held.current = null;
         };
       },
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- activeKey is the stable identity of `specs`
-      [activeKey, enabled, gate],
+      [spec, enabled, gate],
     );
 
-    const getSnapshot = useCallback(
-      () => {
-        if (!enabled) return 0;
-        const version = held.current;
-        return version !== null ? version : sumOf(specs);
-      },
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- activeKey is the stable identity of `specs`; the gate arrives through the ref
-      [activeKey, enabled],
-    );
+    const getSnapshot = useCallback(() => {
+      if (!enabled) return 0;
+      const version = held.current;
+      return version !== null ? version : valueOf(spec);
+    }, [spec, enabled]);
 
-    return { subscribe, getSnapshot };
+    return { subscribe: subscribeHeld, getSnapshot };
   }
 
   const useVersion = (parts: readonly string[], enabled?: boolean): number => {
     const spec = specifier(parts);
     const isEnabled = (enabled ?? true) && addressesPartition(parts);
-    const specs = useMemo(() => [spec], [spec]);
-    const { subscribe, getSnapshot } = useHeldVersion(specs, spec, isEnabled);
-    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+    const { subscribe: subscribeHeld, getSnapshot } = useHeldVersion(spec, isEnabled);
+    return useSyncExternalStore(subscribeHeld, getSnapshot, getSnapshot);
   };
 
-  /** The subscribe-and-select engine behind both hooks. `activeKey` is the stable identity of `specs`. */
-  function useSpecsSelect<T>(
-    specs: readonly string[],
-    activeKey: string,
-    enabled: boolean,
-    deps: DependencyList,
-    compute: () => T,
-    isEqual: (left: T, right: T) => boolean,
-    empty: T,
-  ): T {
-    const { subscribe, getSnapshot: getVersionSnapshot } = useHeldVersion(specs, activeKey, enabled);
-    // `subscribe` above covers whatever `compute` reads, which is what the render-phase guard checks for.
-    const selector = useCallback(
-      () => (enabled ? runSubscribed(compute) : empty),
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- `deps` is the read-arg identity; `compute`/`empty` are stable per call site.
-      [enabled, ...deps],
-    );
-    return useSyncExternalStoreWithSelector(subscribe, getVersionSnapshot, getVersionSnapshot, selector, isEqual);
-  }
-
-  const useSelect = <T>(
-    parts: readonly string[],
-    enabled: boolean,
-    deps: DependencyList,
-    compute: () => T,
-    isEqual: (left: T, right: T) => boolean,
-    empty: T,
-  ): T => {
-    const spec = specifier(parts);
-    const specs = useMemo(() => [spec], [spec]);
-    return useSpecsSelect(specs, spec, enabled, deps, compute, isEqual, empty);
-  };
-
-  const useSelectMany = <T>(
-    partsList: readonly (readonly string[])[],
-    enabled: boolean,
-    deps: DependencyList,
-    compute: () => T,
-    isEqual: (left: T, right: T) => boolean,
-    empty: T,
-  ): T => {
-    const specsKey = partitionsKey(partsList);
-    const specs = useMemo(
-      () => partsList.filter(addressesPartition).map((parts) => specifier(parts)),
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- specsKey is the stable identity of the partition set
-      [specsKey],
-    );
-    return useSpecsSelect(specs, specs.join(GROUP_SEP), enabled, deps, compute, isEqual, empty);
-  };
-
-  const subscribe = (parts: readonly string[], listener: () => void): (() => void) => subscribeSpec(specifier(parts), listener);
-
-  return { key, get, bump, bumpAll, subscribe, useVersion, useSelect, useSelectMany };
+  return { key, get, getUnit, getPresence, bump, bumpAll, subscribe, useVersion };
 }

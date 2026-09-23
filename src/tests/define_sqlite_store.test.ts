@@ -9,6 +9,7 @@ const schema: RowTableSchema<Thing> = {
   table: 'things',
   columns: { id: { type: 'TEXT' } },
   primaryKey: ['id'],
+  unit: 'id',
 };
 
 /** `build` stands in for the in-memory backend, so a test can watch when — and whether — it is constructed. */

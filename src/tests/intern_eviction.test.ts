@@ -17,6 +17,7 @@ const SCHEMA: RowTableSchema<GameRow> = {
   table: 'games',
   columns: { partition_key: { type: 'TEXT' }, game_id: { type: 'TEXT' } },
   primaryKey: ['partition_key', 'game_id'],
+  unit: 'game_id',
   meta: { table: 'games_meta', keyColumns: ['partition_key'], column: 'etag' },
 };
 

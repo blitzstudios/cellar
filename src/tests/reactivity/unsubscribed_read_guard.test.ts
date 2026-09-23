@@ -4,6 +4,7 @@ import TestRenderer, { act } from 'react-test-renderer';
 import { PRIME_IDLE } from '../../prime_state';
 import { createReadSurface } from '../../read/surface';
 import { createVersionAtom } from '../../reactivity/version_atom';
+import { useTrackedValue } from '../../reactivity/tracked_value';
 import { createVersionedCache } from '../../caches';
 import { describeDev } from '../../testing/dev_mode';
 import { renderPhaseOwnerStack } from '../../reactivity/render_phase';
@@ -132,10 +133,10 @@ describeDev('the unsubscribed-read guard', () => {
     expect(guardWarnings()).toEqual([]);
   });
 
-  it('stays quiet for a reactive useValue-style read, which useSelect marks as subscribed for us', () => {
+  it('stays quiet for a reactive read, which useTrackedValue subscribes to whatever it read', () => {
     const atom = createVersionAtom('guard_reactive');
     function ReactiveReader(): null {
-      atom.useSelect<number>(US, true, ['us'], () => atom.get(US), Object.is, 0);
+      useTrackedValue<number>(() => atom.get(US), ['us'], { enabled: true, isEqual: Object.is, empty: 0 });
       return null;
     }
     act(() => {

@@ -12,6 +12,7 @@ const schema: RowTableSchema<Thing> = {
   table: 'things',
   columns: { id: { type: 'TEXT' }, region: { type: 'TEXT' } },
   primaryKey: ['id'],
+  unit: 'id',
 };
 
 function brokenConn(match = /./): SqliteConnection & { attempts: number } {
@@ -282,10 +283,11 @@ describe('a native shred the driver refuses', () => {
     });
     const parseRows = jest.fn(() => [{ id: 'a', region: 'us' }]);
 
-    const count = await table.shred({ region: 'us' }, '[{"id":"a"}]', parseRows);
+    const { changes } = await table.shred({ region: 'us' }, '[{"id":"a"}]', parseRows);
 
     expect(parseRows).toHaveBeenCalled();
-    expect(count).toBe(1);
+    // This fake answers every statement with nothing, so the partition reads as empty and the rows land directly.
+    expect([...(changes as ReadonlySet<string>)]).toEqual(['a']);
     expect(calls.some((sql) => /INSERT/.test(sql) && sql.includes('things'))).toBe(true);
     // The rows landed, so the store keeps the SQLite backend it would otherwise have thrown away for the session.
     expect(onFatal).not.toHaveBeenCalled();

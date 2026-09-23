@@ -1,9 +1,8 @@
 /**
- * Bounded caches for values derived from off-heap rows. A version key answers without a query but misses on every
- * write to the partition; a source key survives that miss and keeps the reference when the rows behind it are
- * unchanged. {@link createVersionedSourceCache} carries both, which is what a value feeding an identity comparison
- * downstream wants. A store reaches these through {@link declareMemos}, which is where it accounts for all of them
- * at once.
+ * Bounded caches for values derived from off-heap rows. A value is held against what it depends on — a partition's
+ * version for one derived from the whole partition, a unit's for one derived from that unit's rows — so a write that
+ * changed nothing it read leaves it in place, and an `isEqual` keeps the reference when a rebuild changed nothing.
+ * A store reaches these through {@link createMemos}, which is where it accounts for all of them at once.
  */
 /** What a declared memo calls itself in a report, and what its keys are built from. */
 export interface MemoDiagnostics {
@@ -38,45 +37,24 @@ export interface VersionedCache<V> {
     /** Stores `value` and returns the reference to use, which `isEqual` may make a prior one. */
     set(key: string, version: number, value: V): V;
 }
-/** Builds one. Stores declare theirs through {@link declareMemos}; the read surface holds its own two directly. */
+/** Builds one. Stores declare theirs through {@link createMemos}; the read surface holds one for presence. */
 export declare function createVersionedCache<V>(maxEntries: number, isEqual?: (prev: V, next: V) => boolean, diagnostics?: MemoDiagnostics): VersionedCache<V>;
 /**
- * A value held against both its partition's version and its own source: the version answers without touching the
- * table at all, and the source keeps the reference when a bump turns out not to have changed these particular rows.
+ * A value held against whatever its computation read, which is how the read surface caches a read's result: the
+ * computation runs in a tracking scope, and the entry stays valid while every version it reported is unchanged. A read
+ * of three players therefore survives a write that changed a fourth. Every lookup reports those same dependencies to
+ * the scope above it, hit or miss, so a caller subscribing to what it read never misses one because it was cached.
  */
-export interface VersionedSourceCache<V> {
-    /** The value held for `key`, if it was stored at `version`; a hit needs no query. */
-    peek(key: string, version: number): {
-        value: V;
-    } | undefined;
-    /**
-     * Whether the entry for `key` was built from this same `source`, ignoring what version it was stored at.
-     *
-     * This is what `put` is about to decide, asked ahead of calling it. A caller that must gather the inputs for
-     * several keys in one query needs to know which of them will actually rebuild *before* it queries, or it ends up
-     * fetching inputs for every key it holds and throwing away all but the few that moved.
-     *
-     * Treat the answer as a prediction, not a guarantee: the entry can still be evicted before `put` reaches it, so a
-     * caller that used this to decide what to fetch must stay correct when a build it did not expect asks for inputs
-     * it did not gather.
-     */
-    holds(key: string, source: unknown): boolean;
-    /** Records the value for `key` at `version`, building it only when `source` differs from the one held. */
-    put(key: string, version: number, source: unknown, build: () => V): V;
+export interface TrackedCache<V> {
+    read(key: string, compute: () => V): V;
 }
-/** `source` is compared with `Object.is`, so it must be a primitive or already reference-stable. */
-export declare function createVersionedSourceCache<V>(maxEntries: number, diagnostics: MemoDiagnostics): VersionedSourceCache<V>;
+/** Builds one. `isEqual` hands back the prior reference when a recompute produced an equal value. */
+export declare function createTrackedCache<V>(maxEntries: number, isEqual?: (prev: V, next: V) => boolean): TrackedCache<V>;
 /**
  * What a memo's key holds beyond the partition: a scalar, or a structured value — a config object, an options subset —
  * which the kernel interns into a short id, so keying by one costs a key the length of an id rather than of its JSON.
  */
 export type MemoPart = string | number | boolean | null | undefined | readonly unknown[] | Record<string, unknown>;
-/**
- * What a source-keyed memo compares to decide whether the rows behind a value changed: one reference-stable value,
- * compared with `Object.is`, or a list of scalars, which the kernel folds into one string so the caller does not pick
- * a separator that a value could itself contain.
- */
-export type MemoSource = object | string | number | boolean | null | undefined | readonly (string | number | null | undefined)[];
 /** One `MemoPart` per name the memo declared in `by`, in that order. */
 type PartsOf<By extends readonly string[]> = {
     -readonly [Index in keyof By]: MemoPart;
@@ -92,37 +70,38 @@ export interface BoundVersionMemo<V, By extends readonly string[]> {
     /** Stores a value and returns the reference to use, which `isEqual` may make a prior one. */
     set(...args: [...PartsOf<By>, value: V]): V;
 }
-/** The same, for a memo that outlives a version bump by comparing what the value was built from. */
-export interface BoundSourceMemo<V, By extends readonly string[]> {
-    peek(...parts: PartsOf<By>): {
-        value: V;
-    } | undefined;
+/**
+ * A memo bound to one partition whose entries each belong to one unit, and stay valid until that unit changes. Every
+ * lookup reports the unit it names, so a read built from these depends on those units and nothing else.
+ */
+export interface BoundUnitMemo<V, By extends readonly string[]> {
+    /** The value held for `unit` and these parts, built on a miss or once the unit has changed. */
+    read(unit: string, ...args: [...PartsOf<By>, build: () => V]): V;
     /**
-     * Whether these parts already hold a value built from this `source`, and so will not rebuild.
-     *
-     * For deciding what to query before querying it. A bump drops every `peek`, so a read that consults this memo once
-     * per item sees every item miss, and without this it must gather inputs for all of them to serve the few whose
-     * source actually moved. See the note on {@link VersionedSourceCache.holds} about treating it as a prediction.
+     * The values for `units`, answering what it holds and building every miss in one call, so a read of a roster costs
+     * one query for the players that changed rather than one each. `build` is handed the units to build and answers for
+     * each; a unit it leaves out is held as absent.
      */
-    holds(...args: [...PartsOf<By>, source: MemoSource]): boolean;
-    /** Records the value for these parts, building it only when `source` differs from the one held. */
-    put(...args: [...PartsOf<By>, source: MemoSource, build: () => V]): V;
+    readMany(units: readonly string[], ...args: [...PartsOf<By>, build: (missing: readonly string[]) => ReadonlyMap<string, V>]): Map<string, V>;
 }
 /** A declared memo, reached by naming the partition it holds values for. */
 export interface Memo<Key, Bound> {
     for(key: Key): Bound;
 }
-/** A memo as declared, before a store's partitions bind it. {@link byVersion} and {@link bySource} are the two. */
+/** A memo as declared, before a store's partitions bind it. {@link byVersion} and {@link byUnit} are the two. */
 interface MemoDecl<Bound> {
     by: readonly string[];
     bind(store: PartitionBinding<unknown>, diagnostics: MemoDiagnostics): Memo<unknown, Bound>;
 }
-/** What a `memos` block's entries are, whatever they hold: what {@link byVersion} and {@link bySource} return. */
+/** What a `memos` block's entries are, whatever they hold: what {@link byVersion} and {@link byUnit} return. */
 export type MemoDeclaration = MemoDecl<unknown>;
 /** What a store's partitions lend their memos: how a key addresses a partition, and what version it holds. */
 export interface PartitionBinding<Key> {
     parts: (key: Key) => readonly string[];
+    /** The partition's version. Tracks the partition. */
     version: (key: Key) => number;
+    /** The version one unit last changed at. Tracks that unit alone. */
+    unitVersion: (key: Key, unit: string) => number;
 }
 /**
  * A memo dropped by every write to its partition. Reach for it when several reads derive the same value from a
@@ -136,15 +115,18 @@ export declare function byVersion<V>(): <const By extends readonly string[] = re
     isEqual?: (prev: V, next: V) => boolean;
 }) => MemoDecl<BoundVersionMemo<V, By>>;
 /**
- * A memo that outlives the write a version-keyed one is dropped by, because it compares the rows behind the value.
- * Reach for it when the value feeds an identity comparison downstream and a bump elsewhere in the partition should
- * not repaint its readers.
+ * A memo whose entries each belong to one unit — a player, a team — and survive every write that did not change that
+ * unit. Reach for it for a value built from one unit's rows: a write that changed other units leaves the entry and its
+ * reference alone, and a read built from it depends on the units it names and nothing else.
+ *
+ * A build's table reads are covered by the unit it reports, so they do not widen the read around it to the partition.
  */
-export declare function bySource<V>(): <const By extends readonly string[] = readonly []>(spec: {
+export declare function byUnit<V>(): <const By extends readonly string[] = readonly []>(spec: {
     max: number;
-    /** What the key holds beyond the partition, in order. A memo keyed by the partition alone names nothing. */
+    /** What the key holds beyond the partition and the unit, in order. */
     by?: By;
-}) => MemoDecl<BoundSourceMemo<V, By>>;
+    isEqual?: (prev: V, next: V) => boolean;
+}) => MemoDecl<BoundUnitMemo<V, By>>;
 /** What {@link createMemos} hands back: each declaration, bound to the store whose partitions it holds values for. */
 export type BoundMemos<Key, D> = {
     [K in keyof D]: D[K] extends MemoDecl<infer Bound> ? Memo<Key, Bound> : never;

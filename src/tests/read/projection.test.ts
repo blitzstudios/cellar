@@ -2,6 +2,7 @@ import { definePartitions } from '../../define_partitions';
 import { createMemoryRowTable } from '../../table/memory';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { createVersionAtom } from '../../reactivity/version_atom';
+import { runTracked } from '../../reactivity/tracking';
 import { RowTable, RowTableSchema } from '../../table/types';
 import { createSqlJsConnection, initSqlJs } from '../../testing/sqljs_connection';
 import { installTestRuntime } from '../../testing/runtime';
@@ -13,6 +14,7 @@ installTestRuntime();
 type PlayerRow = { sport: string; player_id: string; name: string; team: string | null; rank: number | null };
 type PlayerKey = { sport: string };
 
+/** One row per player: the primary key less the partition is exactly the unit. */
 const SCHEMA: RowTableSchema<PlayerRow> = {
   table: 'players',
   columns: {
@@ -23,6 +25,7 @@ const SCHEMA: RowTableSchema<PlayerRow> = {
     rank: { type: 'INTEGER' },
   },
   primaryKey: ['sport', 'player_id'],
+  unit: 'player_id',
 };
 
 const NFL: PlayerKey = { sport: 'nfl' };
@@ -34,15 +37,7 @@ function player(id: string, name: string, team: string | null = 'NE', rank: numb
 /** The view model a projection builds, deliberately carrying only part of the row so a change outside it still counts. */
 type NameVm = { id: string; label: string };
 
-function harness(
-  over: {
-    table?: RowTable<PlayerRow>;
-    max?: number;
-    by?: keyof PlayerRow & string;
-    where?: () => Partial<PlayerRow>;
-    of?: (row: PlayerRow) => NameVm | undefined;
-  } = {},
-) {
+function harness(over: { table?: RowTable<PlayerRow>; max?: number; of?: (rows: readonly PlayerRow[]) => NameVm | undefined } = {}) {
   const table = over.table ?? createMemoryRowTable(SCHEMA);
   table.init();
   const version = createVersionAtom('projection_test');
@@ -51,23 +46,26 @@ function harness(
     name: 'player',
     table,
     version,
-    key: { fields: ['sport'], where: over.where ?? (({ sport }) => ({ sport })) },
+    key: { fields: ['sport'], where: ({ sport }) => ({ sport }) },
     fetch: { query: () => ({ queryFn: async () => ({ data: '[]' }) }), parse: () => [] },
   });
 
-  const of = jest.fn(over.of ?? ((row: PlayerRow): NameVm | undefined => ({ id: row.player_id, label: row.name })));
-  const projection = players.project<NameVm>()({ name: 'name', max: over.max ?? 64, by: over.by, of });
+  const of = jest.fn(over.of ?? (([row]: readonly PlayerRow[]): NameVm | undefined => ({ id: row.player_id, label: row.name })));
+  const projection = players.project<NameVm>()({ name: 'name', max: over.max ?? 64, of });
 
+  /** Writes the partition the way an ingest does: the table says what changed, and the bump carries it. */
   const seed = (rows: readonly PlayerRow[]): void => {
-    table.overwrite({ sport: 'nfl' }, rows as PlayerRow[]);
-    players.bump(NFL);
+    const { changes } = table.overwrite({ sport: 'nfl' }, rows as PlayerRow[]);
+    players.bump(NFL, changes);
   };
 
   return { players, table, projection, of, seed };
 }
 
-describe('row projection — a bump rebuilds only the rows that moved', () => {
-  it('builds one view model per row, and answers a repeat at the same version without rebuilding', () => {
+const idsOf = (deps: readonly { id: string }[]): string[] => deps.map((dep) => dep.id);
+
+describe('row projection — a write rebuilds only the units it changed', () => {
+  it('builds one view model per unit, and answers a repeat without rebuilding', () => {
     const { projection, of, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
@@ -81,81 +79,110 @@ describe('row projection — a bump rebuilds only the rows that moved', () => {
     expect(of).toHaveBeenCalledTimes(2);
   });
 
-  it('rebuilds nothing across a bump that changed no row, which is the case a version alone cannot tell apart', () => {
+  it('rebuilds nothing for a write that changed nothing, which bumps nothing at all', () => {
     const { projection, of, players, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
     const before = projection.byIds(NFL, ['p1', 'p2']);
+    const version = players.versionOf(NFL);
     of.mockClear();
 
-    players.bump(NFL);
+    seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
-    const after = projection.byIds(NFL, ['p1', 'p2']);
+    expect(players.versionOf(NFL)).toBe(version);
+    expect(projection.byIds(NFL, ['p1', 'p2'])).toEqual(before);
     expect(of).not.toHaveBeenCalled();
-    expect(after[0]).toBe(before[0]);
-    expect(after[1]).toBe(before[1]);
   });
 
-  it('rebuilds the one row that moved and holds the reference of every row that did not', () => {
+  it('rebuilds the one unit that moved and holds the reference of every unit that did not', () => {
     const { projection, of, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob'), player('p3', 'Cara')]);
     const before = projection.byIds(NFL, ['p1', 'p2', 'p3']);
     of.mockClear();
 
-    seed([player('p1', 'Alice'), player('p2', 'Bobby'), player('p3', 'Cara')]);
-
+    seed([player('p1', 'Alice'), player('p2', 'Robert'), player('p3', 'Cara')]);
     const after = projection.byIds(NFL, ['p1', 'p2', 'p3']);
-    expect(of).toHaveBeenCalledTimes(1);
+
     expect(after[0]).toBe(before[0]);
     expect(after[2]).toBe(before[2]);
     expect(after[1]).not.toBe(before[1]);
-    expect(after[1].label).toBe('Bobby');
-  });
-
-  it('counts a change the view model does not even show, since a stale digest is the worse failure', () => {
-    const { projection, of, seed } = harness();
-    seed([player('p1', 'Alice', 'NE', 1)]);
-    projection.byIds(NFL, ['p1']);
-    of.mockClear();
-
-    seed([player('p1', 'Alice', 'KC', 1)]);
-
-    projection.byIds(NFL, ['p1']);
+    expect(after[1].label).toBe('Robert');
     expect(of).toHaveBeenCalledTimes(1);
   });
 
-  it('shares one memo across every read of the shape, so a row asked for two ways is built once', () => {
+  it('counts a change the view model does not show, since the write, not the view model, decides what changed', () => {
+    const { projection, of, seed } = harness();
+    seed([player('p1', 'Alice', 'NE', 1)]);
+    projection.one(NFL, 'p1');
+    of.mockClear();
+
+    seed([player('p1', 'Alice', 'NE', 2)]);
+    projection.one(NFL, 'p1');
+
+    expect(of).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one memo across every read of the shape, so a unit asked for three ways is built once', () => {
     const { projection, of, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
-    projection.one(NFL, 'p1');
-    expect(of).toHaveBeenCalledTimes(1);
+    const viaOne = projection.one(NFL, 'p1');
+    const viaIds = projection.byIds(NFL, ['p1'])[0];
+    const viaTeam = projection.where(NFL, { team: 'NE' }).find((vm) => vm.id === 'p1');
 
-    const all = projection.all(NFL);
-    expect(of).toHaveBeenCalledTimes(2);
-    expect(all.find((vm) => vm.id === 'p1')).toBe(projection.one(NFL, 'p1'));
+    expect(viaIds).toBe(viaOne);
+    expect(viaTeam).toBe(viaOne);
     expect(of).toHaveBeenCalledTimes(2);
   });
 });
 
+describe('row projection — what a read depends on', () => {
+  it('a read of named units depends on those units and not the partition, so a write to another leaves it asleep', () => {
+    const { projection, players, seed } = harness();
+    seed([player('p1', 'Alice'), player('p2', 'Bob')]);
+
+    const { deps } = runTracked(() => projection.byIds(NFL, ['p1']));
+    expect(idsOf(deps)).toEqual([expect.stringMatching(/\u0001p1$/)]);
+
+    const [dep] = deps;
+    const listener = jest.fn();
+    dep.subscribe(listener);
+    seed([player('p1', 'Alice'), player('p2', 'Robert')]);
+    expect(listener).not.toHaveBeenCalled();
+    seed([player('p1', 'Alicia'), player('p2', 'Robert')]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(players.versionOf(NFL)).toBeGreaterThan(0);
+  });
+
+  it('a read over a filter depends on the partition, since which units match can move with any write', () => {
+    const { projection, seed } = harness();
+    seed([player('p1', 'Alice')]);
+
+    const { deps } = runTracked(() => projection.where(NFL, { team: 'NE' }));
+
+    expect(idsOf(deps)).toContainEqual('projection_test\u0000nfl');
+  });
+});
+
 describe('row projection — what it hands back', () => {
-  it('orders by the ids asked for, not by storage order, and drops an id with no row', () => {
+  it('orders by the ids asked for, not by storage order, and drops an id with no rows', () => {
     const { projection, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
     expect(projection.byIds(NFL, ['p2', 'missing', 'p1']).map((vm) => vm.id)).toEqual(['p2', 'p1']);
   });
 
-  it('remembers that a row is absent, so a bump does not send it asking again', () => {
-    const { projection, of, players, seed } = harness();
+  it('remembers that a unit is absent, so a write to another unit does not send it asking again', () => {
+    const { projection, table, seed } = harness();
     seed([player('p1', 'Alice')]);
+    projection.byIds(NFL, ['missing']);
+    const findIn = jest.spyOn(table, 'findIn');
 
-    expect(projection.one(NFL, 'missing')).toBeUndefined();
-    of.mockClear();
-    players.bump(NFL);
-    expect(projection.one(NFL, 'missing')).toBeUndefined();
-    expect(of).not.toHaveBeenCalled();
+    seed([player('p1', 'Alicia')]);
+    projection.byIds(NFL, ['missing']);
+
+    expect(findIn).not.toHaveBeenCalled();
   });
 
-  it('notices a row that arrives where there was none', () => {
+  it('notices a unit that arrives where there was none', () => {
     const { projection, seed } = harness();
     seed([player('p1', 'Alice')]);
     expect(projection.one(NFL, 'p2')).toBeUndefined();
@@ -164,92 +191,107 @@ describe('row projection — what it hands back', () => {
     expect(projection.one(NFL, 'p2')?.label).toBe('Bob');
   });
 
-  it('keys by id when asked for a map, and leaves out what it has no row for', () => {
+  it('keys by id when asked for a map, and leaves out what it has no rows for', () => {
     const { projection, seed } = harness();
-    seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    expect(projection.mapByIds(NFL, ['p1', 'missing'])).toEqual({ p1: { id: 'p1', label: 'Alice' } });
+    seed([player('p1', 'Alice')]);
+    expect(Object.keys(projection.mapByIds(NFL, ['p1', 'missing']))).toEqual(['p1']);
   });
 
-  it('narrows to a filter within the partition, and reflects a row leaving that filter', () => {
+  it('narrows to a filter within the partition, and reflects a unit leaving that filter', () => {
     const { projection, seed } = harness();
     seed([player('p1', 'Alice', 'NE'), player('p2', 'Bob', 'KC')]);
     expect(projection.where(NFL, { team: 'NE' }).map((vm) => vm.id)).toEqual(['p1']);
 
     seed([player('p1', 'Alice', 'KC'), player('p2', 'Bob', 'KC')]);
     expect(projection.where(NFL, { team: 'NE' })).toEqual([]);
-    expect(projection.where(NFL, { team: 'KC' }).map((vm) => vm.id).sort()).toEqual(['p1', 'p2']);
+    expect(projection.all(NFL).map((vm) => vm.id).sort()).toEqual(['p1', 'p2']);
   });
 
   it('answers an empty ask without touching the rows', () => {
-    const { projection, of, seed } = harness();
+    const { projection, table, seed } = harness();
     seed([player('p1', 'Alice')]);
+    const findIn = jest.spyOn(table, 'findIn');
+
     expect(projection.byIds(NFL, [])).toEqual([]);
     expect(projection.mapByIds(NFL, [])).toEqual({});
-    expect(of).not.toHaveBeenCalled();
+    expect(findIn).not.toHaveBeenCalled();
   });
 
-  it('keeps a row out of the view models where the store says it makes none', () => {
-    const { projection, of, players, seed } = harness({
-      of: (row) => (row.name === 'skip' ? undefined : { id: row.player_id, label: row.name }),
-    });
-    seed([player('p1', 'Alice'), player('p2', 'skip')]);
+  it('keeps a unit out of the view models where the store says it makes none', () => {
+    const { projection, seed } = harness({ of: ([row]) => (row.team ? { id: row.player_id, label: row.name } : undefined) });
+    seed([player('p1', 'Alice', null), player('p2', 'Bob', 'NE')]);
 
-    expect(projection.all(NFL).map((vm) => vm.id)).toEqual(['p1']);
-    expect(projection.byIds(NFL, ['p1', 'p2']).map((vm) => vm.id)).toEqual(['p1']);
-    expect(projection.one(NFL, 'p2')).toBeUndefined();
+    expect(projection.byIds(NFL, ['p1', 'p2']).map((vm) => vm.id)).toEqual(['p2']);
+    expect(projection.all(NFL).map((vm) => vm.id)).toEqual(['p2']);
+  });
+});
 
-    // Held like any other answer, so the row it declined is not rebuilt on the next bump either.
-    of.mockClear();
-    players.bump(NFL);
-    expect(projection.one(NFL, 'p2')).toBeUndefined();
-    expect(of).not.toHaveBeenCalled();
+describe('row projection — a unit of several rows', () => {
+  type GameRow = { week: string; game_id: string; player_id: string; team: string; pts: number };
+  const GAMES: RowTableSchema<GameRow> = {
+    table: 'games',
+    columns: { week: { type: 'TEXT' }, game_id: { type: 'TEXT' }, player_id: { type: 'TEXT' }, team: { type: 'TEXT' }, pts: { type: 'REAL' } },
+    primaryKey: ['week', 'game_id', 'player_id'],
+    unit: 'player_id',
+  };
+  type TotalVm = { id: string; games: number; pts: number };
+
+  function games() {
+    const table = createMemoryRowTable(GAMES);
+    const version = createVersionAtom('projection_games_test');
+    const weeks = definePartitions<GameRow, string>({ name: 'games', table, version, key: { where: (week) => ({ week }) } });
+    const of = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));
+    const totals = weeks.project<TotalVm>()({ name: 'totals', max: 64, of });
+    const seed = (rows: GameRow[]) => weeks.bump('w1', table.overwrite({ week: 'w1' }, rows).changes);
+    return { totals, of, seed };
+  }
+  const game = (id: string, playerId: string, team: string, pts: number): GameRow => ({ week: 'w1', game_id: id, player_id: playerId, team, pts });
+
+  it('hands a unit every one of its rows', () => {
+    const { totals, seed } = games();
+    seed([game('g1', 'p1', 'LAL', 10), game('g2', 'p1', 'LAL', 20), game('g1', 'p2', 'BOS', 5)]);
+
+    expect(totals.byIds('w1', ['p1', 'p2'])).toEqual([
+      { id: 'p1', games: 2, pts: 30 },
+      { id: 'p2', games: 1, pts: 5 },
+    ]);
+  });
+
+  it('builds a filtered read from the rows the filter holds, apart from the unit whole, since they differ', () => {
+    const { totals, seed } = games();
+    // Traded mid-week: one game for each team.
+    seed([game('g1', 'p1', 'BOS', 10), game('g2', 'p1', 'LAL', 20)]);
+
+    const whole = totals.one('w1', 'p1');
+    const forLakers = totals.where('w1', { team: 'LAL' })[0];
+
+    expect(whole).toEqual({ id: 'p1', games: 2, pts: 30 });
+    expect(forLakers).toEqual({ id: 'p1', games: 1, pts: 20 });
+    expect(totals.one('w1', 'p1')).toBe(whole);
   });
 });
 
 describe('row projection — the memo bound is a bound, not a promise', () => {
   it('stays correct when the ask exceeds what it holds, even though the references cannot survive', () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const { projection, seed } = harness({ max: 2 });
-    seed([player('p1', 'Alice'), player('p2', 'Bob'), player('p3', 'Cara'), player('p4', 'Dee')]);
+    const rows = [player('p1', 'A'), player('p2', 'B'), player('p3', 'C'), player('p4', 'D')];
+    seed(rows);
+    const ids = rows.map((row) => row.player_id);
 
-    const labels = projection.byIds(NFL, ['p1', 'p2', 'p3', 'p4']).map((vm) => vm.label);
-    expect(labels).toEqual(['Alice', 'Bob', 'Cara', 'Dee']);
-    expect(projection.byIds(NFL, ['p1', 'p2', 'p3', 'p4']).map((vm) => vm.label)).toEqual(labels);
-    warn.mockRestore();
+    expect(projection.byIds(NFL, ids).map((vm) => vm.label)).toEqual(['A', 'B', 'C', 'D']);
+    expect(projection.byIds(NFL, ids).map((vm) => vm.label)).toEqual(['A', 'B', 'C', 'D']);
   });
 
-  itDev('warns once when a read cannot possibly fit, since that rebuilds everything on every bump', () => {
+  itDev('says so in dev, naming the projection and the bound to raise', () => {
     resetOnceGuards();
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { projection, seed } = harness({ max: 2 });
-    seed([player('p1', 'Alice'), player('p2', 'Bob'), player('p3', 'Cara')]);
+    seed([player('p1', 'A'), player('p2', 'B'), player('p3', 'C')]);
 
-    projection.all(NFL);
-    projection.all(NFL);
+    projection.byIds(NFL, ['p1', 'p2', 'p3']);
 
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain("the 'name' projection was asked for 3 rows but holds 2");
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' projection was asked for 3 units but holds 2/);
     warn.mockRestore();
-  });
-});
-
-describe('row projection — what identifies a row', () => {
-  it('derives it from the primary key, less what the partition already fixes', () => {
-    const { projection, seed } = harness();
-    seed([player('p1', 'Alice')]);
-    expect(projection.one(NFL, 'p1')?.label).toBe('Alice');
-  });
-
-  it('says what to do when the primary key does not narrow to one column', () => {
-    const { projection, seed } = harness({ where: () => ({}) });
-    seed([player('p1', 'Alice')]);
-    expect(() => projection.one(NFL, 'p1')).toThrow(/cannot tell what identifies a row.*sport, player_id.*Name it with `by`/s);
-  });
-
-  it('takes the column named instead, which is the way out of that', () => {
-    const { projection, seed } = harness({ where: () => ({}), by: 'player_id' });
-    seed([player('p1', 'Alice')]);
-    expect(projection.one(NFL, 'p1')?.label).toBe('Alice');
   });
 });
 
@@ -258,32 +300,29 @@ describe('row projection — over real SQLite', () => {
     await initSqlJs();
   });
 
-  it('revalidates the same way the Map backend does, which is what the digests are for', () => {
-    const conn = createSqlJsConnection({ capabilities: 'full' });
-    const { projection, of, seed } = harness({ table: createSqliteRowTable(SCHEMA, conn) });
+  const onSqlite = () => harness({ table: createSqliteRowTable(SCHEMA, createSqlJsConnection({ capabilities: 'full' })) });
+
+  it('rebuilds exactly as the Map backend does', () => {
+    const { projection, seed } = onSqlite();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
     const before = projection.byIds(NFL, ['p1', 'p2']);
-    of.mockClear();
 
-    seed([player('p1', 'Alice'), player('p2', 'Bobby')]);
-
+    seed([player('p1', 'Alice'), player('p2', 'Robert')]);
     const after = projection.byIds(NFL, ['p1', 'p2']);
-    expect(of).toHaveBeenCalledTimes(1);
+
     expect(after[0]).toBe(before[0]);
-    expect(after[1].label).toBe('Bobby');
+    expect(after[1].label).toBe('Robert');
   });
 
-  it('reads only the rows that moved, so an unchanged partition costs one digest query', () => {
-    const conn = createSqlJsConnection({ capabilities: 'full' });
-    const { projection, players, seed } = harness({ table: createSqliteRowTable(SCHEMA, conn) });
-    seed([player('p1', 'Alice'), player('p2', 'Bob'), player('p3', 'Cara')]);
-    projection.byIds(NFL, ['p1', 'p2', 'p3']);
+  it('reads no rows at all for a partition whose write changed nothing', () => {
+    const { projection, table, seed } = onSqlite();
+    seed([player('p1', 'Alice'), player('p2', 'Bob')]);
+    projection.byIds(NFL, ['p1', 'p2']);
+    const findIn = jest.spyOn(table, 'findIn');
 
-    players.bump(NFL);
-    conn.executed.length = 0;
-    projection.byIds(NFL, ['p1', 'p2', 'p3']);
+    seed([player('p1', 'Alice'), player('p2', 'Bob')]);
+    projection.byIds(NFL, ['p1', 'p2']);
 
-    expect(conn.executed.filter((sql) => sql.includes('SELECT *'))).toEqual([]);
-    expect(conn.executed).toHaveLength(1);
+    expect(findIn).not.toHaveBeenCalled();
   });
 });

@@ -1,11 +1,10 @@
 import {
-  VersionedSourceCache,
+  byUnit,
   byVersion,
-  bySource,
   createBoundedLru,
   createMemos,
+  createTrackedCache,
   createVersionedCache,
-  createVersionedSourceCache,
   PartitionBinding,
   shallowEqualArray,
   shallowEqualRecord,
@@ -16,11 +15,13 @@ import { itDev, itProd } from '../testing/dev_mode';
 import { makeResult } from '../store_result';
 import { BatchCommand, readRows, runBatch, runBatchAsync, SqliteConnection } from '../table/connection';
 import { resetOnceGuards } from '../diagnostics/once_guard';
+import { createVersionAtom } from '../reactivity/version_atom';
+import { runTracked } from '../reactivity/tracking';
 
 const memoName = (name: string) => ({ name, keyedBy: 'a test key' });
 
 /** A store of one partition at one version, which is all a memo needs to bind to. */
-const onePartition: PartitionBinding<string> = { parts: (key) => [key], version: () => 1 };
+const onePartition: PartitionBinding<string> = { parts: (key) => [key], version: () => 1, unitVersion: () => 1 };
 
 describe('store_result', () => {
   it('derives the DataResult envelope from status, defaulting refetch/isFetching', () => {
@@ -210,187 +211,113 @@ describe('createBoundedLru', () => {
   });
 });
 
-describe('createVersionedSourceCache', () => {
-  it('answers from the version alone, so a repeat read at one version needs no rows to compare against', () => {
-    const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-    const built = cache.put('row', 1, 'a', () => ({ n: 1 }));
-
-    expect(cache.peek('row', 1)?.value).toBe(built);
-  });
-
-  it('reports a miss once the version moves, which is what sends the caller back to the table', () => {
-    const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-    cache.put('row', 1, 'a', () => ({ n: 1 }));
-
-    expect(cache.peek('row', 2)).toBeUndefined();
-  });
-
-  it('keeps the reference across a bump whose rows turn out unchanged, so nothing downstream repaints', () => {
-    const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-    const build = jest.fn(() => ({ n: 1 }));
-    const first = cache.put('row', 1, 'a', build);
-
-    const second = cache.put('row', 2, 'a', build);
-
-    expect(second).toBe(first);
-    expect(build).toHaveBeenCalledTimes(1);
-    // The entry moved to the new version, so the next read at it is a peek hit rather than another query.
-    expect(cache.peek('row', 2)?.value).toBe(first);
-  });
-
-  it('rebuilds when the bump did change the rows', () => {
-    const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-    const first = cache.put('row', 1, 'a', () => ({ n: 1 }));
-
-    const second = cache.put('row', 2, 'b', () => ({ n: 2 }));
-
-    expect(second).not.toBe(first);
-    expect(second.n).toBe(2);
-  });
-
-  describe('holds', () => {
-    /**
-     * `holds` exists so a caller gathering inputs for many keys in one query can find out which of them will
-     * rebuild before it queries. Without it a bump drops every `peek`, so the caller fetches inputs for every key
-     * it holds to serve the handful whose source moved.
-     */
-    it('answers for the source alone, so a bump does not make an unchanged key look like it needs rebuilding', () => {
-      const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-      cache.put('row', 1, 'a', () => ({ n: 1 }));
-
-      // The version has moved on, which is exactly when `peek` stops answering.
-      expect(cache.peek('row', 2)).toBeUndefined();
-      expect(cache.holds('row', 'a')).toBe(true);
-      expect(cache.holds('row', 'b')).toBe(false);
-    });
-
-    it('is false for a key it never held, which is the caller\'s cue to gather its inputs', () => {
-      const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-
-      expect(cache.holds('never-seen', 'a')).toBe(false);
-    });
-
-    it('agrees with what put then does, which is the only reason it is worth asking', () => {
-      const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-      cache.put('row', 1, 'a', () => ({ n: 1 }));
-      const build = jest.fn(() => ({ n: 2 }));
-
-      expect(cache.holds('row', 'a')).toBe(true);
-      cache.put('row', 2, 'a', build);
-      expect(build).not.toHaveBeenCalled();
-
-      expect(cache.holds('row', 'c')).toBe(false);
-      cache.put('row', 2, 'c', build);
-      expect(build).toHaveBeenCalledTimes(1);
-    });
-
-    it('is false once the entry has been evicted, so the prediction degrades toward doing the work', () => {
-      // A caller that trusted a stale `true` would skip gathering inputs it turns out to need, so the failure has
-      // to fall the safe way.
-      const cache = createVersionedSourceCache<{ n: number }>(2, memoName('test.both'));
-      cache.put('a', 1, 's', () => ({ n: 1 }));
-      cache.put('b', 1, 's', () => ({ n: 2 }));
-      cache.put('c', 1, 's', () => ({ n: 3 }));
-
-      expect(cache.holds('a', 's')).toBe(false);
-      expect(cache.holds('c', 's')).toBe(true);
-    });
-  });
-
-  it('caches a built undefined, which is what a nullable point read stores for a item with no rows', () => {
-    const cache = createVersionedSourceCache<{ n: number } | undefined>(16, memoName('test.both'));
-    const build = jest.fn(() => undefined);
-
-    cache.put('row', 1, '', build);
-
-    expect(cache.peek('row', 1)).toEqual({ version: 1, source: '', value: undefined });
-    expect(build).toHaveBeenCalledTimes(1);
-  });
-
-  it('keys per entry, so one row changing leaves its neighbour reference-stable', () => {
-    const cache = createVersionedSourceCache<{ n: number }>(16, memoName('test.both'));
-    const entryA = cache.put('a', 1, 'a1', () => ({ n: 1 }));
-    const entryB = cache.put('b', 1, 'b1', () => ({ n: 2 }));
-
-    cache.put('a', 2, 'a2', () => ({ n: 3 }));
-
-    expect(cache.put('b', 2, 'b1', () => ({ n: 2 }))).toBe(entryB);
-    expect(cache.put('a', 2, 'a2', () => ({ n: 3 }))).not.toBe(entryA);
-  });
-
-  it('evicts the least-recently-used entry past maxEntries', () => {
-    const cache = createVersionedSourceCache<{ n: number }>(2, memoName('test.both'));
-    const entryA = cache.put('a', 1, 's', () => ({ n: 1 }));
-    cache.put('b', 1, 's', () => ({ n: 2 }));
-    cache.put('a', 1, 's', () => ({ n: 1 })); // touch 'a' so 'b' is the LRU
-    cache.put('c', 1, 's', () => ({ n: 3 }));
-
-    expect(cache.peek('a', 1)?.value).toBe(entryA);
-    expect(cache.peek('b', 1)).toBeUndefined();
-  });
-
-  describe('reporting on itself', () => {
-    let warnings: string[];
-
-    beforeEach(() => {
-      resetOnceGuards();
-      warnings = [];
-      jest.spyOn(console, 'warn').mockImplementation((message) => warnings.push(String(message)));
-    });
-    afterEach(() => jest.restoreAllMocks());
-
-    const of = (report: string) => warnings.filter((warning) => warning.includes(report));
-
-    /** Cycles `keys` distinct entries through a cache too small to hold them, `rounds` times over. */
-    const thrash = (cache: VersionedSourceCache<{ n: number }>, keys: number, rounds: number) => {
-      for (let round = 0; round < rounds; round += 1) {
-        for (let key = 0; key < keys; key += 1) cache.put(`k${key}`, 1, 's', () => ({ n: key }));
-      }
+describe('createTrackedCache', () => {
+  it('holds a value while nothing its computation read has changed, and recomputes once something has', () => {
+    const atom = createVersionAtom('tracked_cache_test');
+    // A partition's first write counts as every unit changed, so the partition starts written.
+    atom.bump(['us']);
+    const cache = createTrackedCache<number>(8);
+    let computed = 0;
+    const compute = () => {
+      computed += 1;
+      atom.getUnit(['us'], 'p1');
+      return computed;
     };
 
-    it('stays quiet about its size while it only rotates through keys that never come back', () => {
-      const cache = createVersionedSourceCache<{ n: number }>(8, memoName('test.rotating'));
+    expect(cache.read('k', compute)).toBe(1);
+    expect(cache.read('k', compute)).toBe(1);
+    atom.bump(['us'], new Set(['p2']));
+    expect(cache.read('k', compute)).toBe(1);
+    atom.bump(['us'], new Set(['p1']));
+    expect(cache.read('k', compute)).toBe(2);
+  });
 
-      for (let key = 0; key < 4000; key += 1) cache.put(`k${key}`, 1, 's', () => ({ n: key }));
+  it('reports what the value depends on to the scope above it, on a hit as much as on a miss', () => {
+    const atom = createVersionAtom('tracked_cache_test');
+    const cache = createTrackedCache<number>(8);
+    const compute = () => atom.getUnit(['us'], 'p1');
 
-      expect(of('undersized')).toEqual([]);
-    });
+    const miss = runTracked(() => cache.read('k', compute)).deps.map((dep) => dep.id);
+    const hit = runTracked(() => cache.read('k', compute)).deps.map((dep) => dep.id);
 
-    itDev('reports one too small for the keys it keeps being asked for again', () => {
-      const cache = createVersionedSourceCache<{ n: number }>(8, memoName('test.undersized'));
+    expect(miss).toHaveLength(1);
+    expect(hit).toEqual(miss);
+  });
 
-      thrash(cache, 16, 40);
+  it('keeps the prior reference when a recompute turned out equal', () => {
+    const atom = createVersionAtom('tracked_cache_test');
+    const cache = createTrackedCache<{ n: number }>(8, (left, right) => left.n === right.n);
+    const compute = () => {
+      atom.get(['us']);
+      return { n: 1 };
+    };
 
-      expect(of('memo.undersized.test.undersized')).toHaveLength(1);
-    });
+    const first = cache.read('k', compute);
+    atom.bump(['us']);
+    expect(cache.read('k', compute)).toBe(first);
+  });
+});
 
-    itDev('reports one that has never once answered from its entry', () => {
-      const { deadWeight } = createMemos('test', onePartition, { deadWeight: byVersion<number>()({ max: 4096, by: ['item'] }) });
+describe('a memo reporting on itself', () => {
+  let warnings: string[];
 
-      for (let key = 0; key < 512; key += 1) deadWeight.for('us').read(`k${key}`, () => key);
+  beforeEach(() => {
+    resetOnceGuards();
+    warnings = [];
+    jest.spyOn(console, 'warn').mockImplementation((message) => warnings.push(String(message)));
+  });
+  afterEach(() => jest.restoreAllMocks());
 
-      expect(warnings).toEqual([expect.stringContaining('memo.never_hit.test.deadWeight')]);
-      // The report names the key the way the block declared it, so a reader can find the memo it is about.
-      expect(warnings[0]).toContain('partition + item');
-    });
+  const of = (report: string) => warnings.filter((warning) => warning.includes(report));
 
-    itDev('says nothing about one whose keys come back', () => {
-      const { earning } = createMemos('test', onePartition, { earning: bySource<number>()({ max: 4096 }) });
+  it('stays quiet about its size while it only rotates through keys that never come back', () => {
+    const { rotating } = createMemos('test', onePartition, { rotating: byUnit<{ n: number }>()({ max: 8 }) });
 
-      for (let key = 0; key < 4000; key += 1) earning.for('us').put('s', () => key);
+    for (let key = 0; key < 4000; key += 1) rotating.for('us').read(`k${key}`, () => ({ n: key }));
 
-      expect(warnings).toEqual([]);
-    });
+    expect(of('undersized')).toEqual([]);
+  });
+
+  itDev('reports one too small for the keys it keeps being asked for again', () => {
+    const { undersized } = createMemos('test', onePartition, { undersized: byUnit<{ n: number }>()({ max: 8 }) });
+
+    for (let round = 0; round < 40; round += 1) {
+      for (let key = 0; key < 16; key += 1) undersized.for('us').read(`k${key}`, () => ({ n: key }));
+    }
+
+    expect(of('memo.undersized.test.undersized')).toHaveLength(1);
+  });
+
+  itDev('reports one that has never once answered from its entry', () => {
+    const { deadWeight } = createMemos('test', onePartition, { deadWeight: byVersion<number>()({ max: 4096, by: ['item'] }) });
+
+    for (let key = 0; key < 512; key += 1) deadWeight.for('us').read(`k${key}`, () => key);
+
+    expect(warnings).toEqual([expect.stringContaining('memo.never_hit.test.deadWeight')]);
+    // The report names the key the way the block declared it, so a reader can find the memo it is about.
+    expect(warnings[0]).toContain('partition + item');
+  });
+
+  itDev('says nothing about one whose keys come back', () => {
+    const { earning } = createMemos('test', onePartition, { earning: byUnit<number>()({ max: 4096 }) });
+
+    for (let key = 0; key < 4000; key += 1) earning.for('us').read('p1', () => key);
+
+    expect(warnings).toEqual([]);
   });
 });
 
 describe('a memo bound to a partition', () => {
   /** A store of partitions a test can write to, which is all a memo binds to. */
   function bindable() {
-    const versions = new Map<string, number>();
+    const atom = createVersionAtom('bound_memo_test');
     return {
-      binding: { parts: (key: string) => [key], version: (key: string) => versions.get(key) ?? 1 } satisfies PartitionBinding<string>,
-      bump: (key: string) => versions.set(key, (versions.get(key) ?? 1) + 1),
+      binding: {
+        parts: (key: string) => [key],
+        version: (key: string) => atom.get([key]),
+        unitVersion: (key: string, unit: string) => atom.getUnit([key], unit),
+      } satisfies PartitionBinding<string>,
+      bump: (key: string, units?: string[]) => atom.bump([key], units ? new Set(units) : undefined),
     };
   }
 
@@ -436,35 +363,52 @@ describe('a memo bound to a partition', () => {
     expect(values.for('us').read('p1', build)).toBe(2);
   });
 
-  it('answers holds for its own derived key, so a per-item read can pick what to query before querying', () => {
+  it('holds a unit value across writes that changed other units, and rebuilds once its unit changes', () => {
     const { binding, bump } = bindable();
-    const { values } = createMemos('test', binding, { values: bySource<number>()({ max: 64, by: ['item'] }) });
-    values.for('us').put('p1', 'digest-1', () => 1);
-    values.for('us').put('p2', 'digest-1', () => 2);
+    const { players } = createMemos('test', binding, { players: byUnit<{ n: number }>()({ max: 64 }) });
+    let built = 0;
+    const build = () => {
+      built += 1;
+      return { n: built };
+    };
 
     bump('us');
-    // `for` reads the version once, so the caller after a write is holding a fresh binding.
-    const at = values.for('us');
-
-    // The bump dropped both peeks -- which is the whole problem this answers.
-    expect(at.peek('p1')).toBeUndefined();
-    expect(at.peek('p2')).toBeUndefined();
-    // Only p2 moved, so only p2's inputs are worth fetching.
-    expect(at.holds('p1', 'digest-1')).toBe(true);
-    expect(at.holds('p2', 'digest-2')).toBe(false);
-    // And a different partition's entry is not mistaken for this one's.
-    expect(values.for('eu').holds('p1', 'digest-1')).toBe(false);
+    const first = players.for('us').read('p1', build);
+    bump('us', ['p2']);
+    expect(players.for('us').read('p1', build)).toBe(first);
+    bump('us', ['p1']);
+    expect(players.for('us').read('p1', build)).not.toBe(first);
+    expect(built).toBe(2);
   });
 
-  it('folds a scalar-list source the same way put does, so the two cannot disagree', () => {
+  it('builds every miss of a batch in one call, and answers the rest from what it holds', () => {
     const { binding, bump } = bindable();
-    const { values } = createMemos('test', binding, { values: bySource<number>()({ max: 64, by: ['item'] }) });
-    values.for('us').put('p1', ['g1', 'g2'], () => 1);
-    bump('us');
-    const at = values.for('us');
+    const { players } = createMemos('test', binding, { players: byUnit<string | undefined>()({ max: 64 }) });
+    const calls: string[][] = [];
+    const build = (missing: readonly string[]) => {
+      calls.push([...missing]);
+      return new Map(missing.filter((unit) => unit !== 'gone').map((unit) => [unit, `built-${unit}`]));
+    };
 
-    expect(at.holds('p1', ['g1', 'g2'])).toBe(true);
-    expect(at.holds('p1', ['g1', 'g3'])).toBe(false);
+    bump('us');
+    expect([...players.for('us').readMany(['p1', 'p2', 'gone'], build)]).toEqual([
+      ['p1', 'built-p1'],
+      ['p2', 'built-p2'],
+      ['gone', undefined],
+    ]);
+    bump('us', ['p2']);
+    players.for('us').readMany(['p1', 'p2', 'gone'], build);
+
+    expect(calls).toEqual([['p1', 'p2', 'gone'], ['p2']]);
+  });
+
+  it('reports the units it read and not the partition, so a reader of them sleeps through other writes', () => {
+    const { binding } = bindable();
+    const { players } = createMemos('test', binding, { players: byUnit<number>()({ max: 64 }) });
+
+    const { deps } = runTracked(() => players.for('us').readMany(['p1', 'p2'], (missing) => new Map(missing.map((unit) => [unit, 1]))));
+
+    expect(deps.map((dep) => dep.id.split('\u0001').pop())).toEqual(['p1', 'p2']);
   });
 
   it('keys a structured part by its content, so a caller rebuilding one per call still hits', () => {
@@ -543,23 +487,6 @@ describe('a memo bound to a partition', () => {
     rows.for('us').read(shape, 'p1', () => 1);
 
     expect(Object.isFrozen(shape)).toBe(false);
-  });
-
-  it('holds a source-keyed value across a write, and rebuilds it when the source moves', () => {
-    const { binding, bump } = bindable();
-    const { values } = createMemos('test', binding, { values: bySource<{ n: number }>()({ max: 64, by: ['item'] }) });
-    let built = 0;
-    const build = () => {
-      built += 1;
-      return { n: built };
-    };
-
-    const first = values.for('us').put('p1', ['r1', 'r2'], build);
-    bump('us');
-    // A list source is folded by the kernel, so the same rows behind the value keep its reference across the bump.
-    expect(values.for('us').put('p1', ['r1', 'r2'], build)).toBe(first);
-    expect(values.for('us').put('p1', ['r1', 'r3'], build)).not.toBe(first);
-    expect(built).toBe(2);
   });
 
   it('peeks without building, which is what a read consulting it per item does', () => {

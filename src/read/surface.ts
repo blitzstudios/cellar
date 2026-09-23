@@ -8,13 +8,15 @@ import { useCallback, useMemo } from 'react';
 import { cacheKey, EMPTY_VARY, isVaryPresent, KEY_SEP, partitionsKey, VaryValue, varyKey, cacheKeyOf } from '../args_key';
 import { getOrCreate } from '../collections';
 import { PartitionField, partitionKeyOf, requiredFieldsOf, VaryField, varyValuesOf } from './partition_fields';
-import { createVersionedCache, shallowEqualValue } from '../caches';
+import { createTrackedCache, createVersionedCache, shallowEqualValue } from '../caches';
 import { addressesPartition, NO_PARTS, PartitionEntry, partitionEntries, VersionAtom } from '../reactivity/version_atom';
 import { createOnceGuard, onGuardReset } from '../diagnostics/once_guard';
 import { shouldLog } from '../diagnostics/log_level';
 import { NO_PRIMING, type PrimeState } from '../prime_state';
 import { DataResult, DataStatus, makeResult, offHeapStatus } from '../store_result';
-import { runSubscribed } from '../reactivity/tracking';
+import { runSubscribed, runTracked, trackDependency } from '../reactivity/tracking';
+import { useTrackedValue } from '../reactivity/tracked_value';
+import { covered, uncoveredReads } from '../table/read_coverage';
 
 /** The fetch half of a store as a read sees it, which `createFetchIngest`'s return value satisfies. */
 export interface FetchOwner<Key> {
@@ -296,19 +298,16 @@ function useReadTail<T>(data: T, enabled: boolean, hasData: () => boolean, prime
 export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   const { ingest, toParts } = kernel;
 
-  const versionOf = (partitions: readonly (readonly string[])[]): number => {
-    let sum = 0;
-    for (const parts of partitions) if (addressesPartition(parts)) sum += kernel.version.get(parts);
-    return sum;
-  };
 
   const usePriming = ingest?.usePrime ?? NO_PRIMING;
   const usePrimingAll = ingest?.usePrimeMany ?? NO_PRIMING;
 
   /** Whether each partition holds rows, keyed by partition and shared by every read on this surface. */
   const presenceByVersion = createVersionedCache<boolean>(PRESENCE_CACHE_MAX);
-  // Memoizable per version because presence only flips on a write, and every write bumps.
-  const hasOne = (key: Key, parts: readonly string[]): boolean => presenceByVersion.read(cacheKeyOf(parts), kernel.version.get(parts), () => kernel.has(key));
+  // Held against the presence version, which moves only on a write that could have emptied or filled the partition,
+  // and tracks presence alone: a read of one unit must not come to depend on the whole partition by asking this.
+  const hasOne = (key: Key, parts: readonly string[]): boolean =>
+    presenceByVersion.read(cacheKeyOf(parts), kernel.version.getPresence(parts), () => covered(() => kernel.has(key)));
   const hasAny = (entries: readonly PartitionEntry<Key>[]): boolean => entries.some((entry) => addressesPartition(entry.parts) && hasOne(entry.key, entry.parts));
 
   /**
@@ -323,7 +322,20 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   };
 
   const makeValueCache = <T>(def: { getCacheMax?: number; isEqual?: (left: T, right: T) => boolean }) =>
-    createVersionedCache<T>(def.getCacheMax ?? 256, def.isEqual ?? shallowEqualValue);
+    createTrackedCache<T>(def.getCacheMax ?? 256, def.isEqual ?? shallowEqualValue);
+
+  /**
+   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from projections and unit
+   * memos reports the units it read and depends on those alone. One that read rows straight off the table, or reported
+   * nothing at all, is made to depend on every partition it named: it could have read anything in them.
+   */
+  const selectTracked = <T>(partitions: readonly (readonly string[])[], select: () => T): T => {
+    const before = uncoveredReads();
+    const { value, deps } = runTracked(select);
+    for (const dep of deps) trackDependency(dep);
+    if (!deps.length || uncoveredReads() !== before) for (const parts of partitions) if (addressesPartition(parts)) kernel.version.get(parts);
+    return value;
+  };
 
   function defineRead<Args, T, const V extends VarySpec<Args>>(def: ReadDef<Args, Key, T, V>): Read<Args, T> {
     const getCache = makeValueCache<T>(def);
@@ -338,19 +350,23 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       readGates(def, args, wanted && addressesPartition(parts), vary, primeWanted);
 
     const cached = (args: Args, key: Key, parts: readonly string[], argsKey: string): T =>
-      getCache.read(argsKey, kernel.version.get(parts), () => select(args, key));
+      getCache.read(argsKey, () => selectTracked([parts], () => select(args, key)));
 
     function getValue(args: Args | undefined): T {
       if (args === undefined) return def.empty;
       const key = keyOf(args);
       const parts = toParts(key);
       if (!addressesPartition(parts)) return def.empty;
-      // Must run on every call, cache hits included, or the enclosing tracking scope misses this dependency.
-      kernel.version.get(parts);
       const vary = varyOf(args);
       const gates = gatesFor(args, parts, vary, true);
       if (gates.prime) primeIfCold(key, parts);
-      if (!gates.read || !hasOne(key, parts)) return def.empty;
+      // Every path reports something to the scope above it, so a derivation that got `empty` here still hears when
+      // the partition lands: presence for a disabled or cold read, and whatever `select` read otherwise.
+      if (!gates.read) {
+        kernel.version.getPresence(parts);
+        return def.empty;
+      }
+      if (!hasOne(key, parts)) return def.empty;
       return cached(args, key, parts, varyKey(parts, vary));
     }
 
@@ -363,14 +379,11 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const prime = usePriming(key, gates.prime, primeIntent);
       const argsKey = args === undefined ? NO_ARGS_KEY : varyKey(parts, vary);
       if (__DEV__ && gates.read) noteRead(kernel.name ?? 'off_heap', argsKey, batchSizeOf(vary));
-      const data = kernel.version.useSelect<T>(
-        parts,
-        gates.read,
-        [argsKey],
-        () => (hasOne(key as Key, parts) ? cached(args as Args, key as Key, parts, argsKey) : def.empty),
-        def.isEqual ?? shallowEqualValue,
-        def.empty,
-      );
+      const data = useTrackedValue<T>(() => (hasOne(key as Key, parts) ? cached(args as Args, key as Key, parts, argsKey) : def.empty), [argsKey], {
+        enabled: gates.read,
+        isEqual: def.isEqual ?? shallowEqualValue,
+        empty: def.empty,
+      });
       const doRefetch = useCallback(() => {
         if (key !== undefined) ingest?.refetch(key);
       }, [argsKey]); // eslint-disable-line react-hooks/exhaustive-deps -- `argsKey` covers `key`
@@ -401,18 +414,23 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       readGates(def, args, wanted && partitions.some(addressesPartition), vary, primeWanted);
 
     const cached = (args: Args, named: Named, partitions: readonly (readonly string[])[], argsKey: string): T =>
-      getCache.read(argsKey, versionOf(partitions), () => select(args, named));
+      getCache.read(argsKey, () => selectTracked(partitions, () => select(args, named)));
+
+    /** Presence of every partition named, which is what a read reports when it has nothing else to depend on. */
+    const trackPresence = (partitions: readonly (readonly string[])[]): void => {
+      for (const parts of partitions) if (addressesPartition(parts)) kernel.version.getPresence(parts);
+    };
 
     function getValue(args: Args | undefined): T {
       if (args === undefined) return def.empty;
       const { keys, named } = resolve(args);
       const entries = partitionEntries(keys, toParts);
       const partitions = entries.map((entry) => entry.parts);
-      // Tracking, on every call — see `read.getValue`.
-      versionOf(partitions);
       const vary = varyOf(args);
       const gates = gatesFor(args, partitions, vary, true);
       if (gates.prime) for (const entry of entries) if (addressesPartition(entry.parts)) primeIfCold(entry.key, entry.parts);
+      // `hasAny` stops at the first partition holding rows, so the rest are reported here for a read that lands later.
+      trackPresence(partitions);
       if (!gates.read || !hasAny(entries)) return def.empty;
       return cached(args, named, partitions, cacheKeyOf(partitions, vary));
     }
@@ -425,13 +443,13 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
       const gates = gatesFor(args as Args, partitions, vary, (options?.enabled ?? true) && args !== undefined, options?.prime ?? true);
       const prime = usePrimingAll(keys, gates.prime, primeIntent);
       const argsKey = args === undefined ? NO_ARGS_KEY : cacheKeyOf(partitions, vary);
-      const data = kernel.version.useSelectMany<T>(
-        partitions,
-        gates.read,
+      const data = useTrackedValue<T>(
+        () => {
+          trackPresence(partitions);
+          return hasAny(entries) ? cached(args as Args, named, partitions, argsKey) : def.empty;
+        },
         [argsKey],
-        () => (hasAny(entries) ? cached(args as Args, named, partitions, argsKey) : def.empty),
-        def.isEqual ?? shallowEqualValue,
-        def.empty,
+        { enabled: gates.read, isEqual: def.isEqual ?? shallowEqualValue, empty: def.empty },
       );
       const doRefetch = useCallback(() => {
         for (const key of keys) ingest?.refetch(key);
