@@ -129,6 +129,18 @@ describe('createFetchIngest — timings never reach React Query as present-but-u
     expect(timingKeysOf(useFocusGatedQueryMock.mock.calls[0][0])).toEqual([]);
   });
 
+  // A store with an interned key resolves `rawQuery` through `describe`, which reports a key it cannot resolve as
+  // evicted. The gap key was never interned, so asking for its timings filed a false eviction on every render.
+  it('never asks the store to describe a key that addresses no partition', () => {
+    const harness = makeCfg();
+    const ingest = createFetchIngest(harness.cfg);
+
+    renderHook(() => ingest.usePrime(''));
+
+    expect(harness.cfg.rawQuery).not.toHaveBeenCalled();
+    expect(timingKeysOf(useFocusGatedQueryMock.mock.calls[0][0])).toEqual([]);
+  });
+
   it('takes only the timings off the request, never the request itself', async () => {
     // `rawQuery` hands back the whole request, `queryFn` included. Spreading that into the query spec replaces the
     // ingest with the bare request: the body is fetched and then dropped, and no rows are ever shredded.

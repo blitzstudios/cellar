@@ -308,12 +308,13 @@ export function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest
 
   function usePrime(key: Key | undefined, enabled?: boolean, opts?: PrimeIntent): PrimeState {
     const parts = key === undefined ? NO_PARTS : cfg.toParts(key);
-    const isEnabled = (enabled ?? true) && addressesPartition(parts);
-    if (!opts?.slice && addressesPartition(parts)) wantedWhole.add(partitionLabel(parts));
+    const addressable = addressesPartition(parts);
+    const isEnabled = (enabled ?? true) && addressable;
+    if (!opts?.slice && addressable) wantedWhole.add(partitionLabel(parts));
     // Asked for whenever the key names a partition, not only when this caller is enabled. A disabled caller still
     // constructs the observer, and an observer constructed without a staleTime treats its data as stale on arrival —
     // it then fetches when it is enabled, however fresh the cache is.
-    const timings = key === undefined ? NO_TIMINGS : timingsFor(key);
+    const timings = addressable ? timingsFor(key as Key) : NO_TIMINGS;
     // The runtime is installed once during startup, so which hook this resolves to is fixed for the app's lifetime.
     const result = queryRuntime().useQuery<{ version: number; count: number }>({
       queryKey: queryKey(parts),
