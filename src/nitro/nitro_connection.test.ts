@@ -223,6 +223,29 @@ describe('openNitroConnection — parameter coercion', () => {
 
     expect(handle.batches[0]).toEqual([{ query: 'INSERT INTO t VALUES (?, ?);', params: [1, null] }]);
   });
+
+  // Nitro reads `[]` as zero rows of a batch update and runs the statement zero times; a batch of nothing but those
+  // reaches the driver empty and throws `NoBatchCommandsProvided`.
+  it('sends a batch statement with nothing to bind as having no params, so the driver runs it', async () => {
+    const handle = fakeHandle();
+    mockOpen.mockReturnValue(handle as never);
+    const conn = openNitroConnection('things');
+    const commands: Array<[string, Array<string | number | null>]> = [
+      ['CREATE TABLE IF NOT EXISTS temp.t (a);', []],
+      ['DELETE FROM temp.t WHERE a = ?;', [1]],
+    ];
+
+    conn.executeBatch?.(commands);
+    await conn.executeBatchAsync?.(commands);
+
+    for (const batch of handle.batches) {
+      expect(batch).toEqual([
+        { query: 'CREATE TABLE IF NOT EXISTS temp.t (a);', params: undefined },
+        { query: 'DELETE FROM temp.t WHERE a = ?;', params: [1] },
+      ]);
+    }
+    expect(handle.batches).toHaveLength(2);
+  });
 });
 
 describe('openNitroConnection — shredJsonArrayAsync', () => {

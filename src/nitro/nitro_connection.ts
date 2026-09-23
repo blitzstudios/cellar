@@ -91,15 +91,24 @@ function serializeSpec(spec: ShredSpec): string {
   return json;
 }
 
+/**
+ * A batch command's params are either one bind list or a list of them, and nitro decodes an empty array as the list of
+ * lists: zero executions, so the statement is silently dropped. A statement with nothing to bind has to send none.
+ */
+const toBatchCommand = ([query, params]: readonly [string, ReadonlyArray<unknown>?]) => ({
+  query,
+  params: params?.length ? toNativeParams(params) : undefined,
+});
+
 function adaptHandle(conn: ReturnType<typeof open>): PinnedConnection {
   return {
     execute: (sql, params) => conn.execute(sql, toNativeParams(params)),
     executeBatch: (commands) => {
-      conn.executeBatch(commands.map(([query, params]) => ({ query, params: toNativeParams(params) })));
+      conn.executeBatch(commands.map(toBatchCommand));
     },
     executeAsync: (sql, params) => conn.executeAsync(sql, toNativeParams(params)),
     executeBatchAsync: async (commands) => {
-      await conn.executeBatchAsync(commands.map(([query, params]) => ({ query, params: toNativeParams(params) })));
+      await conn.executeBatchAsync(commands.map(toBatchCommand));
     },
     shredJsonArrayAsync: async (spec: ShredSpec, rawJson: string, scopeBinds: ReadonlyArray<string | number | null>): Promise<number> => {
       const params = toNativeParams([serializeSpec(spec), rawJson, ...scopeBinds]);
