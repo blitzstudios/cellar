@@ -76,14 +76,14 @@ export const itemSchema: RowTableSchema<ItemRow> = {
 };
 ```
 
-### 2. Define the slices and the reads
+### 2. Declare the store: its slices and its reads
 
 `definePartitions` asks one question — where does one slice's rows live? — and derives the rest from the answer:
 presence, what a fetch replaces, where the ETag goes, what a write bumps. `read` then turns a slice of rows into
-whatever the screen actually wants.
+whatever the screen actually wants. Both live in the store's `build`, which is the store over one row table.
 
 ```ts
-import { definePartitions, rowsOf, RowTable, VersionAtom } from '@sleeperhq/react-data-kernel';
+import { definePartitions, defineSqliteStore, rowsOf } from '@sleeperhq/react-data-kernel';
 
 export type ItemKey = { groupId: string };
 export type ItemVM = { id: string; name: string };
@@ -91,45 +91,52 @@ export type ItemVM = { id: string; name: string };
 const NO_ITEMS: ItemVM[] = [];
 const toVM = (row: ItemRow): ItemVM => ({ id: row.item_id, name: row.name ?? '' });
 
-export type ItemBackend = ReturnType<typeof buildItemBackend>;
+export const itemStore = defineSqliteStore({
+  name: 'item_store',
+  schema: itemSchema,
+  build: (table, version) => {
+    table.init();
+    const rows = rowsOf(table);
 
-export function buildItemBackend(table: RowTable<ItemRow>, version: VersionAtom) {
-  table.init();
-  const rows = rowsOf(table);
+    const items = definePartitions<ItemRow, ItemKey>({
+      name: 'items',
+      table,
+      version,
+      key: {
+        fields: ['groupId'],
+        where: ({ groupId }) => ({ group_id: groupId }),
+      },
+      fetch: {
+        query: ({ groupId }, etag) => ({
+          queryFn: async () => {
+            const response = await fetch(`/groups/${groupId}/items`, { headers: etag ? { 'If-None-Match': etag } : {} });
+            return { data: await response.text(), etag: response.headers.get('etag') ?? undefined };
+          },
+        }),
+        parse: ({ groupId }, rawJson) => (JSON.parse(rawJson) as RawItem[]).map((item) => itemShred.row(item, { groupId })),
+      },
+    });
 
-  const items = definePartitions<ItemRow, ItemKey>({
-    name: 'items',
-    table,
-    version,
-    key: {
-      fields: ['groupId'],
-      where: ({ groupId }) => ({ group_id: groupId }),
-    },
-    fetch: {
-      query: ({ groupId }, etag) => ({
-        queryFn: async () => {
-          const response = await fetch(`/groups/${groupId}/items`, { headers: etag ? { 'If-None-Match': etag } : {} });
-          return { data: await response.text(), etag: response.headers.get('etag') ?? undefined };
-        },
-      }),
-      parse: ({ groupId }, rawJson) => (JSON.parse(rawJson) as RawItem[]).map((item) => itemShred.row(item, { groupId })),
-    },
-  });
-
-  return {
-    reads: {
-      GroupItems: items.read<ItemKey, ItemVM[]>()({
-        select: (_args, key) => rows.where(items.where(key), { orderBy: 'rank' }).map(toVM, NO_ITEMS),
-        empty: NO_ITEMS,
-      }),
-    },
-    lifecycle: items.lifecycle,
-  };
-}
+    return {
+      reads: {
+        GroupItems: items.read<ItemKey, ItemVM[]>()({
+          select: (_args, key) => rows.where(items.where(key), { orderBy: 'rank' }).map(toVM, NO_ITEMS),
+          empty: NO_ITEMS,
+        }),
+      },
+      lifecycle: items.lifecycle,
+    };
+  },
+});
 ```
 
 `select` runs only once the slice holds rows, and again only when something it read has changed. `empty` is what
 callers get before that, so it has to be a stable reference.
+
+What comes back already runs on an in-memory row table, so web and tests need nothing further. Startup binds SQLite
+where the platform has it (step 4), and a SQLite failure mid-session drops the store back onto an in-memory table.
+`build` runs again each time the store moves, so it holds nothing outside what it returns — and `itemStore.reads`
+always reaches whichever table is running, so callers hold the store rather than anything taken off it.
 
 #### Priming is by partition, not by what a read selects
 
@@ -163,25 +170,7 @@ Nothing here has to be declared. An ingest landing more than a few thousand rows
 partition per session, which is how an over-large partition makes itself known — including one that was a
 reasonable size when the read was written and grew since.
 
-### 3. Declare the store
-
-```ts
-import { defineSqliteStore } from '@sleeperhq/react-data-kernel';
-
-const itemStore = defineSqliteStore<ItemRow, ItemBackend>({
-  name: 'item_store',
-  schema: itemSchema,
-  buildBackend: buildItemBackend,
-});
-
-export const getItemBackend = itemStore.getBackend;
-export const setItemBackend = itemStore.setBackend;
-export const createSqliteItemBackend = itemStore.createSqliteBackend;
-```
-
-What comes back already runs on an in-memory row table, so web and tests need nothing further.
-
-### 4. Publish a read, and call it
+### 3. Publish a read, and call it
 
 `pairRead` publishes each read as both halves at once: a hook for components, and an imperative getter for
 everything else. A read declares which args it waits on, so the pair stays inert until a caller has them.
@@ -189,7 +178,7 @@ everything else. A read declares which args it waits on, so the pair stays inert
 ```ts
 import { pairRead } from '@sleeperhq/react-data-kernel';
 
-export const GroupItems = pairRead(() => getItemBackend().reads.GroupItems);
+export const GroupItems = pairRead(() => itemStore.reads.GroupItems);
 ```
 
 ```tsx
@@ -203,7 +192,7 @@ function ItemList({ groupId }: { groupId?: string }) {
 
 Calling it with no `groupId` is fine: the read addresses nothing, fetches nothing, and hands back `empty`.
 
-### 5. Wire it up at startup
+### 4. Wire it up at startup
 
 The host installs two services, and binds SQLite where the platform has it.
 
@@ -217,7 +206,7 @@ configureDataKernel({
   gate: { useReadGate },
 });
 
-bindSqliteStore('initItemStore', 'items.db', setItemBackend, createSqliteItemBackend);
+bindSqliteStore('initItemStore', 'items.db', itemStore);
 ```
 
 `useQuery` and `useQueries` are passed in rather than imported, so an app keeps its own fetch policy — focus
@@ -278,7 +267,7 @@ A store has as many partitions as its callers ask for — one per group, or thou
   performance instead of breaking reads.
 - **Dev-only guards.** Reading off-heap during render without subscribing is correct on first paint and frozen
   after, which is invisible on screen — so in `__DEV__` it warns, naming the partition and the component. Other
-  guards catch a backend bound too late, a memo sized too small, and a read fanning out across a list.
+  guards catch a store bound too late, a memo sized too small, and a read fanning out across a list.
 
 ## API
 
@@ -288,7 +277,7 @@ Everything below is exported from the package root.
 
 | export | what it gives you |
 | --- | --- |
-| `defineSqliteStore(config)` | the store's spine: the version atom, the slot holding the active backend, the in-memory default, the SQLite builder for startup, and the degrade path back to memory |
+| `defineSqliteStore(config)` | the store: `reads`, `push` and `lifecycle` on whichever table is running, `bindSqlite` for startup, the in-memory default and the degrade path back to it, and `testing` to put a test's own rows behind it |
 | `definePartitions(config)` | from `key.where` and an optional `fetch`: the read constructors, `lifecycle`, `memos`, and the row/version primitives (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`) |
 | `defineShredColumns<Src, Ctx>()(columns)` | one column table bound to everything derived from it: `names`, `columnDefs`, `row`, and `ops` once every column declares one |
 

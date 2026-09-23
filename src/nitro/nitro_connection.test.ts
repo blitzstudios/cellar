@@ -2,7 +2,7 @@ import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { configureDataKernel } from '../index';
 import { resetOnceGuards } from '../diagnostics/once_guard';
-import { bindSqliteBackend, bindSqliteStore, getOpenSqliteConnections, openNitroConnection } from './nitro_connection';
+import { bindSqliteStore, getOpenSqliteConnections, openNitroConnection } from './nitro_connection';
 
 jest.mock('react-native-nitro-sqlite', () => ({ open: jest.fn(), openSecondary: jest.fn(), NitroSQLite: { native: { close: jest.fn() } } }));
 
@@ -150,7 +150,7 @@ describe('openNitroConnection — the dedicated read handle', () => {
 
     expect(conn.reader).toBeUndefined();
     expect(conn.execute).toBeDefined();
-    expect(lastReport().context).toContain('in-memory backend');
+    expect(lastReport().context).toContain('in-memory table');
   });
 
   // An iOS CodePush reload replaces the JS runtime inside the running process, so `openConnections` comes back empty
@@ -280,27 +280,28 @@ describe('openNitroConnection — shredJsonArrayAsync', () => {
 });
 
 describe('binding a store', () => {
-  it('leaves the store on its in-memory backend when the SQLite one throws, instead of taking the app down', () => {
-    const boom = () => {
-      throw new Error('no such file or directory');
+  it('leaves the store on an in-memory table when binding throws, instead of taking the app down', () => {
+    mockOpen.mockReturnValue(fakeHandle() as never);
+    const store = {
+      bindSqlite: () => {
+        throw new Error('no such file or directory');
+      },
     };
 
-    expect(() => bindSqliteBackend('leaderboard', boom)).not.toThrow();
-    expect(lastReport().context).toContain('stays on its in-memory backend');
+    expect(() => bindSqliteStore('leaderboard', 'metrics.db', store)).not.toThrow();
+    expect(lastReport().context).toContain('stays on an in-memory table');
   });
 
-  it('wires the opened connection into the backend factory and hands the result to the setter', () => {
+  it('opens the database and binds the store to the connection', () => {
     mockOpen.mockReturnValue(fakeHandle() as never);
     mockOpenSecondary.mockReturnValue(fakeHandle() as never);
-    const setBackend = jest.fn();
-    const createBackend = jest.fn(() => 'backend');
+    const store = { bindSqlite: jest.fn() };
 
-    bindSqliteStore('leaderboard', 'metrics.db', setBackend, createBackend, { dedicatedReader: true });
+    bindSqliteStore('leaderboard', 'metrics.db', store, { dedicatedReader: true });
 
     expect(mockOpen).toHaveBeenCalledWith({ name: 'metrics.db' });
     expect(mockOpenSecondary).toHaveBeenCalled();
-    expect(createBackend).toHaveBeenCalledWith(expect.objectContaining({ execute: expect.any(Function) }));
-    expect(setBackend).toHaveBeenCalledWith('backend');
+    expect(store.bindSqlite).toHaveBeenCalledWith(expect.objectContaining({ execute: expect.any(Function) }));
   });
 
   it('registers the connection under its database name, which is what the dev overlay dumps', () => {
@@ -321,10 +322,12 @@ describe('binding a store — the handles a failure opened', () => {
   const failingBind = (name: string, writer: FakeHandle, reader: FakeHandle) => {
     mockOpen.mockReturnValue(writer as never);
     mockOpenSecondary.mockReturnValue(reader as never);
-    bindSqliteBackend('metrics', () => {
-      openNitroConnection(name, { dedicatedReader: true });
-      throw new Error('a schema change forces a rebuild');
-    });
+    const store = {
+      bindSqlite: () => {
+        throw new Error('a schema change forces a rebuild');
+      },
+    };
+    bindSqliteStore('metrics', name, store, { dedicatedReader: true });
   };
 
   it('closes both of them, handing back the names the next attempt has to open', () => {
@@ -347,7 +350,7 @@ describe('binding a store — the handles a failure opened', () => {
     failingBind('metrics.db', fakeHandle(), fakeHandle());
 
     expect(lastReport().scope).toBe('nitro_connection.bind.metrics');
-    expect(lastReport().context).toContain('stays on its in-memory backend');
+    expect(lastReport().context).toContain('stays on an in-memory table');
   });
 
   it('leaves a connection another store already had open alone', () => {
@@ -379,9 +382,7 @@ describe('binding a store — the handles a failure opened', () => {
     const writer = fakeHandle();
     mockOpen.mockReturnValue(writer as never);
 
-    bindSqliteBackend('metrics', () => {
-      openNitroConnection('kept.db');
-    });
+    bindSqliteStore('metrics', 'kept.db', { bindSqlite: () => {} });
 
     expect(writer.close).not.toHaveBeenCalled();
     expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain('kept.db');

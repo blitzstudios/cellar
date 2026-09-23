@@ -1,4 +1,4 @@
-/** The row table held in JS `Map`s, which is the backend on web and in every test. */
+/** The row table held in JS `Map`s, which a store runs on on web and in every test. */
 
 import { cacheKeyOf } from '../args_key';
 import { createPresence, whereMapKey } from './presence';

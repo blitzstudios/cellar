@@ -1,1 +1,1 @@
-{"version":3,"names":["openNitroConnection","getOpenSqliteConnections","bindSqliteBackend","bindSqliteStore"],"sourceRoot":"../../../src","sources":["nitro/index.ts"],"mappings":";;AAAA;AACA;AACA;AACA;;AAEA,SAASA,mBAAmB,EAAEC,wBAAwB,EAAEC,iBAAiB,EAAEC,eAAe,QAAQ,uBAAoB","ignoreList":[]}
+{"version":3,"names":["openNitroConnection","getOpenSqliteConnections","bindSqliteStore"],"sourceRoot":"../../../src","sources":["nitro/index.ts"],"mappings":";;AAAA;AACA;AACA;AACA;;AAEA,SAASA,mBAAmB,EAAEC,wBAAwB,EAAEC,eAAe,QAAQ,uBAAoB","ignoreList":[]}

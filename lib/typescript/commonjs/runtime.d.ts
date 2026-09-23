@@ -1,7 +1,7 @@
 /**
  * The three services the kernel takes from its host rather than owning: where a report goes, the React Query
  * runtime an ingest mounts on, and when a read is live. A host calls
- * {@link configureDataKernel} once during startup, before it binds any store's backend. Until it does, each stays
+ * {@link configureDataKernel} once during startup, before it binds any store to SQLite. Until it does, each stays
  * inert, so a store still reads its rows and a test still renders.
  */
 /** The Sentry-shaped context a kernel report carries. */

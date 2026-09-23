@@ -97,7 +97,7 @@ export declare function readLiveSchema(conn: SqliteConnection, table: string): L
  * notice rather than an error, beside the failures that genuinely took a store off SQLite.
  *
  * It deliberately does not throw, in `__DEV__` or anywhere else. `init` stamps the schema last, so refusing the rebuild
- * would leave the stale stamp on disk and take the in-memory backend again on every launch after — permanently slower
+ * would leave the stale stamp on disk and fall back to an in-memory table again on every launch after — permanently slower
  * than the heap it replaced, over an expected event. Catching the edit belongs where the edit happens: a store pins its
  * column set in a test, which is what fails when the schema widens.
  */

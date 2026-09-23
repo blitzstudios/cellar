@@ -1,4 +1,4 @@
-/** The row table interface both backends implement: SQLite on mobile, a `Map` on web and in tests. */
+/** The row table interface both kinds implement: SQLite on mobile, a `Map` on web and in tests. */
 import type { WriteResult } from './change_set';
 export type SqlValue = string | number | null;
 /** One row's column values; `undefined` binds as null, which covers a generated column a category leaves blank. */
@@ -9,7 +9,7 @@ export type RowShape = Record<string, SqlValue | undefined>;
  */
 export type ColumnType = 'TEXT' | 'INTEGER' | 'REAL';
 /**
- * One column as SQLite will create it. `notNull` is enforced by the database and not by the in-memory backend, so a
+ * One column as SQLite will create it. `notNull` is enforced by the database and not by the in-memory table, so a
  * row the constraint would reject on device inserts happily in a test.
  */
 export interface ColumnDef {
@@ -49,7 +49,7 @@ export interface RowTableSchema<Row extends RowShape> {
 }
 /** What a `find` takes past its row filter, for a hydration that wants its rows in a column's order rather than in storage order. */
 export interface FindOpts<Row extends RowShape> {
-    /** Sorted in JS on both backends, and a string compares by code unit, so a display name sorts by ASCII. */
+    /** Sorted in JS on both kinds of table, and a string compares by code unit, so a display name sorts by ASCII. */
     orderBy?: keyof Row & string;
 }
 /**

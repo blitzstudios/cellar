@@ -31,7 +31,7 @@ export interface PairedRead<Params, T> {
     }) => T;
 }
 /**
- * Publishes a read as its reactive and imperative halves, from a thunk resolving it on whichever backend is bound.
+ * Publishes a read as its reactive and imperative halves, from a thunk resolving it on the store, whichever table it is running on.
  * Params are the read's own args, loosely: the read's {@link Read.requires} says which of them it waits on, and it
  * stays inert until a caller has them all, so a service publishing it names nothing the store already declared.
  *

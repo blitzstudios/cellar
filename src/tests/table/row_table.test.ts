@@ -424,7 +424,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
     /**
      * The rebuild has to happen on every build, dev included. `init` stamps the schema last, so a dev build that threw
-     * instead would leave the stale stamp on disk and take the in-memory backend again on the next launch, and the one
+     * instead would leave the stale stamp on disk and fall back to an in-memory table again on the next launch, and the one
      * after — permanently slower than the heap it replaced, over a change someone shipped on purpose.
      */
     it('rebuilds rather than refusing to, so the database is never left stale for the next launch to trip over', () => {

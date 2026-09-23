@@ -1,5 +1,5 @@
 /**
- * The in-memory backend's half of the unit diff SQLite runs in `sqlite.ts`: which units a write changed, decided by
+ * The in-memory table's half of the unit diff SQLite runs in `sqlite.ts`: which units a write changed, decided by
  * comparing every column of the rows it was handed with the rows already held.
  */
 import { RowShape } from './types';

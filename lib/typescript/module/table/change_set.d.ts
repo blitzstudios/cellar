@@ -5,7 +5,7 @@
  * out for itself whether its part of it did; a write that reports its units lets a reader of an unchanged unit sleep
  * through it, and one that changed nothing lets every reader sleep.
  */
-/** Every unit, for a write that cannot say which: a degraded backend, a failed diff, a store bumping by hand. */
+/** Every unit, for a write that cannot say which: a degraded store, a failed diff, a store bumping by hand. */
 export declare const ALL_UNITS: "all";
 /** The units a write changed, or {@link ALL_UNITS}. An empty set is a write that changed nothing. */
 export type ChangeSet = typeof ALL_UNITS | ReadonlySet<string>;

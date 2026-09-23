@@ -2,6 +2,7 @@ import { configureDataKernel, INERT_ERRORS } from '../../runtime';
 import { RowTableSchema } from '../../table/types';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { defineSqliteStore } from '../../define_sqlite_store';
+import { VersionAtom } from '../../reactivity/version_atom';
 import { itDev, itProd } from '../../testing/dev_mode';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { guardedConnection, readRows, runBatch, SqliteConnection } from '../../table/connection';
@@ -160,70 +161,75 @@ describe('guardedConnection', () => {
 });
 
 describe('kernel degradation', () => {
-  const buildBackend = (table: { find: (where: Partial<Thing>) => Thing[] }) => ({
-    reads: { all: () => table.find({}) },
-    lifecycle: { forget: jest.fn() },
-  });
+  /** A connection every statement succeeds on, which is all binding needs. */
+  const okConn = (): SqliteConnection => ({ execute: () => ({ rows: { _array: [] } }) }) as unknown as SqliteConnection;
 
-  itProd('hands the store back to its in-memory backend, and tells every reader to look again', async () => {
-    const bumped = jest.fn();
-    const kernel = defineSqliteStore<Thing, { reads: { tag: string } }>({
+  /** A store whose surface says which table it runs on, and hands out the version atom it was built with. */
+  function labelledStore(onBuild: (label: string) => void = () => {}) {
+    const forget = jest.fn();
+    let version: VersionAtom | undefined;
+    const store = defineSqliteStore<Thing, { reads: { tag: string }; lifecycle: { forget: jest.Mock } }, { sqlite: true }>({
       name: 'testy',
       schema,
-      buildBackend: () => ({ reads: { tag: 'memory' } }),
+      build: (_table, atom, caps) => {
+        version = atom;
+        const tag = caps.sqlite ? 'sqlite' : 'memory';
+        onBuild(tag);
+        return { reads: { tag }, lifecycle: { forget } };
+      },
+      sqliteCapabilities: () => ({ sqlite: true }),
     });
-    kernel.setBackend({ reads: { tag: 'sqlite' } });
-    kernel.version.subscribe(['us'], bumped);
-    kernel.version.bump(['us']);
+    return { store, forget, version: () => version! };
+  }
+
+  itProd('hands the store back to an in-memory table, and tells every reader to look again', async () => {
+    const bumped = jest.fn();
+    const { store, version } = labelledStore();
+    store.bindSqlite(okConn());
+    version().subscribe(['us'], bumped);
+    version().bump(['us']);
     bumped.mockClear();
 
-    kernel.degrade({ context: 'disk went away' });
+    store.degrade({ context: 'disk went away' });
 
     // The swap is deferred to a microtask, so it lands after the render that read.
-    expect(kernel.getBackend().reads.tag).toBe('sqlite');
+    expect(store.reads.tag).toBe('sqlite');
 
     await flushMicrotasks();
 
-    expect(kernel.getBackend().reads.tag).toBe('memory');
+    expect(store.reads.tag).toBe('memory');
     expect(bumped).toHaveBeenCalled();
   });
 
-  itProd('runs the registered resets before the swap, so nothing is left describing the old backend', async () => {
+  itProd('forgets what the SQLite surface held before the swap, so nothing is left describing it', async () => {
     const order: string[] = [];
-    const kernel = defineSqliteStore<Thing, { reads: object }>({
-      name: 'testy',
-      schema,
-      buildBackend: () => {
-        order.push('rebuilt');
-        return { reads: {} };
-      },
-    });
-    kernel.onDegrade(() => order.push('forgot'));
+    const { store, forget } = labelledStore((tag) => order.push(`built ${tag}`));
+    store.bindSqlite(okConn());
+    forget.mockImplementation(() => order.push('forgot'));
 
-    kernel.degrade({ context: 'x' });
+    store.degrade({ context: 'x' });
     await flushMicrotasks();
 
-    expect(order).toEqual(['forgot', 'rebuilt']);
+    expect(order).toEqual(['built sqlite', 'forgot', 'built memory']);
   });
 
   itProd('degrades once, because a full disk is a condition rather than an event', async () => {
-    const reset = jest.fn();
-    const kernel = defineSqliteStore<Thing, { reads: object }>({ name: 'testy', schema, buildBackend: () => ({ reads: {} }) });
-    kernel.onDegrade(reset);
+    const { store, forget } = labelledStore();
+    store.bindSqlite(okConn());
 
-    kernel.degrade({ context: 'a' });
-    kernel.degrade({ context: 'b' });
+    store.degrade({ context: 'a' });
+    store.degrade({ context: 'b' });
     await flushMicrotasks();
 
-    expect(reset).toHaveBeenCalledTimes(1);
+    expect(forget).toHaveBeenCalledTimes(1);
   });
 
   itProd('reports it, since a store that silently halved its own performance is the failure you never hear about', () => {
     const captureException = jest.fn();
     configureDataKernel({ errors: { captureException, captureMessage: jest.fn() } });
-    const kernel = defineSqliteStore<Thing, { reads: object }>({ name: 'testy', schema, buildBackend: () => ({ reads: {} }) });
+    const { store } = labelledStore();
 
-    kernel.degrade({ context: 'disk went away', error: new Error('SQLITE_IOERR') });
+    store.degrade({ context: 'disk went away', error: new Error('SQLITE_IOERR') });
 
     expect(captureException.mock.calls[0][1].tags).toEqual({ off_heap_degradation: 'testy.runtime' });
     configureDataKernel({ errors: INERT_ERRORS });
@@ -231,20 +237,20 @@ describe('kernel degradation', () => {
 });
 
 describe('defineSqliteStore — the wiring', () => {
-  itProd('degrades the whole store when one of its statements fails, and refills from the memory backend', async () => {
+  itProd('degrades the whole store when one of its statements fails, and refills from an in-memory table', async () => {
     const forget = jest.fn();
     const store = defineSqliteStore({
       name: 'things',
       schema,
-      buildBackend: (rowTable) => ({ reads: { all: () => rowTable.find({}) }, lifecycle: { forget } }),
+      build: (rowTable) => ({ reads: { all: () => rowTable.find({}) }, lifecycle: { forget } }),
     });
-    store.setBackend(store.createSqliteBackend(brokenConn(/SELECT/)));
+    store.bindSqlite(brokenConn(/SELECT/));
 
-    expect(store.getBackend().reads.all()).toEqual([]);
+    expect(store.reads.all()).toEqual([]);
     await flushMicrotasks();
 
     expect(forget).toHaveBeenCalledTimes(1);
-    expect(store.getBackend().reads.all()).toEqual([]);
+    expect(store.reads.all()).toEqual([]);
   });
 
   itProd('gives the capabilities the guarded handle too, so a failing accelerator degrades rather than throws', () => {
@@ -252,14 +258,14 @@ describe('defineSqliteStore — the wiring', () => {
     const store = defineSqliteStore<Thing, { reads: object }, { probe: SqliteConnection }>({
       name: 'things',
       schema,
-      buildBackend: () => ({ reads: {} }),
+      build: () => ({ reads: {} }),
       sqliteCapabilities: (conn) => {
         capsConn = conn;
         return { probe: conn };
       },
     });
     const broken = brokenConn(/SELECT/);
-    store.createSqliteBackend(broken);
+    store.bindSqlite(broken);
 
     expect(() => readRows(capsConn!, 'SELECT 1;')).not.toThrow();
   });

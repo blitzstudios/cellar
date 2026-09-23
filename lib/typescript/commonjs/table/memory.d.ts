@@ -1,4 +1,4 @@
-/** The row table held in JS `Map`s, which is the backend on web and in every test. */
+/** The row table held in JS `Map`s, which a store runs on on web and in every test. */
 import { RowShape, RowTable, RowTableSchema } from './types';
 /**
  * The {@link RowTable} a store gets where the platform has no SQLite: the web build, every test, and the stretch before

@@ -1,7 +1,7 @@
 /**
  * The three services the kernel takes from its host rather than owning: where a report goes, the React Query
  * runtime an ingest mounts on, and when a read is live. A host calls
- * {@link configureDataKernel} once during startup, before it binds any store's backend. Until it does, each stays
+ * {@link configureDataKernel} once during startup, before it binds any store to SQLite. Until it does, each stays
  * inert, so a store still reads its rows and a test still renders.
  */
 
@@ -97,7 +97,7 @@ function warnUnconfigured(what: string): void {
   // eslint-disable-next-line no-console
   console.warn(
     `data_kernel.unconfigured: ${what} was used before \`configureDataKernel\` ran. Reads still answer from the rows ` +
-      'already stored, but nothing fetches. Call `configureDataKernel` during startup, before binding a backend.',
+      'already stored, but nothing fetches. Call `configureDataKernel` during startup, before binding a store.',
   );
 }
 

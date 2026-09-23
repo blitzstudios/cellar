@@ -35,7 +35,7 @@ export interface PairedRead<Params, T> {
 const hasArrived = (value: unknown): boolean => value !== undefined && value !== null && value !== '';
 
 /**
- * Publishes a read as its reactive and imperative halves, from a thunk resolving it on whichever backend is bound.
+ * Publishes a read as its reactive and imperative halves, from a thunk resolving it on the store, whichever table it is running on.
  * Params are the read's own args, loosely: the read's {@link Read.requires} says which of them it waits on, and it
  * stays inert until a caller has them all, so a service publishing it names nothing the store already declared.
  *
@@ -45,7 +45,7 @@ const hasArrived = (value: unknown): boolean => value !== undefined && value !==
  * getter in a loop would otherwise drive the network.
  */
 export function pairRead<Args, T>(read: () => Read<Args, T>): PairedRead<Loose<Args>, T> {
-  /** Takes the read it is about to call, since `requires` belongs to the bound backend's copy of it. */
+  /** Takes the read it is about to call, since `requires` belongs to the running table's copy of it. */
   const argsOf = (target: Read<Args, T>, params: Loose<Args>): Args | undefined => {
     const { requires } = target;
     if (!requires) {

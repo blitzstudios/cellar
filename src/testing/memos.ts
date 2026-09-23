@@ -1,4 +1,4 @@
-/** A store's memos, for a suite that builds one module of a store rather than the whole backend. */
+/** A store's memos, for a suite that builds one module of a store rather than the whole store. */
 
 import { createMemos, MemoFactory } from '../caches';
 import { VersionAtom } from '../reactivity/version_atom';

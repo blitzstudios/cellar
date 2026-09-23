@@ -169,7 +169,7 @@ export interface ReadCallOptions {
 
 /**
  * A read as a store publishes it: `undefined` args mean there is nothing to read yet, so it returns `empty`. Its
- * members are properties, so a backend's reads are checked contravariantly against them.
+ * members are properties, so a store's reads are checked contravariantly against them.
  */
 export interface Read<Args, T> {
   getValue: (args: Args | undefined) => T;

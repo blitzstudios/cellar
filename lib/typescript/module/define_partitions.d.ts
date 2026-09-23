@@ -68,7 +68,7 @@ export interface PartitionsConfig<Row extends RowShape, Key, Args, Descriptor> {
 }
 /**
  * The partition operations a caller outside the read path reaches for. Every member takes the same args a read
- * does, in the `(args, options?)` shape a backend publishes, so a store publishes the group as-is. The two priming
+ * does, in the `(args, options?)` shape a store publishes, so it publishes the group as-is. The two priming
  * hooks take them loosely, as a screen holds them: they are called unconditionally, from a fixed hook position, and
  * args short of the value that names a partition prime nothing.
  */
@@ -117,7 +117,7 @@ interface PartitionReadGroupedDef<Args, Key, T, Descriptor, V extends VarySpec<A
     groups: (args: Args) => readonly (readonly MaybePartition<Descriptor>[])[];
 }
 /**
- * Everything one `definePartitions` call hands a backend: the three read constructors it declares its reads with, the
+ * Everything one `definePartitions` call hands a store's `build`: the three read constructors it declares its reads with, the
  * row-filter and version primitives its hydration and its own writes are built from, and a `lifecycle` group ready to
  * publish as-is.
  */
@@ -162,9 +162,9 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
     lifecycle: PartitionLifecycle<Args>;
 }
 /**
- * The middle layer of a store, and the call its backend is built around: answer where one partition's rows live
+ * The middle layer of a store, and the call its `build` is written around: answer where one partition's rows live
  * (`key.where`) and how a response body becomes them (`fetch`), and get back the reads, the ETag handling, the priming
- * and the version bumps derived from those answers. Called once per store, from `buildXBackend` after `table.init()`.
+ * and the version bumps derived from those answers. Called from a store's `build`, after `table.init()`.
  */
 export declare function definePartitions<Row extends RowShape, Key, Args = Key, Descriptor = Args>(config: PartitionsConfig<Row, Key, Args, Descriptor>): Partitions<Row, Key, Args, Descriptor>;
 export {};

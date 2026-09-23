@@ -133,7 +133,7 @@ export type BoundMemos<Key, D> = {
 };
 /**
  * A store's `memos` as something to hand around: what a hydration or a ranking module declares its own block with,
- * having been handed it by the backend that called `definePartitions`.
+ * having been handed it by the store's `build` that called `definePartitions`.
  */
 export type MemoFactory<Key> = <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
 /**

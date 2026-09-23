@@ -1,6 +1,7 @@
-import { defineSqliteStore, StoreBackendShape } from '../define_sqlite_store';
+import { defineSqliteStore } from '../define_sqlite_store';
 import { resetOnceGuards } from '../diagnostics/once_guard';
 import { itDev } from '../testing/dev_mode';
+import { SqliteConnection } from '../table/connection';
 import { RowTableSchema } from '../table/types';
 
 type Thing = { id: string };
@@ -12,66 +13,121 @@ const schema: RowTableSchema<Thing> = {
   unit: 'id',
 };
 
-/** `build` stands in for the in-memory backend, so a test can watch when — and whether — it is constructed. */
-const storeOf = <B extends StoreBackendShape>(name: string, build: () => B) => defineSqliteStore<Thing, B>({ name, schema, buildBackend: build });
+/** A connection every statement succeeds on, which is all binding needs. */
+const okConn = (): SqliteConnection => ({ execute: () => ({ rows: { _array: [] } }) }) as unknown as SqliteConnection;
 
-describe('defineSqliteStore — the backend slot', () => {
+/**
+ * A store whose surface says which table it was built on, and counts its builds, so a test can watch when — and
+ * whether — each is constructed. SQLite is told apart by the capability only it is handed.
+ */
+function labelledStore() {
+  const builds = { memory: 0, sqlite: 0 };
+  const store = defineSqliteStore<Thing, { reads: { label: string; describe: () => string }; lifecycle: { forget: jest.Mock } }, { sqlite: true }>({
+    name: 'test_store',
+    schema,
+    build: (_table, _version, caps) => {
+      const label = caps.sqlite ? 'sqlite' : 'memory';
+      builds[label] += 1;
+      return { reads: { label, describe: () => label }, lifecycle: { forget: jest.fn() } };
+    },
+    sqliteCapabilities: () => ({ sqlite: true }),
+  });
+  return { store, builds };
+}
+
+describe('defineSqliteStore — the running table', () => {
   beforeEach(() => {
     resetOnceGuards();
   });
 
-  it('exposes a version atom and swaps the active backend', () => {
-    const store = storeOf('test_store', () => ({ reads: { label: 'memory' } }));
+  it('starts on an in-memory table and moves onto SQLite when bound', () => {
+    const { store } = labelledStore();
 
-    expect(store.getBackend().reads.label).toBe('memory');
-    expect(store.version.key(['a', 'b'])).toEqual(['test_store_version', 'a\u0000b']);
-
-    store.setBackend({ reads: { label: 'sqlite' } });
-    expect(store.getBackend().reads.label).toBe('sqlite');
+    expect(store.reads.label).toBe('memory');
+    store.bindSqlite(okConn());
+    expect(store.reads.label).toBe('sqlite');
   });
 
-  it('never builds the in-memory backend when one is bound before the first read', () => {
-    let builds = 0;
-    const store = storeOf('test_store', () => {
-      builds += 1;
-      return { reads: { label: 'memory' } };
-    });
+  it('never builds the in-memory surface when SQLite is bound before the first read', () => {
+    const { store, builds } = labelledStore();
 
-    store.setBackend({ reads: { label: 'sqlite' } });
+    store.bindSqlite(okConn());
 
-    expect(store.getBackend().reads.label).toBe('sqlite');
-    expect(builds).toBe(0);
+    expect(store.reads.label).toBe('sqlite');
+    expect(builds).toEqual({ memory: 0, sqlite: 1 });
   });
 
-  it('builds the in-memory backend once, however many reads it serves', () => {
-    let builds = 0;
-    const store = storeOf('test_store', () => {
-      builds += 1;
-      return { reads: {} };
-    });
+  it('builds the in-memory surface once, however many reads it serves', () => {
+    const { store, builds } = labelledStore();
 
-    expect(store.getBackend()).toBe(store.getBackend());
-    expect(builds).toBe(1);
+    expect(store.reads.label).toBe(store.reads.label);
+    expect(builds.memory).toBe(1);
   });
 
-  itDev('warns when a backend is bound after something has already read', () => {
+  it('resolves a group at each access, so a caller holding it follows the store onto SQLite', () => {
+    const { store } = labelledStore();
+    const { reads } = store;
+
+    expect(reads.describe()).toBe('memory');
+    store.bindSqlite(okConn());
+    expect(reads.describe()).toBe('sqlite');
+  });
+
+  it('lists the running surface, so a group can be enumerated like the object it stands for', () => {
+    const { store } = labelledStore();
+
+    expect(Object.keys(store.reads).sort()).toEqual(['describe', 'label']);
+    expect('label' in store.reads).toBe(true);
+  });
+
+  itDev('warns when SQLite is bound after something has already read', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const store = storeOf('test_store', () => ({ reads: {} }));
+    const { store } = labelledStore();
 
-    store.getBackend();
-    store.setBackend({ reads: {} });
+    void store.reads.label;
+    store.bindSqlite(okConn());
 
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain('store_backend_slot.late_bind');
+    expect(warn.mock.calls[0][0]).toContain('store.late_bind');
     warn.mockRestore();
   });
 
   it('stays silent for the ordinary order, which is bind and then read', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const store = storeOf('test_store', () => ({ reads: {} }));
+    const { store } = labelledStore();
 
-    store.setBackend({ reads: {} });
-    store.getBackend();
+    store.bindSqlite(okConn());
+    void store.reads.label;
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('defineSqliteStore — testing', () => {
+  it('builds a surface over a table of the test’s own, without moving the store', () => {
+    const { store } = labelledStore();
+
+    expect(store.testing.over(undefined, { caps: { sqlite: true } }).reads.label).toBe('sqlite');
+    expect(store.reads.label).toBe('memory');
+  });
+
+  it('swaps a surface in behind the store, and reset puts a fresh in-memory one back', () => {
+    const { store, builds } = labelledStore();
+    store.testing.swap({ reads: { label: 'seeded', describe: () => 'seeded' }, lifecycle: { forget: jest.fn() } });
+
+    expect(store.reads.label).toBe('seeded');
+    store.testing.reset();
+    expect(store.reads.label).toBe('memory');
+    expect(builds.memory).toBe(1);
+  });
+
+  itDev('does not report a swap as a late bind, since it is a test seeding the store rather than startup', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const { store } = labelledStore();
+
+    void store.reads.label;
+    store.testing.swap({ reads: { label: 'seeded', describe: () => 'seeded' }, lifecycle: { forget: jest.fn() } });
 
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();

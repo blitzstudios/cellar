@@ -1,8 +1,8 @@
 /**
  * The kernel's {@link SqliteConnection} over `react-native-nitro-sqlite`: it opens the database on device, applies the
  * pragmas a store depends on, narrows JS values to what the JSI bridge binds, and routes a native shred through the
- * sentinel the fork's C++ matches. Every failure here degrades rather than throws, so a store that cannot get its
- * SQLite backend keeps running on the in-memory one.
+ * sentinel the fork's C++ matches. Every failure here degrades rather than throws, so a store that cannot get
+ * SQLite keeps running on an in-memory table.
  */
 
 import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
@@ -135,7 +135,7 @@ function isHandleInUse(error: unknown): boolean {
  *
  * Losing it is not the small thing it reads as. `readRows` falls back to the writer handle, so the ranker's multi
  * statement `TEMP` work starts interleaving with an ingest's savepoint on one connection, SQLite refuses the nested
- * transaction, and the first refusal degrades the whole store onto its in-memory backend — the entire working set back
+ * transaction, and the first refusal degrades the whole store onto an in-memory table — the entire working set back
  * on the JS heap. So this tries hard: close the stale handle by name and retry, and failing that take a unique name,
  * which cannot collide with anything.
  */
@@ -183,7 +183,7 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
         scope: `nitro_connection.reader.${name}`,
         context:
           'failed to open the dedicated reader handle — reads fall back to the writer, where a read that needs a transaction can collide ' +
-          'with an ingest and degrade the store onto its in-memory backend',
+          'with an ingest and degrade the store onto an in-memory table',
         error,
         extra: { connection: name },
       });
@@ -203,7 +203,7 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
  */
 let openedDuringBind: Set<string> | undefined;
 
-export function bindSqliteBackend(label: string, bind: () => void): void {
+function guardedBind(label: string, bind: () => void): void {
   const outer = openedDuringBind;
   const opened = new Set<string>();
   openedDuringBind = opened;
@@ -217,7 +217,7 @@ export function bindSqliteBackend(label: string, bind: () => void): void {
     reportStoreDegradation({
       scope: `nitro_connection.bind.${label}`,
       context:
-        'failed to bind the SQLite backend — the store stays on its in-memory backend, so its working set is on the JS heap for this session',
+        'failed to bind SQLite — the store stays on an in-memory table, so its working set is on the JS heap for this session',
       error,
       extra: { label },
     });
@@ -226,12 +226,7 @@ export function bindSqliteBackend(label: string, bind: () => void): void {
   }
 }
 
-export function bindSqliteStore<Backend>(
-  label: string,
-  dbName: string,
-  setBackend: (backend: Backend) => void,
-  createSqliteBackend: (conn: SqliteConnection) => Backend,
-  opts?: { dedicatedReader?: boolean },
-): void {
-  bindSqliteBackend(label, () => setBackend(createSqliteBackend(openNitroConnection(dbName, opts))));
+/** Opens `dbName` and moves `store` onto it, or leaves the store on its in-memory table and reports why. */
+export function bindSqliteStore(label: string, dbName: string, store: { bindSqlite: (conn: SqliteConnection) => void }, opts?: { dedicatedReader?: boolean }): void {
+  guardedBind(label, () => store.bindSqlite(openNitroConnection(dbName, opts)));
 }
