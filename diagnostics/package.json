@@ -3,5 +3,5 @@
   "private": true,
   "main": "../lib/module/diagnostics/index.js",
   "module": "../lib/module/diagnostics/index.js",
-  "types": "../lib/typescript/commonjs/diagnostics/index.d.ts"
+  "types": "../lib/typescript/module/diagnostics/index.d.ts"
 }

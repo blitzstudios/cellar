@@ -1,6 +1,6 @@
 /** The shapes a hydration hands a read, and the two guarantees every one of them carries: order, and a stable empty. */
 
-import { createMemoryRowTable } from '../../table/memory';
+import { createTestRowTable } from '../../testing/row_table';
 import { rowsOf } from '../../read/row_shaping';
 import { RowTableSchema } from '../../table/types';
 
@@ -21,7 +21,7 @@ const EMPTY_MAP: Record<string, string> = {};
 const name = (item: ItemRow): string => `${item.item_id}@${item.cohort}`;
 
 function seeded() {
-  const table = createMemoryRowTable(schema);
+  const table = createTestRowTable(schema);
   table.overwrite({ region: 'us' }, [row('us', 'a', 'NE', 3), row('us', 'b', 'KC', 1), row('us', 'c', 'NE', 2)]);
   table.overwrite({ region: 'eu' }, [row('eu', 'z', 'BOS', 9)]);
   return rowsOf(table);

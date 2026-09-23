@@ -12,4 +12,5 @@ module.exports = {
   },
   testMatch: ['<rootDir>/src/**/*.test.[jt]s'],
   setupFiles: ['./jest.setup.js'],
+  setupFilesAfterEnv: ['./jest.setup.sqljs.ts'],
 };

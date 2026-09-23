@@ -1,7 +1,7 @@
 /** Type-level tests, run by `tsc`: each `@ts-expect-error` fails typecheck if its guarantee stops holding. */
 
 import { definePartitions } from '../../define_partitions';
-import { createMemoryRowTable } from '../../table/memory';
+import { createTestRowTable } from '../../testing/row_table';
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { RowTableSchema } from '../../table/types';
 
@@ -17,7 +17,7 @@ const schema: RowTableSchema<Row> = {
 
 const rows = definePartitions<Row, { region: string }, Args>({
   name: 'select_args_probe',
-  table: createMemoryRowTable(schema),
+  table: createTestRowTable(schema),
   version: createVersionAtom('select_args_probe_version'),
   key: { fields: ['region'], where: ({ region }) => ({ region }) },
 });

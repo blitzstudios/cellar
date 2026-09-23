@@ -3,5 +3,5 @@
   "private": true,
   "main": "../lib/module/testing/index.js",
   "module": "../lib/module/testing/index.js",
-  "types": "../lib/typescript/commonjs/testing/index.d.ts"
+  "types": "../lib/typescript/module/testing/index.d.ts"
 }

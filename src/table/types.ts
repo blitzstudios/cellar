@@ -1,4 +1,4 @@
-/** The row table interface both kinds implement: SQLite on mobile, a `Map` on web and in tests. */
+/** The row table interface: what a store reads and writes its rows through, over any SQLite connection. */
 
 import type { WriteResult } from './change_set';
 
@@ -14,17 +14,12 @@ export type RowShape = Record<string, SqlValue | undefined>;
 export type ColumnType = 'TEXT' | 'INTEGER' | 'REAL';
 
 /**
- * One column as SQLite will create it. `notNull` is enforced by the database and not by the in-memory table, so a
- * row the constraint would reject on device inserts happily in a test.
+ * One column as SQLite will create it. `notNull` is enforced by the database, so a row the constraint rejects fails in
+ * a test as it would on device.
  */
 export interface ColumnDef {
   type: ColumnType;
   notNull?: boolean;
-  /**
-   * Read only by SQL the store writes itself — a score column a ranked scan sums, say — and never by a heap read. The
-   * in-memory table neither stores nor compares it, so a store builds it only for a table whose `engine` is `sqlite`.
-   */
-  sqliteOnly?: boolean;
 }
 
 /** A secondary index over the columns a read filters on, named so `init` and a bulk write can create and drop it by name. */
@@ -61,21 +56,18 @@ export interface RowTableSchema<Row extends RowShape> {
 
 /** What a `find` takes past its row filter, for a hydration that wants its rows in a column's order rather than in storage order. */
 export interface FindOpts<Row extends RowShape> {
-  /** Sorted in JS on both kinds of table, and a string compares by code unit, so a display name sorts by ASCII. */
+  /** Sorted in JS after the read, and a string compares by code unit, so a display name sorts by ASCII. */
   orderBy?: keyof Row & string;
 }
 
 /**
- * The whole contract a store has with its rows — three writes, reads over a `where`, and the ETag pair — answered
- * identically by SQLite and by `Map`s. Nothing here touches a version atom: a write reports the units it changed, and
- * the partition's ingest is what bumps with them.
+ * The whole contract a store has with its rows — three writes, reads over a `where`, and the ETag pair. Nothing here
+ * touches a version atom: a write reports the units it changed, and the partition's ingest is what bumps with them.
  *
  * Every write compares what it was handed with what the table holds and rewrites only the units that differ, so a
  * write whose payload matches the table changes nothing and reports an empty change set.
  */
 export interface RowTable<Row extends RowShape> {
-  /** Where the rows live, which decides whether a row needs its `sqliteOnly` columns built at all. */
-  readonly engine: 'sqlite' | 'memory';
   init(): void;
   /**
    * The schema's primary key, so a caller holding only the table can work out what identifies a row without being
@@ -117,9 +109,4 @@ export interface RowTable<Row extends RowShape> {
 /** A schema's columns in declaration order, which is the order an `INSERT` binds them and the order the fingerprint hashes. */
 export function columnNames<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string> {
   return Object.keys(schema.columns) as Array<keyof Row & string>;
-}
-
-/** The columns the in-memory table holds and compares: every one but those marked `sqliteOnly`. */
-export function memoryColumns<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string> {
-  return columnNames(schema).filter((column) => !schema.columns[column].sqliteOnly);
 }

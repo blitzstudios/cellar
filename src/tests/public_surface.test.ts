@@ -34,7 +34,7 @@ describe('the core entry point', () => {
       'ReadGateRuntime', 'ReadOptions', 'RowOf', 'RowProjection', 'RowProjectionDef', 'RowTable', 'RowTableSchema',
       'ShredColumn', 'ShredColumns', 'ShredOp', 'ShredSpec', 'SqlValue', 'SqliteConnection', 'TrackedValueOptions',
       'VersionAtom', 'WindowedBlock', 'WriteResult', 'byUnit', 'byVersion', 'configureDataKernel',
-      'createMemoryRowTable', 'createOnceGuard', 'createPushIngest', 'createSqliteRowTable', 'createTrackedSelector',
+      'createOnceGuard', 'createPushIngest', 'createSqliteRowTable', 'createTrackedSelector',
       'createWindowedList', 'definePartitions', 'defineShredColumns', 'defineSqliteStore', 'makeResult', 'pairRead',
       'pinnedReader', 'readRows', 'reportStoreDegradation', 'rowsOf', 'runSubscribed', 'runTracked',
       'shallowEqualArray', 'shallowEqualRecord', 'shallowEqualStruct', 'shallowEqualValue', 'useTrackedValue',
@@ -57,6 +57,12 @@ describe('the nitro entry point', () => {
   });
 });
 
+describe('the sqljs entry point', () => {
+  it('exports only the web wiring', () => {
+    expect(exportedFrom('sqljs/index.ts')).toEqual(['SqlJsModule', 'bindSqlJsStore', 'openSqlJsConnection']);
+  });
+});
+
 describe('the diagnostics entry point', () => {
   it('exports what a developer surface dumps, which no shipping screen reads', () => {
     expect(exportedFrom('diagnostics/index.ts')).toEqual([
@@ -68,8 +74,9 @@ describe('the diagnostics entry point', () => {
 describe('the testing entry point', () => {
   it('exports the fixtures a store suite needs, including the internals no shipping code calls', () => {
     expect(exportedFrom('testing/index.ts')).toEqual([
-      'SqlJsCapabilities', 'SqlJsConnection', 'createSqlJsConnection', 'createTestVersionAtom', 'createVersionAtom',
-      'evalShredElement', 'initSqlJs', 'installTestRuntime', 'itDev', 'resetOnceGuards', 'testMemos',
+      'SqlJsCapabilities', 'SqlJsConnection', 'createSqlJsConnection', 'createTestRowTable', 'createTestRowTableWithConnection',
+      'createTestVersionAtom', 'createVersionAtom', 'evalShredElement', 'initSqlJs', 'installTestRuntime', 'itDev',
+      'resetOnceGuards', 'testMemos',
     ]);
   });
 });

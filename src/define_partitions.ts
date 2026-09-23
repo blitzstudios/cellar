@@ -100,7 +100,7 @@ interface PartitionLifecycle<Args> {
   refetch: (args: Args) => void;
   /** Marks the partition stale, so the next reader fetches it. */
   invalidate: (args: Args) => void;
-  /** Discards every partition's fetch record, so each reads as cold. Called once a store degrades. */
+  /** Discards every partition's fetch record, so each reads as cold. Called when a store moves to another connection. */
   forget: () => void;
 }
 

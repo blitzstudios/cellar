@@ -1,5 +1,5 @@
 import { installTestRuntime } from '../testing/runtime';
-import { createMemoryRowTable } from '../table/memory';
+import { createTestRowTable } from '../testing/row_table';
 import { RowTable, RowTableSchema } from '../table/types';
 import { createVersionAtom } from '../reactivity/version_atom';
 import { definePartitions } from '../define_partitions';
@@ -31,7 +31,7 @@ const US: EventKey = { region: 'us', year: '2025', itemType: 'regular' };
 const OTHER: EventKey = { ...US, year: '2024' };
 
 function makeEvents(over: { table?: RowTable<EventRow>; parse?: (key: EventKey, raw: string) => EventRow[]; body?: string; internMax?: number } = {}) {
-  const table = over.table ?? createMemoryRowTable(SCHEMA);
+  const table = over.table ?? createTestRowTable(SCHEMA);
   table.init();
   const version = createVersionAtom('define_partitions_test');
   const changed: { key: EventKey; version: number }[] = [];
@@ -172,28 +172,26 @@ describe('definePartitions — bumping', () => {
 
 describe('definePartitions — the shred, and what happens when it cannot run', () => {
   it('re-parses in JS and reports a degradation when the raw shred throws, rather than losing the partition', async () => {
-    const memory = createMemoryRowTable(SCHEMA);
-    memory.init();
+    const real = createTestRowTable(SCHEMA);
     const table: RowTable<EventRow> = {
-      ...memory,
+      ...real,
       shred: jest.fn(async () => {
         throw new Error('native shred failed');
       }),
-      overwrite: jest.fn(memory.overwrite),
+      overwrite: jest.fn(real.overwrite),
     };
     const harness = makeEvents({ table });
 
     await harness.events.lifecycle.fetch(US);
 
     expect(table.overwrite).toHaveBeenCalled();
-    expect(memory.find(harness.events.where(US))).toHaveLength(2);
+    expect(real.find(harness.events.where(US))).toHaveLength(2);
     expect(degradeMock).toHaveBeenCalledWith(expect.objectContaining({ scope: 'events_store.raw_ingest' }));
   });
 
   it('skips the raw shred entirely for a body it is told cannot be iterated', async () => {
-    const memory = createMemoryRowTable(SCHEMA);
-    memory.init();
-    const table: RowTable<EventRow> = { ...memory, shred: jest.fn(memory.shred), overwrite: jest.fn(memory.overwrite) };
+    const real = createTestRowTable(SCHEMA);
+    const table: RowTable<EventRow> = { ...real, shred: jest.fn(real.shred), overwrite: jest.fn(real.overwrite) };
     const version = createVersionAtom('define_partitions_no_shred');
     const events = definePartitions<EventRow, EventKey>({
       name: 'events',
@@ -300,7 +298,7 @@ describe('definePartitions — a store whose key is an opaque string', () => {
   };
 
   const makeBlobs = () => {
-    const table = createMemoryRowTable(BLOB_SCHEMA);
+    const table = createTestRowTable(BLOB_SCHEMA);
     table.init();
     const version = createVersionAtom('define_partitions_blob');
     const blobs = definePartitions<BlobRow, string>({
@@ -360,7 +358,7 @@ describe('definePartitions — a store whose partition is a record, interned to 
   const WEEK1: Spec = { request: 'week', region: 'us', week: 1 };
 
   function makeMetrics() {
-    const table = createMemoryRowTable(METRIC_SCHEMA);
+    const table = createTestRowTable(METRIC_SCHEMA);
     table.init();
     // Deduped: the ingest also consults `query` for staleTime, so a fetch reaches it more than once.
     const byKey = new Map<string, Spec>();
@@ -515,7 +513,7 @@ describe('definePartitions — args that resolve to no partition at all', () => 
   };
 
   function makeLoose() {
-    const table = createMemoryRowTable(SCHEMA);
+    const table = createTestRowTable(SCHEMA);
     table.init();
     const queried: Spec[] = [];
     const loose = definePartitions<MetricRow, string, Args, Spec>({

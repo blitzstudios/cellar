@@ -1,5 +1,5 @@
 import { definePartitions } from '../../define_partitions';
-import { createMemoryRowTable } from '../../table/memory';
+import { createTestRowTable } from '../../testing/row_table';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { runTracked } from '../../reactivity/tracking';
@@ -38,7 +38,7 @@ function player(id: string, name: string, team: string | null = 'NE', rank: numb
 type NameVm = { id: string; label: string };
 
 function harness(over: { table?: RowTable<PlayerRow>; max?: number; of?: (rows: readonly PlayerRow[]) => NameVm | undefined } = {}) {
-  const table = over.table ?? createMemoryRowTable(SCHEMA);
+  const table = over.table ?? createTestRowTable(SCHEMA);
   table.init();
   const version = createVersionAtom('projection_test');
 
@@ -237,7 +237,7 @@ describe('row projection — a unit of several rows', () => {
   type TotalVm = { id: string; games: number; pts: number };
 
   function games() {
-    const table = createMemoryRowTable(GAMES);
+    const table = createTestRowTable(GAMES);
     const version = createVersionAtom('projection_games_test');
     const weeks = definePartitions<GameRow, string>({ name: 'games', table, version, key: { where: (week) => ({ week }) } });
     const of = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));

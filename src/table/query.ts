@@ -1,4 +1,4 @@
-/** The `where` and ordering predicates the two kinds of row table share: SQL on SQLite, the same rules in JS. */
+/** The `where` and ordering predicates a row table reads with: the SQL a filter becomes, and the JS a read sorts by. */
 
 import { RowShape, RowTableSchema, SqlValue } from './types';
 
@@ -20,7 +20,7 @@ export function whereClause(where: Partial<RowShape>): { sql: string; params: Sq
   return { sql: ` WHERE ${clauses.join(' AND ')}`, params };
 }
 
-/** The in-memory table's half of {@link whereClause}: whether one row satisfies `where`. */
+/** Whether one row satisfies `where`, by the rule {@link whereClause} writes in SQL; the dev check below uses it. */
 export function matchesWhere<Row extends RowShape>(row: Row, where: Partial<Row>): boolean {
   for (const key of Object.keys(where)) {
     const wanted = where[key as keyof Row];
@@ -53,8 +53,8 @@ export function assertRowsMatchWhere<Row extends RowShape>(table: string, where:
 }
 
 /**
- * The ordering behind `FindOpts.orderBy`, run in JS by both kinds of table so an ordered `find` comes back in one sequence
- * whichever one served it. A column holding numbers sorts numerically, and everything else compares as a string.
+ * The ordering behind `FindOpts.orderBy`, run in JS after the read so the order does not depend on the SQLite build
+ * that served it. A column holding numbers sorts numerically, and everything else compares as a string.
  */
 export function comparator<Row extends RowShape>(orderBy: keyof Row & string): (left: Row, right: Row) => number {
   return (left, right) => {

@@ -1,14 +1,14 @@
 /**
  * The kernel's {@link SqliteConnection} over `react-native-nitro-sqlite`: it opens the database on device, applies the
  * pragmas a store depends on, narrows JS values to what the JSI bridge binds, and routes a native shred through the
- * sentinel the fork's C++ matches. Every failure here degrades rather than throws, so a store that cannot get
- * SQLite keeps running on an in-memory table.
+ * sentinel the fork's C++ matches. A bind that fails is reported rather than thrown, and the store moves to an
+ * in-memory database, so a store that cannot open its file still runs its SQL.
  */
 
 import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { PinnedConnection, reportStoreDegradation, ShredSpec, SqliteConnection } from '../index';
-import type { SqliteRecovery } from '../define_sqlite_store';
+import type { BindOptions, SqliteRecovery } from '../define_sqlite_store';
 
 /** Matched verbatim by `sqliteExecute` in our `react-native-nitro-sqlite` fork (`cpp/shred.cpp`). */
 const NITRO_SHRED_SENTINEL = '-- nitro_shred_v1';
@@ -136,8 +136,8 @@ function isHandleInUse(error: unknown): boolean {
  *
  * Losing it is not the small thing it reads as. `readRows` falls back to the writer handle, so the ranker's multi
  * statement `TEMP` work starts interleaving with an ingest's savepoint on one connection, SQLite refuses the nested
- * transaction, and the first refusal degrades the whole store onto an in-memory table — the entire working set back
- * on the JS heap. So this tries hard: close the stale handle by name and retry, and failing that take a unique name,
+ * transaction, and each refusal sends the store through recovery: a reopen and a refetch of everything it holds. So
+ * this tries hard: close the stale handle by name and retry, and failing that take a unique name,
  * which cannot collide with anything.
  */
 function openReader(name: string): ReturnType<typeof openSecondary> | undefined {
@@ -184,7 +184,7 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
         scope: `nitro_connection.reader.${name}`,
         context:
           'failed to open the dedicated reader handle — reads fall back to the writer, where a read that needs a transaction can collide ' +
-          'with an ingest and degrade the store onto an in-memory table',
+          'with an ingest and send the store through a reopen and a refetch',
         error,
         extra: { connection: name },
       });
@@ -239,22 +239,34 @@ function discardNitroDatabase(name: string): void {
 }
 
 interface BindableStore {
-  bindSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
-  moveToSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
+  bindSqlite: (conn: SqliteConnection, options?: BindOptions) => void;
 }
 
 interface StoreBinding {
   label: string;
   dbName: string;
   store: BindableStore;
-  opts?: { dedicatedReader?: boolean };
+  opts: { dedicatedReader?: boolean };
 }
 
-/** Stores running on an in-memory table because their database would not open or kept failing, by database name. */
-const onHeap = new Map<string, StoreBinding>();
+/** Stores off their database file — on the in-memory fallback, or unbound — by database name. */
+const offFile = new Map<string, StoreBinding>();
 const retriesByDb = new Map<string, number>();
 /** Each retry that fails again costs a full refetch of the store, so a database that never opens stops being retried. */
 const MAX_RETRIES = 3;
+
+/**
+ * Opens the in-memory database a store falls back to: a scratch database beside `dbName`, whose temp schema holds the
+ * store's tables in memory. It has no dedicated reader, since a temp table belongs to the one connection that made it.
+ */
+export function openNitroMemoryFallback(dbName: string): SqliteConnection {
+  const name = `${dbName}.fallback`;
+  // A scratch file holds nothing worth keeping, and one an earlier session left behind could be what failed.
+  discardNitroDatabase(name);
+  const conn = openNitroConnection(name);
+  conn.execute('PRAGMA temp_store = MEMORY;');
+  return conn;
+}
 
 function recoveryFor(binding: StoreBinding): SqliteRecovery {
   return {
@@ -262,18 +274,44 @@ function recoveryFor(binding: StoreBinding): SqliteRecovery {
       if (discard) discardNitroDatabase(binding.dbName);
       return openNitroConnection(binding.dbName, binding.opts);
     },
-    onFallback: () => onHeap.set(binding.dbName, binding),
+    fallback: () => openNitroMemoryFallback(binding.dbName),
+    onLeftFile: () => offFile.set(binding.dbName, binding),
   };
 }
 
+const messageOf = (error: unknown): string => String((error as { message?: unknown })?.message ?? error);
+
+export interface BindSqliteStoreOptions {
+  dedicatedReader?: boolean;
+  /** Runs the store on its in-memory database and never touches the file: what the kill switch asks for. */
+  inMemory?: boolean;
+}
+
 /**
- * Opens `dbName` and moves `store` onto it. A database that will not open or migrate is retried once from empty, since
- * it is only a cache and a damaged file is the likeliest reason; a store that still cannot bind stays on its in-memory
- * table until {@link retrySqliteStores}. Once bound, a failure mid-session reopens the database before giving up on it.
+ * Opens `dbName` and binds `store` to it. A database that will not open or migrate is retried once from empty, since
+ * it is only a cache and a damaged file is the likeliest reason; a store that still cannot bind runs on its in-memory
+ * database until {@link retrySqliteStores} brings it back. Once bound, a failure mid-session reopens the database, and
+ * then moves the store to the same in-memory database.
  */
-export function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts?: { dedicatedReader?: boolean }): void {
-  const binding: StoreBinding = { label, dbName, store, opts };
-  const bind = () => store.bindSqlite(openNitroConnection(dbName, opts), recoveryFor(binding));
+export function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts: BindSqliteStoreOptions = {}): void {
+  const binding: StoreBinding = { label, dbName, store, opts: { dedicatedReader: opts.dedicatedReader } };
+  const recovery = recoveryFor(binding);
+  const bindInMemory = () => store.bindSqlite(openNitroMemoryFallback(dbName), { temporary: true, startup: true, recovery: { reopen: recovery.reopen } });
+
+  if (opts.inMemory) {
+    const error = attemptBind(bindInMemory);
+    if (error !== undefined) {
+      reportStoreDegradation({
+        scope: `nitro_connection.bind_in_memory.${label}`,
+        context: 'the store was asked to run in memory, and its in-memory database would not open; its reads are empty this session',
+        error,
+        extra: { label },
+      });
+    }
+    return;
+  }
+
+  const bind = () => store.bindSqlite(openNitroConnection(dbName, binding.opts), { recovery, startup: true });
   const firstError = attemptBind(bind);
   if (firstError === undefined) return;
 
@@ -290,32 +328,35 @@ export function bindSqliteStore(label: string, dbName: string, store: BindableSt
     return;
   }
 
-  onHeap.set(dbName, binding);
+  offFile.set(dbName, binding);
+  const memoryError = attemptBind(bindInMemory);
   reportStoreDegradation({
     scope: `nitro_connection.bind.${label}`,
     context:
-      'failed to bind SQLite, and again after deleting the database — the store runs on an in-memory table until a retry binds it',
+      memoryError === undefined
+        ? 'failed to bind SQLite, and again after deleting the database — the store runs on its in-memory database until a retry binds it'
+        : 'failed to bind SQLite, again after deleting the database, and to open its in-memory database — its reads are empty until a retry binds it',
     error: firstError,
-    extra: { label, afterDeleting: String((secondError as { message?: unknown })?.message ?? secondError) },
+    extra: { label, afterDeleting: messageOf(secondError), ...(memoryError === undefined ? {} : { inMemory: messageOf(memoryError) }) },
   });
 }
 
 /**
- * Tries every store running on an in-memory table — one whose bind failed, or that gave up on SQLite mid-session — on
- * its database again. For the app to call on returning to the foreground: a launch in the background, before the
- * device's first unlock after a restart, is one where the database cannot be opened and later can.
+ * Tries every store that is off its database file — one whose bind failed, or that left the file mid-session — on
+ * the file again. For the app to call on returning to the foreground: a launch in the background, before the device's
+ * first unlock after a restart, is one where the database cannot be opened and later can.
  */
 export function retrySqliteStores(): void {
-  for (const [dbName, binding] of onHeap) {
+  for (const [dbName, binding] of offFile) {
     const retries = (retriesByDb.get(dbName) ?? 0) + 1;
     if (retries > MAX_RETRIES) continue;
     retriesByDb.set(dbName, retries);
-    const error = attemptBind(() => binding.store.moveToSqlite(openNitroConnection(dbName, binding.opts), recoveryFor(binding)));
+    const error = attemptBind(() => binding.store.bindSqlite(openNitroConnection(dbName, binding.opts), { recovery: recoveryFor(binding) }));
     if (error !== undefined) continue;
-    onHeap.delete(dbName);
+    offFile.delete(dbName);
     reportStoreDegradation({
       scope: `nitro_connection.rebound.${binding.label}`,
-      context: 'a store that was running on an in-memory table is back on SQLite, and refetches into it',
+      context: 'a store that was off its database file is back on it, and refetches into it',
       extra: { label: binding.label, retries },
       severity: 'info',
     });

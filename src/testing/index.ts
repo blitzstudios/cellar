@@ -7,6 +7,7 @@
  */
 
 export { createSqlJsConnection, initSqlJs } from './sqljs_connection';
+export { createTestRowTable, createTestRowTableWithConnection } from './row_table';
 export type { SqlJsCapabilities, SqlJsConnection } from './sqljs_connection';
 export { createTestVersionAtom } from './version_atom';
 export { testMemos } from './memos';

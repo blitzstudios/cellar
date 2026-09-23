@@ -1,11 +1,11 @@
 /**
  * The kernel's {@link SqliteConnection} over `react-native-nitro-sqlite`: it opens the database on device, applies the
  * pragmas a store depends on, narrows JS values to what the JSI bridge binds, and routes a native shred through the
- * sentinel the fork's C++ matches. Every failure here degrades rather than throws, so a store that cannot get
- * SQLite keeps running on an in-memory table.
+ * sentinel the fork's C++ matches. A bind that fails is reported rather than thrown, and the store moves to an
+ * in-memory database, so a store that cannot open its file still runs its SQL.
  */
 import { SqliteConnection } from '../index';
-import type { SqliteRecovery } from '../define_sqlite_store';
+import type { BindOptions } from '../define_sqlite_store';
 export declare function getOpenSqliteConnections(): Array<{
     name: string;
     conn: SqliteConnection;
@@ -19,21 +19,29 @@ export declare function openNitroConnection(name: string, opts?: {
     dedicatedReader?: boolean;
 }): SqliteConnection;
 interface BindableStore {
-    bindSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
-    moveToSqlite: (conn: SqliteConnection, recovery?: SqliteRecovery) => void;
+    bindSqlite: (conn: SqliteConnection, options?: BindOptions) => void;
 }
 /**
- * Opens `dbName` and moves `store` onto it. A database that will not open or migrate is retried once from empty, since
- * it is only a cache and a damaged file is the likeliest reason; a store that still cannot bind stays on its in-memory
- * table until {@link retrySqliteStores}. Once bound, a failure mid-session reopens the database before giving up on it.
+ * Opens the in-memory database a store falls back to: a scratch database beside `dbName`, whose temp schema holds the
+ * store's tables in memory. It has no dedicated reader, since a temp table belongs to the one connection that made it.
  */
-export declare function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts?: {
+export declare function openNitroMemoryFallback(dbName: string): SqliteConnection;
+export interface BindSqliteStoreOptions {
     dedicatedReader?: boolean;
-}): void;
+    /** Runs the store on its in-memory database and never touches the file: what the kill switch asks for. */
+    inMemory?: boolean;
+}
 /**
- * Tries every store running on an in-memory table — one whose bind failed, or that gave up on SQLite mid-session — on
- * its database again. For the app to call on returning to the foreground: a launch in the background, before the
- * device's first unlock after a restart, is one where the database cannot be opened and later can.
+ * Opens `dbName` and binds `store` to it. A database that will not open or migrate is retried once from empty, since
+ * it is only a cache and a damaged file is the likeliest reason; a store that still cannot bind runs on its in-memory
+ * database until {@link retrySqliteStores} brings it back. Once bound, a failure mid-session reopens the database, and
+ * then moves the store to the same in-memory database.
+ */
+export declare function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts?: BindSqliteStoreOptions): void;
+/**
+ * Tries every store that is off its database file — one whose bind failed, or that left the file mid-session — on
+ * the file again. For the app to call on returning to the foreground: a launch in the background, before the device's
+ * first unlock after a restart, is one where the database cannot be opened and later can.
  */
 export declare function retrySqliteStores(): void;
 export {};

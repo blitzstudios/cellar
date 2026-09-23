@@ -8,7 +8,7 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { definePartitions } from '../../define_partitions';
-import { createMemoryRowTable } from '../../table/memory';
+import { createTestRowTable } from '../../testing/row_table';
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { RowTableSchema } from '../../table/types';
 import { installTestRuntime } from '../../testing/runtime';
@@ -26,7 +26,7 @@ const SCHEMA: RowTableSchema<Row> = {
 };
 
 function store() {
-  const table = createMemoryRowTable(SCHEMA);
+  const table = createTestRowTable(SCHEMA);
   const version = createVersionAtom('unit_reads_test');
   const players = definePartitions<Row, { sport: string }>({
     name: 'players',

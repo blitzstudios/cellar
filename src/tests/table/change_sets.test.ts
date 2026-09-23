@@ -1,10 +1,10 @@
 /**
- * What a write reports it changed, held to the same answers on both backends and every SQLite write path: a write
+ * What a write reports it changed, held to the same answers on every SQLite write path: a write
  * names exactly the units that were added, removed or differ in any column, rewrites only those, and a write whose
  * payload matches the table changes nothing at all.
  */
 
-import { createMemoryRowTable } from '../../table/memory';
+import { createTestRowTable } from '../../testing/row_table';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { RowTable, RowTableSchema } from '../../table/types';
 import { ALL_UNITS, ChangeSet } from '../../table/change_set';
@@ -80,11 +80,6 @@ interface Backend {
 const toJson = (rows: GameRow[]): string => JSON.stringify(rows.map(({ partition_key: _p, ...rest }) => rest));
 
 const backends: Backend[] = [
-  {
-    name: 'memory',
-    make: () => ({ table: createMemoryRowTable(games) }),
-    replace: async (table, rows) => table.overwrite({ partition_key: 'w1' }, rows).changes,
-  },
   {
     name: 'sqlite, synchronous overwrite',
     make: () => {
@@ -200,31 +195,20 @@ describe.each(backends)('change sets — $name', ({ make, replace }) => {
 });
 
 describe('change sets — merging socket rows', () => {
-  const both = () => {
-    const conn = createSqlJsConnection({ capabilities: 'full' });
-    const sqlite = createSqliteRowTable(games, conn);
-    sqlite.init();
-    return [createMemoryRowTable(games), sqlite];
-  };
-
   it('reports the units of rows that differ, and leaves the rest of each unit where it is', async () => {
-    for (const table of both()) {
-      table.overwrite({ partition_key: 'w1' }, week);
-      // eslint-disable-next-line no-await-in-loop -- one backend after the other
-      const { changes } = await table.upsert([game('p1', 'g2', 20), game('p2', 'g1', 7)]);
-      expect(units(changes)).toEqual(['p1']);
-      expect(table.find({ partition_key: 'w1', player_id: 'p1' }).map((row) => row.pts).sort()).toEqual([10, 20]);
-    }
+    const table = createTestRowTable(games);
+    table.overwrite({ partition_key: 'w1' }, week);
+    const { changes } = await table.upsert([game('p1', 'g2', 20), game('p2', 'g1', 7)]);
+    expect(units(changes)).toEqual(['p1']);
+    expect(table.find({ partition_key: 'w1', player_id: 'p1' }).map((row) => row.pts).sort()).toEqual([10, 20]);
   });
 
   it('reports nothing for a push repeating what the table holds', async () => {
-    for (const table of both()) {
-      table.overwrite({ partition_key: 'w1' }, week);
-      // eslint-disable-next-line no-await-in-loop -- one backend after the other
-      const { changes, rows } = await table.upsert([game('p2', 'g1', 7)]);
-      expect(units(changes)).toEqual([]);
-      expect(rows).toBe(1);
-    }
+    const table = createTestRowTable(games);
+    table.overwrite({ partition_key: 'w1' }, week);
+    const { changes, rows } = await table.upsert([game('p2', 'g1', 7)]);
+    expect(units(changes)).toEqual([]);
+    expect(rows).toBe(1);
   });
 });
 
@@ -244,21 +228,14 @@ describe('change sets — a table without a primary key', () => {
   };
   const side = (team: string, wk: number, opponent: string | null): SideRow => ({ season: '2026', team, week: wk, opponent });
 
-  const tables = (): RowTable<SideRow>[] => {
-    const sqlite = createSqliteRowTable(sides, createSqlJsConnection({ capabilities: 'full' }));
-    sqlite.init();
-    return [createMemoryRowTable(sides), sqlite];
-  };
-
   it('compares a unit as a multiset, so one duplicate more is a change and the same rows reordered are not', () => {
-    for (const table of tables()) {
-      const where = { season: '2026' };
-      table.overwrite(where, [side('KC', 1, 'BUF'), side('KC', 1, 'BUF'), side('SF', 1, 'LA')]);
-      expect(units(table.overwrite(where, [side('SF', 1, 'LA'), side('KC', 1, 'BUF'), side('KC', 1, 'BUF')]).changes)).toEqual([]);
-      expect(units(table.overwrite(where, [side('KC', 1, 'BUF'), side('SF', 1, 'LA')]).changes)).toEqual(['KC']);
-      expect(table.find({ season: '2026', team: 'KC' })).toHaveLength(1);
-      expect(units(table.overwrite(where, [side('KC', 1, 'BUF'), side('SF', 1, null)]).changes)).toEqual(['SF']);
-    }
+    const table = createTestRowTable(sides);
+    const where = { season: '2026' };
+    table.overwrite(where, [side('KC', 1, 'BUF'), side('KC', 1, 'BUF'), side('SF', 1, 'LA')]);
+    expect(units(table.overwrite(where, [side('SF', 1, 'LA'), side('KC', 1, 'BUF'), side('KC', 1, 'BUF')]).changes)).toEqual([]);
+    expect(units(table.overwrite(where, [side('KC', 1, 'BUF'), side('SF', 1, 'LA')]).changes)).toEqual(['KC']);
+    expect(table.find({ season: '2026', team: 'KC' })).toHaveLength(1);
+    expect(units(table.overwrite(where, [side('KC', 1, 'BUF'), side('SF', 1, null)]).changes)).toEqual(['SF']);
   });
 });
 

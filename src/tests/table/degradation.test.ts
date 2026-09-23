@@ -1,8 +1,6 @@
-import { configureDataKernel, INERT_ERRORS } from '../../runtime';
 import { RowTableSchema } from '../../table/types';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { defineSqliteStore } from '../../define_sqlite_store';
-import { VersionAtom } from '../../reactivity/version_atom';
 import { itDev, itProd } from '../../testing/dev_mode';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { guardedConnection, readRows, runBatch, SqliteConnection } from '../../table/connection';
@@ -160,84 +158,8 @@ describe('guardedConnection', () => {
   });
 });
 
-describe('kernel degradation', () => {
-  /** A connection every statement succeeds on, which is all binding needs. */
-  const okConn = (): SqliteConnection => ({ execute: () => ({ rows: { _array: [] } }) }) as unknown as SqliteConnection;
-
-  /** A store whose surface says which table it runs on, and hands out the version atom it was built with. */
-  function labelledStore(onBuild: (label: string) => void = () => {}) {
-    const forget = jest.fn();
-    let version: VersionAtom | undefined;
-    const store = defineSqliteStore<Thing, { reads: { tag: string }; lifecycle: { forget: jest.Mock } }, { sqlite: true }>({
-      name: 'testy',
-      schema,
-      build: (_table, atom, caps) => {
-        version = atom;
-        const tag = caps.sqlite ? 'sqlite' : 'memory';
-        onBuild(tag);
-        return { reads: { tag }, lifecycle: { forget } };
-      },
-      sqliteCapabilities: () => ({ sqlite: true }),
-    });
-    return { store, forget, version: () => version! };
-  }
-
-  itProd('hands the store back to an in-memory table, and tells every reader to look again', async () => {
-    const bumped = jest.fn();
-    const { store, version } = labelledStore();
-    store.bindSqlite(okConn());
-    version().subscribe(['us'], bumped);
-    version().bump(['us']);
-    bumped.mockClear();
-
-    store.degrade({ context: 'disk went away' });
-
-    // The swap is deferred to a microtask, so it lands after the render that read.
-    expect(store.reads.tag).toBe('sqlite');
-
-    await flushMicrotasks();
-
-    expect(store.reads.tag).toBe('memory');
-    expect(bumped).toHaveBeenCalled();
-  });
-
-  itProd('forgets what the SQLite surface held before the swap, so nothing is left describing it', async () => {
-    const order: string[] = [];
-    const { store, forget } = labelledStore((tag) => order.push(`built ${tag}`));
-    store.bindSqlite(okConn());
-    forget.mockImplementation(() => order.push('forgot'));
-
-    store.degrade({ context: 'x' });
-    await flushMicrotasks();
-
-    expect(order).toEqual(['built sqlite', 'forgot', 'built memory']);
-  });
-
-  itProd('degrades once, because a full disk is a condition rather than an event', async () => {
-    const { store, forget } = labelledStore();
-    store.bindSqlite(okConn());
-
-    store.degrade({ context: 'a' });
-    store.degrade({ context: 'b' });
-    await flushMicrotasks();
-
-    expect(forget).toHaveBeenCalledTimes(1);
-  });
-
-  itProd('reports it, since a store that silently halved its own performance is the failure you never hear about', () => {
-    const captureException = jest.fn();
-    configureDataKernel({ errors: { captureException, captureMessage: jest.fn() } });
-    const { store } = labelledStore();
-
-    store.degrade({ context: 'disk went away', error: new Error('SQLITE_IOERR') });
-
-    expect(captureException.mock.calls[0][1].tags).toEqual({ off_heap_degradation: 'testy.runtime' });
-    configureDataKernel({ errors: INERT_ERRORS });
-  });
-});
-
 describe('defineSqliteStore — the wiring', () => {
-  itProd('degrades the whole store when one of its statements fails, and refills from an in-memory table', async () => {
+  itProd('leaves a store with no way to recover unbound when one of its statements fails, forgetting what it fetched', async () => {
     const forget = jest.fn();
     const store = defineSqliteStore({
       name: 'things',
@@ -253,13 +175,13 @@ describe('defineSqliteStore — the wiring', () => {
     expect(store.reads.all()).toEqual([]);
   });
 
-  itProd('gives the capabilities the guarded handle too, so a failing accelerator degrades rather than throws', () => {
+  itProd('gives the capabilities the guarded handle too, so a failing ranker hands the store to recovery rather than throwing', () => {
     let capsConn: SqliteConnection | undefined;
     const store = defineSqliteStore<Thing, { reads: object }, { probe: SqliteConnection }>({
       name: 'things',
       schema,
       build: () => ({ reads: {} }),
-      sqliteCapabilities: (conn) => {
+      capabilities: (conn: SqliteConnection) => {
         capsConn = conn;
         return { probe: conn };
       },

@@ -189,14 +189,14 @@ export function addedColumns<Row extends RowShape>(
  * The `CREATE TABLE` a store's `init` runs, spelling the columns in the `columns` object's key order — the order every
  * `INSERT` binds them in. An empty `primaryKey` emits no key clause, which is how a snapshot table keeps its duplicates.
  */
-export function createTableSql<Row extends RowShape>(schema: RowTableSchema<Row>): string {
+export function createTableSql<Row extends RowShape>(schema: RowTableSchema<Row>, temporary = false): string {
   const cols = columnNames(schema).map((column) => {
     const def = schema.columns[column];
     return `  ${column} ${def.type}${def.notNull ? ' NOT NULL' : ''}`;
   });
   const lines = [...cols];
   if (schema.primaryKey.length) lines.push(`  PRIMARY KEY (${schema.primaryKey.join(', ')})`);
-  return `CREATE TABLE IF NOT EXISTS ${schema.table} (\n${lines.join(',\n')}\n);`;
+  return `CREATE ${temporary ? 'TEMP ' : ''}TABLE IF NOT EXISTS ${schema.table} (\n${lines.join(',\n')}\n);`;
 }
 
 /**
@@ -204,10 +204,10 @@ export function createTableSql<Row extends RowShape>(schema: RowTableSchema<Row>
  * partition holds one ETag. `init` builds it only for a schema declaring `meta`; a store without one refetches whole
  * bodies it already has, since it has nowhere to keep the ETag that would 304 them.
  */
-export function createMetaTableSql<Row extends RowShape>(meta: MetaDef<Row>): string {
+export function createMetaTableSql<Row extends RowShape>(meta: MetaDef<Row>, temporary = false): string {
   const keyCols = meta.keyColumns.map((column) => `  ${column} TEXT NOT NULL`);
   const lines = [...keyCols, `  ${meta.column} TEXT`, `  PRIMARY KEY (${meta.keyColumns.join(', ')})`];
-  return `CREATE TABLE IF NOT EXISTS ${meta.table} (\n${lines.join(',\n')}\n);`;
+  return `CREATE ${temporary ? 'TEMP ' : ''}TABLE IF NOT EXISTS ${meta.table} (\n${lines.join(',\n')}\n);`;
 }
 
 /**
@@ -264,8 +264,7 @@ const SCHEMA_REBUILD_SAMPLE_RATE = 0.001;
  * notice rather than an error, beside the failures that genuinely took a store off SQLite.
  *
  * It deliberately does not throw, in `__DEV__` or anywhere else. `init` stamps the schema last, so refusing the rebuild
- * would leave the stale stamp on disk and fall back to an in-memory table again on every launch after — permanently slower
- * than the heap it replaced, over an expected event. Catching the edit belongs where the edit happens: a store pins its
+ * would leave the stale stamp on disk and fail the same way on every launch after, over an expected event. Catching the edit belongs where the edit happens: a store pins its
  * column set in a test, which is what fails when the schema widens.
  */
 export function reportPushFedRebuild(table: string): void {

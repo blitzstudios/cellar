@@ -26,9 +26,9 @@ components that care and no others. That is what this package is.
 
 ## Requirements
 
-React 17 or newer and `@tanstack/query-core` 4 or newer. SQLite comes from `react-native-nitro-sqlite` and is
-reached through the `./nitro` entry point; with no native database the kernel runs the same stores over an
-in-memory row table, which is what web and tests use.
+React 17 or newer and `@tanstack/query-core` 4 or newer. Every store runs on SQLite, and every query is written once:
+on device it comes from `react-native-nitro-sqlite` through the `./nitro` entry point, and on the web from sql.js, the
+same engine compiled to WebAssembly, through `./sqljs`. Tests use sql.js too, through `./testing`.
 
 ## Install
 
@@ -133,11 +133,12 @@ export const itemStore = defineSqliteStore({
 `select` runs only once the slice holds rows, and again only when something it read has changed. `empty` is what
 callers get before that, so it has to be a stable reference.
 
-What comes back already runs on an in-memory row table, so web and tests need nothing further. Startup binds SQLite
-where the platform has it (step 4). A SQLite failure mid-session reopens the database, deleting it first when the file
-is what failed, and only a store that cannot reopen it falls back onto an in-memory table.
-`build` runs again each time the store moves, so it holds nothing outside what it returns — and `itemStore.reads`
-always reaches whichever table is running, so callers hold the store rather than anything taken off it.
+Until it is bound, a store runs over a connection that answers nothing, so each read gives back its `empty`. Startup
+binds it (step 4). On device, a SQLite failure mid-session reopens the database, deleting it first when the file is
+what failed, and after two failed reopens moves the store to an in-memory database: the same SQLite, with the store's
+tables in the connection's temp schema. `build` runs again each time the store moves, so it holds nothing outside what
+it returns — and `itemStore.reads` always reaches whichever connection is running, so callers hold the store rather
+than anything taken off it.
 
 #### Priming is by partition, not by what a read selects
 
@@ -195,7 +196,7 @@ Calling it with no `groupId` is fine: the read addresses nothing, fetches nothin
 
 ### 4. Wire it up at startup
 
-The host installs two services, and binds SQLite where the platform has it.
+The host installs two services, and binds each store to its platform's SQLite.
 
 ```ts
 import { configureDataKernel } from '@sleeperhq/react-data-kernel';
@@ -215,13 +216,23 @@ bindSqliteStore('initItemStore', 'items.db', itemStore);
 AppState.addEventListener('change', (state) => state === 'active' && retrySqliteStores());
 ```
 
+On the web, the app loads sql.js and binds each store to a database of its own, held in memory for the page:
+
+```ts
+import initSqlJs from 'sql.js';
+import { bindSqlJsStore } from '@sleeperhq/react-data-kernel/sqljs';
+
+initSqlJs({ locateFile: (file) => `/static/${file}` }).then((SQL) => bindSqlJsStore('items', SQL, itemStore));
+```
+
 `useQuery` and `useQueries` are passed in rather than imported, so an app keeps its own fetch policy — focus
 gating, retries, whatever it already does. Until `configureDataKernel` runs the kernel is inert: reads answer
 from rows already stored, and nothing fetches.
 
 A database that will not open or migrate is retried once from empty, since it is only a cache. A store that still
-cannot bind, or that gave up on SQLite mid-session, runs on its in-memory table until `retrySqliteStores` moves it
-back, at most three times a session.
+cannot bind, or that left its file mid-session, runs on its in-memory database until `retrySqliteStores` moves it
+back, at most three times a session. `bindSqliteStore(…, { inMemory: true })` skips the file altogether, which is
+what a kill switch wants.
 
 `useReadGate` is the same idea for the read side. It answers one question — is this read still taking writes? —
 and the kernel never learns why the answer changed, so an app decides whether a blurred screen, a hidden subtree
@@ -272,11 +283,9 @@ A store has as many partitions as its callers ask for — one per group, or thou
 - **Stable references for free.** Rows come back from SQLite as fresh objects, so a read rebuilding view models
   would repaint every subscriber. Declare the shape with `project` and the kernel keeps each unit's view model until
   that unit changes, handing back the same reference until then.
-- **A fallback that keeps the app running.** Every store also runs over an in-memory row table. That is the web
-  and test path, and it is where a store lands if SQLite cannot be opened or reopened, so a database error costs
-  memory instead of breaking reads. It finds rows through the schema's primary key and indexes, as SQLite does, so a
-  read of one unit costs the same however many partitions the table holds; and it skips every column declared
-  `sqliteOnly`, which a store builds only when its table's `engine` is `sqlite`.
+- **One query engine.** Every environment runs SQLite — the device's, sql.js on the web, sql.js in tests — so a store
+  writes each query once, in SQL, and a test runs the SQL a device runs. A store whose database file keeps failing
+  moves to an in-memory database on the same engine, so a disk error costs persistence, not speed.
 - **Dev-only guards.** Reading off-heap during render without subscribing is correct on first paint and frozen
   after, which is invisible on screen — so in `__DEV__` it warns, naming the partition and the component. Other
   guards catch a store bound too late, a memo sized too small, and a read fanning out across a list.
@@ -289,7 +298,7 @@ Everything below is exported from the package root.
 
 | export | what it gives you |
 | --- | --- |
-| `defineSqliteStore(config)` | the store: `reads`, `push` and `lifecycle` on whichever table is running, `bindSqlite` for startup, `moveToSqlite` for a store already running on the heap, the in-memory default and the degrade path back to it, and `testing` to put a test's own rows behind it |
+| `defineSqliteStore(config)` | the store: `reads`, `push` and `lifecycle` on whichever connection is running, `capabilities` for what the store builds from that connection (a ranker running its own SQL, say), `bindSqlite` to run it on a connection, and `testing.over(conn)` for a test's own surface and the table to seed it through |
 | `definePartitions(config)` | from `key.where` and an optional `fetch`: the read constructors, `lifecycle`, `memos`, and the row/version primitives (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`) |
 | `defineShredColumns<Src, Ctx>()(columns)` | one column table bound to everything derived from it: `names`, `columnDefs`, `row`, and `ops` once every column declares one |
 
@@ -297,7 +306,7 @@ Everything below is exported from the package root.
 
 | export | what it gives you |
 | --- | --- |
-| `createSqliteRowTable`, `createMemoryRowTable` | the two `RowTable` backends; same interface, different storage |
+| `createSqliteRowTable` | the `RowTable` over any SQLite connection; `{ temporary: true }` builds it in the connection's temp schema |
 | `RowTable` | `init`, three writes (`upsert`, `overwrite`, `shred`) that each return the units they changed, reads (`getOne`, `find`, `findIn`, `has`, `unitsWhere`) and the ETag pair (`getMeta`, `setMeta`) |
 | `ChangeSet`, `ALL_UNITS`, `NO_CHANGES` | what a write reports: the units it changed, every unit when it cannot say, or none |
 | `readRows`, `pinnedReader` | batch reads over a connection, and the opt-out that pins one to a single handle |
@@ -360,7 +369,8 @@ with nothing to compare against, its rows go straight in and every unit counts a
 | --- | --- |
 | `@sleeperhq/react-data-kernel` | everything above: what a store, a service or a screen writes against |
 | `…/nitro` | `openNitroConnection`, `bindSqliteStore` and `retrySqliteStores`, over `react-native-nitro-sqlite` — the only part that touches native code |
-| `…/testing` | a real SQLite engine off-device, an in-process version atom, the host services as spies, and the internals only a test reaches for |
+| `…/sqljs` | `bindSqlJsStore` and `openSqlJsConnection`, over a sql.js module the app loads — what the web runs on |
+| `…/testing` | sql.js off-device (`createTestRowTable`, `createSqlJsConnection`), an in-process version atom, the host services as spies, and the internals only a test reaches for |
 | `…/diagnostics` | `getIngestTimings` and `rollupIngestTimings`, for a developer surface; no shipping screen reads these |
 
 The core entry runs anywhere React does. Each subpath is declared twice — in `exports`, and as a stub

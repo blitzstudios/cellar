@@ -1,0 +1,78 @@
+/**
+ * A store's SQLite on the web: sql.js, the same engine compiled to WebAssembly, with each store's database held in
+ * memory for the life of the page. The app loads sql.js and hands the module in, so nothing here reaches for a file
+ * or a URL, and nothing bundled for a device ever imports it.
+ */
+
+import type { BindOptions } from '../define_sqlite_store';
+import { reportStoreDegradation } from '../diagnostics/telemetry';
+import type { BatchCommand, QueryExecResult, SqliteConnection } from '../table/connection';
+
+interface SqlJsStatement {
+  bind(params: Array<string | number | null>): void;
+  step(): boolean;
+  getAsObject(): unknown;
+  free(): void;
+}
+
+interface SqlJsDatabase {
+  prepare(sql: string): SqlJsStatement;
+}
+
+/** What `initSqlJs()` resolves to: the engine, from which each store opens a database of its own. */
+export interface SqlJsModule {
+  Database: new () => SqlJsDatabase;
+}
+
+interface BindableStore {
+  bindSqlite: (conn: SqliteConnection, options?: BindOptions) => void;
+}
+
+/** A connection over a fresh in-memory database. Synchronous underneath, so the async methods only wrap it. */
+export function openSqlJsConnection(SQL: SqlJsModule): SqliteConnection {
+  const db = new SQL.Database();
+
+  const run = (sql: string, params?: ReadonlyArray<string | number | null | undefined>): QueryExecResult => {
+    const statement = db.prepare(sql);
+    try {
+      statement.bind((params ?? []).map((param) => (param === undefined ? null : param)));
+      const rows: unknown[] = [];
+      while (statement.step()) rows.push(statement.getAsObject());
+      return { rows: { _array: rows } };
+    } finally {
+      statement.free();
+    }
+  };
+
+  const batch = (commands: ReadonlyArray<BatchCommand>): void => {
+    run('BEGIN;');
+    try {
+      for (const [sql, params] of commands) run(sql, params);
+      run('COMMIT;');
+    } catch (error) {
+      run('ROLLBACK;');
+      throw error;
+    }
+  };
+
+  return {
+    execute: run,
+    executeAsync: async (sql, params) => run(sql, params),
+    executeBatch: batch,
+    executeBatchAsync: async (commands) => batch(commands),
+  };
+}
+
+/** Binds `store` to a database of its own; a failure is reported and leaves the store reading empty rather than throwing. */
+export function bindSqlJsStore(label: string, SQL: SqlJsModule, store: BindableStore): void {
+  try {
+    store.bindSqlite(openSqlJsConnection(SQL));
+  } catch (error) {
+    reportStoreDegradation({
+      scope: `sqljs.bind.${label}`,
+      context: 'failed to bind the store to sql.js; its reads are empty for the life of the page',
+      error,
+      extra: { label },
+    });
+  }
+}

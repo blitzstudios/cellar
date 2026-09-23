@@ -15,7 +15,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const ROOT = join(__dirname, '..', '..');
-const SUBPATHS = ['nitro', 'testing', 'diagnostics'];
+const SUBPATHS = ['nitro', 'sqljs', 'testing', 'diagnostics'];
 
 function readPackage(...segments: string[]): Record<string, string> {
   return JSON.parse(readFileSync(join(ROOT, ...segments, 'package.json'), 'utf8'));
@@ -23,7 +23,7 @@ function readPackage(...segments: string[]): Record<string, string> {
 
 /** The build a path names — `lib/module/...` and `../lib/commonjs/...` are the two we can land in. */
 function buildOf(mainField: string): string {
-  const match = /lib\/(module|commonjs)\//.exec(mainField);
+  const match = /lib\/(?:typescript\/)?(module|commonjs)\//.exec(mainField);
   if (!match) throw new Error(`this main field names no build under lib/: ${mainField}`);
   return match[1];
 }
@@ -32,6 +32,16 @@ describe('entry point resolution', () => {
   it('sends the root and every subpath stub into one build, so a consumer loads one copy', () => {
     const root = buildOf(readPackage().main);
     const stubs = Object.fromEntries(SUBPATHS.map((subpath) => [subpath, buildOf(readPackage(subpath).main)]));
+
+    expect(stubs).toEqual(Object.fromEntries(SUBPATHS.map((subpath) => [subpath, root])));
+  });
+
+  it('types the root and every subpath stub from one build too, so a type from one entry is the same type in another', () => {
+    // A resolver reading the stub takes its `types`. Were a stub's declarations from the other build, a schema typed
+    // through the root and handed to a subpath's generic would meet a second, unrelated declaration of the same type,
+    // and the generic would infer its bare constraint instead of the schema's row.
+    const root = buildOf(readPackage().types);
+    const stubs = Object.fromEntries(SUBPATHS.map((subpath) => [subpath, buildOf(readPackage(subpath).types)]));
 
     expect(stubs).toEqual(Object.fromEntries(SUBPATHS.map((subpath) => [subpath, root])));
   });

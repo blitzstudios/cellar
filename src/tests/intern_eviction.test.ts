@@ -4,7 +4,7 @@
  * immune; a store whose keys are not gets a report saying so.
  */
 
-import { createMemoryRowTable } from '../table/memory';
+import { createTestRowTable } from '../testing/row_table';
 import { createVersionAtom } from '../reactivity/version_atom';
 import { definePartitions } from '../define_partitions';
 import { resetOnceGuards } from '../diagnostics/once_guard';
@@ -28,7 +28,7 @@ interface Game {
 }
 
 function makeGames(over: { from?: boolean } = {}) {
-  const table = createMemoryRowTable<GameRow>(SCHEMA);
+  const table = createTestRowTable<GameRow>(SCHEMA);
   table.init();
   const query = jest.fn(() => ({ queryFn: async () => ({ data: '["g1"]', etag: undefined }) }));
 

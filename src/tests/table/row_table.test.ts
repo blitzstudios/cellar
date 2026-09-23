@@ -1,6 +1,6 @@
 import { configureDataKernel, INERT_ERRORS } from '../../runtime';
 import { BatchCommand, readRows, SqliteConnection } from '../../table/connection';
-import { createMemoryRowTable } from '../../table/memory';
+import { createTestRowTable } from '../../testing/row_table';
 import { columnNames, RowTableSchema } from '../../table/types';
 import { addedColumns, LiveColumn, LiveSchema, planSchemaMigration, schemaFingerprint, schemaStructureStamp } from '../../table/schema';
 import { createSqliteRowTable } from '../../table/sqlite';
@@ -38,9 +38,9 @@ function row(id: string, region: string, cohort: string | null, num: number | nu
   return { id, region, cohort, num };
 }
 
-describe('row_table — memory backend', () => {
+describe('row_table — reads and writes', () => {
   it('overwrite replaces a scope, and reads project by equality', () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 2), row('b', 'us', 'NE', 1), row('c', 'us', 'KC', 3)]);
     db.overwrite({ region: 'eu' }, [row('x', 'eu', 'BOS', 9)]);
 
@@ -59,13 +59,13 @@ describe('row_table — memory backend', () => {
   });
 
   it('find orderBy sorts ascending (numeric)', () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 3), row('b', 'us', 'NE', 1), row('c', 'us', 'NE', 2)]);
     expect(db.find({ region: 'us' }, { orderBy: 'num' }).map((row) => row.id)).toEqual(['b', 'c', 'a']);
   });
 
   it('findIn returns rows for scope + IN, unordered', () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 1), row('b', 'us', 'KC', 2), row('c', 'us', 'KC', 3)]);
     const got = db
       .findIn({ region: 'us' }, 'id', ['c', 'a'])
@@ -76,7 +76,7 @@ describe('row_table — memory backend', () => {
   });
 
   it('upsert replaces by primary key', async () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     await db.upsert([row('a', 'us', 'NE', 1)]);
     await db.upsert([row('a', 'us', 'NE', 99)]);
     await db.upsert([row('a', 'eu', 'BOS', 1)]);
@@ -85,14 +85,14 @@ describe('row_table — memory backend', () => {
   });
 
   it('has is true immediately after overwrite (even empty), else reflects data', () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     expect(db.has({ region: 'us' })).toBe(false);
     db.overwrite({ region: 'us' }, []);
     expect(db.has({ region: 'us' })).toBe(true);
   });
 
   it('meta get/set by scope', () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     expect(db.getMeta({ region: 'us' })).toBeUndefined();
     db.setMeta({ region: 'us' }, 'etag-123');
     expect(db.getMeta({ region: 'us' })).toBe('etag-123');
@@ -100,7 +100,7 @@ describe('row_table — memory backend', () => {
   });
 
   it('clears the entry on undefined', () => {
-    const db = createMemoryRowTable(schema);
+    const db = createTestRowTable(schema);
     db.setMeta({ region: 'us' }, 'etag-123');
     db.setMeta({ region: 'us' }, undefined);
     expect(db.getMeta({ region: 'us' })).toBeUndefined();
@@ -424,8 +424,8 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
     /**
      * The rebuild has to happen on every build, dev included. `init` stamps the schema last, so a dev build that threw
-     * instead would leave the stale stamp on disk and fall back to an in-memory table again on the next launch, and the one
-     * after — permanently slower than the heap it replaced, over a change someone shipped on purpose.
+     * instead would leave the stale stamp on disk and fail the same way on the next launch, and the one after, over a
+     * change someone shipped on purpose.
      */
     it('rebuilds rather than refusing to, so the database is never left stale for the next launch to trip over', () => {
       const { conn, calls, setReader } = makeConn();
@@ -929,53 +929,36 @@ describe('row_table — inserts are grouped into multi-row statements', () => {
   });
 });
 
-describe('row_table — memory and SQLite answer the same `where`', () => {
-  beforeAll(async () => {
-    await initSqlJs();
-  });
-
+describe('row_table — what a `where` with a null means', () => {
   const seed: TestRow[] = [row('a', 'us', 'NE', 2), row('b', 'us', null, 1), row('c', 'us', 'KC', null)];
 
-  const bothBackends = (where: Partial<TestRow>): { memory: string[]; sqlite: string[] } => {
-    const memory = createMemoryRowTable(schema);
-    memory.overwrite({ region: 'us' }, seed);
-
-    const sqlite = createSqliteRowTable(schema, createSqlJsConnection({ capabilities: 'full' }));
-    sqlite.init();
-    sqlite.overwrite({ region: 'us' }, seed);
-
-    const ids = (rows: TestRow[]): string[] => rows.map((row) => row.id).sort();
-    return { memory: ids(memory.find(where)), sqlite: ids(sqlite.find(where)) };
+  const matching = (where: Partial<TestRow>): string[] => {
+    const table = createTestRowTable(schema);
+    table.overwrite({ region: 'us' }, seed);
+    return table
+      .find(where)
+      .map((row) => row.id)
+      .sort();
   };
 
-  it('agrees on a plain equality', () => {
-    const { memory, sqlite } = bothBackends({ region: 'us', cohort: 'NE' });
-    expect(memory).toEqual(['a']);
-    expect(sqlite).toEqual(memory);
+  it('matches a plain equality', () => {
+    expect(matching({ region: 'us', cohort: 'NE' })).toEqual(['a']);
   });
 
-  it('agrees that a null constraint means the rows holding null, not none of them', () => {
-    const { memory, sqlite } = bothBackends({ region: 'us', cohort: null });
-    expect(memory).toEqual(['b']);
-    expect(sqlite).toEqual(memory);
+  it('reads a null constraint as the rows holding null, not none of them', () => {
+    expect(matching({ region: 'us', cohort: null })).toEqual(['b']);
   });
 
   it('reads `undefined` as the same constraint as `null`, because SQLite cannot return the difference', () => {
-    const { memory, sqlite } = bothBackends({ region: 'us', cohort: undefined });
-    expect(memory).toEqual(['b']);
-    expect(sqlite).toEqual(memory);
+    expect(matching({ region: 'us', cohort: undefined })).toEqual(['b']);
   });
 
-  it('agrees on a null over a numeric column too, so this is not a TEXT-only accident', () => {
-    const { memory, sqlite } = bothBackends({ region: 'us', num: null });
-    expect(memory).toEqual(['c']);
-    expect(sqlite).toEqual(memory);
+  it('reads a null over a numeric column the same way, so this is not a TEXT-only accident', () => {
+    expect(matching({ region: 'us', num: null })).toEqual(['c']);
   });
 
   it('never widens to the whole table, which is what dropping the constraint would do to a scoped DELETE', () => {
-    const { memory, sqlite } = bothBackends({ region: 'eu', cohort: undefined });
-    expect(memory).toEqual([]);
-    expect(sqlite).toEqual([]);
+    expect(matching({ region: 'eu', cohort: undefined })).toEqual([]);
   });
 });
 
@@ -986,28 +969,21 @@ describe('row_table — unitsWhere names the units a filter holds', () => {
 
   const seed: TestRow[] = [row('a', 'us', 'NE', 2), row('b', 'us', null, 1), row('c', 'us', 'KC', null)];
 
-  const both = () => {
-    const memory = createMemoryRowTable(schema);
-    memory.overwrite({ region: 'us' }, seed);
-    const sqlite = createSqliteRowTable(schema, createSqlJsConnection({ capabilities: 'full' }));
-    sqlite.init();
-    sqlite.overwrite({ region: 'us' }, seed);
-    return { memory, sqlite };
+  const seeded = () => {
+    const table = createTestRowTable(schema);
+    table.overwrite({ region: 'us' }, seed);
+    return table;
   };
 
-  it('agrees between the backends', () => {
-    const { memory, sqlite } = both();
-    expect(memory.unitsWhere({ region: 'us' }).sort()).toEqual(['a', 'b', 'c']);
-    expect(sqlite.unitsWhere({ region: 'us' }).sort()).toEqual(memory.unitsWhere({ region: 'us' }).sort());
+  it('names every unit in the filter', () => {
+    expect(seeded().unitsWhere({ region: 'us' }).sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('narrows to the filter, a null constraint included, and answers nothing for a partition it does not hold', () => {
-    const { memory, sqlite } = both();
-    for (const db of [memory, sqlite]) {
-      expect(db.unitsWhere({ region: 'us', cohort: 'KC' })).toEqual(['c']);
-      expect(db.unitsWhere({ region: 'us', cohort: null })).toEqual(['b']);
-      expect(db.unitsWhere({ region: 'eu' })).toEqual([]);
-    }
+    const db = seeded();
+    expect(db.unitsWhere({ region: 'us', cohort: 'KC' })).toEqual(['c']);
+    expect(db.unitsWhere({ region: 'us', cohort: null })).toEqual(['b']);
+    expect(db.unitsWhere({ region: 'eu' })).toEqual([]);
   });
 
   it('names the units and never reads the rows behind them', () => {
@@ -1085,22 +1061,19 @@ describe('row_table — the shred spec must delete what the scope names', () => 
 
 describe('row_table — a write must land inside the filter it replaced', () => {
   itDev('rejects a row whose columns fall outside the filter, which would strand it where no later write reaches', () => {
-    const db = createMemoryRowTable(schema);
-    db.init();
+    const db = createTestRowTable(schema);
 
     expect(() => db.overwrite({ region: 'us' }, [row('a', 'eu', 'BOS', 1)])).toThrow(/`region` is "eu", not "us"/);
   });
 
   itDev('rejects the same row arriving through the JS half of an ingest', async () => {
-    const db = createMemoryRowTable(schema);
-    db.init();
+    const db = createTestRowTable(schema);
 
     await expect(db.shred({ region: 'us' }, '[]', () => [row('a', 'eu', 'BOS', 1)])).rejects.toThrow(/does not match the filter it replaced/);
   });
 
   it('allows a row that matches on every column the filter names, whatever else it carries', () => {
-    const db = createMemoryRowTable(schema);
-    db.init();
+    const db = createTestRowTable(schema);
 
     expect(db.overwrite({ region: 'us' }, [row('a', 'us', 'SF', 1), row('b', 'us', 'KC', 2)]).rows).toBe(2);
   });

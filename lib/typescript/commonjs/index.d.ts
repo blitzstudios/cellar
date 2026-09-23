@@ -19,7 +19,6 @@ export { byVersion, byUnit, shallowEqualArray, shallowEqualRecord, shallowEqualS
 export type { SqlValue, ColumnDef, RowTableSchema, RowTable } from './table/types';
 export type { ChangeSet, WriteResult } from './table/change_set';
 export { ALL_UNITS, NO_CHANGES } from './table/change_set';
-export { createMemoryRowTable } from './table/memory';
 export { createSqliteRowTable } from './table/sqlite';
 export type { SqliteConnection, PinnedConnection } from './table/connection';
 export { readRows, pinnedReader } from './table/connection';
