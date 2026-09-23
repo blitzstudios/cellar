@@ -15,9 +15,15 @@ export declare function getOpenSqliteConnections(): Array<{
  * process cannot hand back either way, and the report that follows a failed bind is the one worth keeping.
  */
 export declare function closeNitroConnection(name: string): void;
-export declare function openNitroConnection(name: string, opts?: {
+export interface NitroConnectionOptions {
     dedicatedReader?: boolean;
-}): SqliteConnection;
+    /**
+     * Leaves the native JSON shred off the connection, so a table ingests through its JS row builders instead. For a
+     * remote switch: the shred is native code on every ingest, and a payload it mishandles has no other remedy.
+     */
+    shredInJs?: boolean;
+}
+export declare function openNitroConnection(name: string, opts?: NitroConnectionOptions): SqliteConnection;
 interface BindableStore {
     bindSqlite: (conn: SqliteConnection, options?: BindOptions) => void;
 }
@@ -25,9 +31,8 @@ interface BindableStore {
  * Opens the in-memory database a store falls back to: a scratch database beside `dbName`, whose temp schema holds the
  * store's tables in memory. It has no dedicated reader, since a temp table belongs to the one connection that made it.
  */
-export declare function openNitroMemoryFallback(dbName: string): SqliteConnection;
-export interface BindSqliteStoreOptions {
-    dedicatedReader?: boolean;
+export declare function openNitroMemoryFallback(dbName: string, opts?: Pick<NitroConnectionOptions, 'shredInJs'>): SqliteConnection;
+export interface BindSqliteStoreOptions extends NitroConnectionOptions {
     /** Runs the store on its in-memory database and never touches the file: what the kill switch asks for. */
     inMemory?: boolean;
 }

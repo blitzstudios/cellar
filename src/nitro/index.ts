@@ -4,3 +4,4 @@
  */
 
 export { openNitroConnection, getOpenSqliteConnections, bindSqliteStore, retrySqliteStores } from './nitro_connection';
+export type { BindSqliteStoreOptions } from './nitro_connection';

@@ -511,6 +511,29 @@ describe('binding a store — getting SQLite back', () => {
     expect(bindSqlite.mock.calls[0][1]).toEqual(expect.objectContaining({ temporary: true }));
   });
 
+  it('ingests through the JS row builders when asked to: on the file, on a reopen, and on the in-memory database', () => {
+    const bindSqlite = jest.fn();
+    bindSqliteStore('js', 'js.db', { bindSqlite }, { shredInJs: true });
+    const [conn, { recovery }] = bindSqlite.mock.calls[0];
+
+    expect(conn.shredJsonArrayAsync).toBeUndefined();
+    expect(recovery.reopen({ discard: false }).shredJsonArrayAsync).toBeUndefined();
+    expect(recovery.fallback().shredJsonArrayAsync).toBeUndefined();
+
+    const switched = jest.fn();
+    bindSqliteStore('js-memory', 'js-memory.db', { bindSqlite: switched }, { inMemory: true, shredInJs: true });
+    expect(switched.mock.calls[0][0].shredJsonArrayAsync).toBeUndefined();
+  });
+
+  it('keeps the native shred on a connection by default', () => {
+    const bindSqlite = jest.fn();
+    bindSqliteStore('native', 'native.db', { bindSqlite });
+    const [conn, { recovery }] = bindSqlite.mock.calls[0];
+
+    expect(conn.shredJsonArrayAsync).toEqual(expect.any(Function));
+    expect(recovery.fallback().shredJsonArrayAsync).toEqual(expect.any(Function));
+  });
+
   it('hands the store a reopen that deletes the database only when asked to', () => {
     const bindSqlite = jest.fn();
     bindSqliteStore('reopening', 'reopening.db', { bindSqlite });

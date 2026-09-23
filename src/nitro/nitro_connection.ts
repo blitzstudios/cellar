@@ -160,7 +160,16 @@ function openReader(name: string): ReturnType<typeof openSecondary> | undefined 
   return openSecondary({ name, handle: `${preferred}:${Date.now().toString(36)}` });
 }
 
-export function openNitroConnection(name: string, opts?: { dedicatedReader?: boolean }): SqliteConnection {
+export interface NitroConnectionOptions {
+  dedicatedReader?: boolean;
+  /**
+   * Leaves the native JSON shred off the connection, so a table ingests through its JS row builders instead. For a
+   * remote switch: the shred is native code on every ingest, and a payload it mishandles has no other remedy.
+   */
+  shredInJs?: boolean;
+}
+
+export function openNitroConnection(name: string, opts?: NitroConnectionOptions): SqliteConnection {
   // Reopening a database this process already holds — a Fast Refresh re-running init, or a store rebound after a
   // schema change — has to hand the previous handles back first. Registering over them would leak them, and because a
   // secondary handle's name is exclusive, the reader is the one that would not come back.
@@ -191,7 +200,8 @@ export function openNitroConnection(name: string, opts?: { dedicatedReader?: boo
     }
   }
 
-  const adapted: SqliteConnection = { ...adaptHandle(writer), reader };
+  const { shredJsonArrayAsync, ...writerHandle } = adaptHandle(writer);
+  const adapted: SqliteConnection = { ...writerHandle, ...(opts?.shredInJs ? {} : { shredJsonArrayAsync }), reader };
   openConnections.set(name, { conn: adapted, handles });
   openedDuringBind?.add(name);
   return adapted;
@@ -246,7 +256,7 @@ interface StoreBinding {
   label: string;
   dbName: string;
   store: BindableStore;
-  opts: { dedicatedReader?: boolean };
+  opts: NitroConnectionOptions;
 }
 
 /** Stores off their database file — on the in-memory fallback, or unbound — by database name. */
@@ -259,11 +269,11 @@ const MAX_RETRIES = 3;
  * Opens the in-memory database a store falls back to: a scratch database beside `dbName`, whose temp schema holds the
  * store's tables in memory. It has no dedicated reader, since a temp table belongs to the one connection that made it.
  */
-export function openNitroMemoryFallback(dbName: string): SqliteConnection {
+export function openNitroMemoryFallback(dbName: string, opts?: Pick<NitroConnectionOptions, 'shredInJs'>): SqliteConnection {
   const name = `${dbName}.fallback`;
   // A scratch file holds nothing worth keeping, and one an earlier session left behind could be what failed.
   discardNitroDatabase(name);
-  const conn = openNitroConnection(name);
+  const conn = openNitroConnection(name, { shredInJs: opts?.shredInJs });
   conn.execute('PRAGMA temp_store = MEMORY;');
   return conn;
 }
@@ -274,15 +284,14 @@ function recoveryFor(binding: StoreBinding): SqliteRecovery {
       if (discard) discardNitroDatabase(binding.dbName);
       return openNitroConnection(binding.dbName, binding.opts);
     },
-    fallback: () => openNitroMemoryFallback(binding.dbName),
+    fallback: () => openNitroMemoryFallback(binding.dbName, binding.opts),
     onLeftFile: () => offFile.set(binding.dbName, binding),
   };
 }
 
 const messageOf = (error: unknown): string => String((error as { message?: unknown })?.message ?? error);
 
-export interface BindSqliteStoreOptions {
-  dedicatedReader?: boolean;
+export interface BindSqliteStoreOptions extends NitroConnectionOptions {
   /** Runs the store on its in-memory database and never touches the file: what the kill switch asks for. */
   inMemory?: boolean;
 }
@@ -294,9 +303,9 @@ export interface BindSqliteStoreOptions {
  * then moves the store to the same in-memory database.
  */
 export function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts: BindSqliteStoreOptions = {}): void {
-  const binding: StoreBinding = { label, dbName, store, opts: { dedicatedReader: opts.dedicatedReader } };
+  const binding: StoreBinding = { label, dbName, store, opts: { dedicatedReader: opts.dedicatedReader, shredInJs: opts.shredInJs } };
   const recovery = recoveryFor(binding);
-  const bindInMemory = () => store.bindSqlite(openNitroMemoryFallback(dbName), { temporary: true, startup: true, recovery: { reopen: recovery.reopen } });
+  const bindInMemory = () => store.bindSqlite(openNitroMemoryFallback(dbName, binding.opts), { temporary: true, startup: true, recovery: { reopen: recovery.reopen } });
 
   if (opts.inMemory) {
     const error = attemptBind(bindInMemory);

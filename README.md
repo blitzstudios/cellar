@@ -34,7 +34,7 @@ same engine compiled to WebAssembly, through `./sqljs`. Tests use sql.js too, th
 
 ```jsonc
 // package.json
-"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.6.3-gitpkg"
+"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.1-gitpkg"
 ```
 
 ## Quick start
@@ -232,7 +232,8 @@ from rows already stored, and nothing fetches.
 A database that will not open or migrate is retried once from empty, since it is only a cache. A store that still
 cannot bind, or that left its file mid-session, runs on its in-memory database until `retrySqliteStores` moves it
 back, at most three times a session. `bindSqliteStore(…, { inMemory: true })` skips the file altogether, which is
-what a kill switch wants.
+what a kill switch wants, and `{ shredInJs: true }` ingests through the JS row builders instead of the native shred,
+for a switch over that native code.
 
 `useReadGate` is the same idea for the read side. It answers one question — is this read still taking writes? —
 and the kernel never learns why the answer changed, so an app decides whether a blurred screen, a hidden subtree
@@ -256,7 +257,7 @@ Three words, and they nest:
 
 | term | what it is |
 | --- | --- |
-| **table** | the rows themselves — SQLite on device, a `Map` on web and in tests, behind one `RowTable` interface |
+| **table** | the rows themselves, in SQLite: the device's own, and sql.js on web and in tests, behind one `RowTable` interface |
 | **partition** | one addressable slice of a table: what a fetch replaces and an ETag belongs to |
 | **unit** | what a view model is about — an item, a player — declared on the schema. Every write reports the units it changed, and a read of named units depends on those alone. One unit may span several rows |
 | **store** | the module wrapping both, declared with `defineSqliteStore` |
