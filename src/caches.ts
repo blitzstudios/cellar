@@ -1,8 +1,7 @@
 /**
- * Bounded caches for values derived from off-heap rows. A value is held against what it depends on — a partition's
- * version for one derived from the whole partition, a unit's for one derived from that unit's rows — so a write that
- * changed nothing it read leaves it in place, and an `isEqual` keeps the reference when a rebuild changed nothing.
- * A store reaches these through {@link createMemos}, which is where it accounts for all of them at once.
+ * Size-limited caches for values computed from table rows. Each value is kept until what it was computed from changes:
+ * its partition, or the one unit it was built from. An `isEqual` keeps the previous object when a rebuild produces an
+ * equal value. Stores declare theirs with {@link createMemos}.
  */
 
 import { identityOf, KEY_SEP, cacheKeyOf } from './args_key';
@@ -14,9 +13,11 @@ const EVICTION_GHOSTS = 256;
 const UNDERSIZED_REPORT_AT = 256;
 const NEVER_HIT_REPORT_AT = 512;
 
-/** What a declared memo calls itself in a report, and what its keys are built from. */
+/** How a memo is named in its dev warnings. */
 export interface MemoDiagnostics {
+  /** The memo's name, as `store.memo`. */
   name: string;
+  /** What its keys are built from, such as `partition + unit`. */
   keyedBy: string;
 }
 
@@ -62,21 +63,27 @@ function createMemoWatch({ name, keyedBy }: MemoDiagnostics, maxEntries: number)
 }
 
 /**
- * A fixed-capacity string-keyed map that drops its coldest entry when full: what every cache in this file is built on,
- * and what a store reaches for to bound a table it keys itself — interned partition records, per-partition timestamps.
+ * A map with string keys and a fixed capacity, which drops its least recently used entry when full. Every cache here is
+ * built on one, and a store can use one for its own bounded lookups.
  */
 export interface BoundedLru<V> {
-  /** `undefined` for a missing key and for a stored `undefined` alike; wrap the payload to tell them apart. */
+  /**
+   * The value for `key`, marking it recently used. Returns `undefined` for a missing key and a stored `undefined`
+   * alike.
+   */
   get(key: string): V | undefined;
+  /** Stores a value, dropping the least recently used entry if full. */
   set(key: string, value: V): void;
-  /** Least- to most-recently used. */
+  /** Every key, from least to most recently used. */
   keys(): IterableIterator<string>;
 }
 
 /** One entry's place in the recency list: `older` runs toward the coldest end, `newer` toward the hottest. */
 type LruNode<V> = { key: string; value: V; older: LruNode<V> | undefined; newer: LruNode<V> | undefined };
 
-/** Builds one holding at most `max` entries. `onEvict` fires for a key dropped for capacity, which is how a cache notices it is undersized. */
+/**
+ * Creates a {@link BoundedLru} holding at most `max` entries. `onEvict` is called with each key dropped to make room.
+ */
 export function createBoundedLru<V>(max: number, onEvict?: (key: string) => void): BoundedLru<V> {
   const map = new Map<string, LruNode<V>>();
   // Recency rides a linked list rather than `Map` insertion order: reordering by re-inserting
@@ -138,20 +145,19 @@ export function createBoundedLru<V>(max: number, onEvict?: (key: string) => void
 }
 
 /**
- * A memo over values derived from a partition's rows, held against that partition's version, so a read no write
- * invalidated answers from the entry instead of querying the table again. An `isEqual` on top hands back the prior
- * reference when a recompute turned out to change nothing, so a downstream shallow-equal bails and nothing repaints.
+ * A cache of values stored with the version they were computed at. A lookup at a different version misses, so a value
+ * is recomputed once after each write. An `isEqual` keeps the previous object when the recompute is equal to it.
  */
 export interface VersionedCache<V> {
-  /** The value held for `key` at `version`, computed on a miss. */
+  /** The value for `key` at `version`, computing and storing it on a miss. */
   read(key: string, version: number, compute: () => V): V;
-  /** The entry held for `key` at `version`, wrapped so a stored `undefined` reads as a hit. */
+  /** The value for `key` at `version`, as `{ value }` so a stored `undefined` is distinguishable from a miss. */
   peek(key: string, version: number): { value: V } | undefined;
-  /** Stores `value` and returns the reference to use, which `isEqual` may make a prior one. */
+  /** Stores `value` and returns the object to use, which is the previous one if `isEqual` says they match. */
   set(key: string, version: number, value: V): V;
 }
 
-/** Builds one. Stores declare theirs through {@link createMemos}; the read surface holds one for presence. */
+/** Creates a {@link VersionedCache}. Stores declare theirs through {@link createMemos}. */
 export function createVersionedCache<V>(maxEntries: number, isEqual?: (prev: V, next: V) => boolean, diagnostics?: MemoDiagnostics): VersionedCache<V> {
   const watch = __DEV__ && diagnostics ? createMemoWatch(diagnostics, maxEntries) : undefined;
   const lru = createBoundedLru<{ version: number; value: V }>(maxEntries, watch?.onEvict);
@@ -181,12 +187,12 @@ export function createVersionedCache<V>(maxEntries: number, isEqual?: (prev: V, 
 }
 
 /**
- * A value held against whatever its computation read, which is how the read surface caches a read's result: the
- * computation runs in a tracking scope, and the entry stays valid while every version it reported is unchanged. A read
- * of three players therefore survives a write that changed a fourth. Every lookup reports those same dependencies to
- * the scope above it, hit or miss, so a caller subscribing to what it read never misses one because it was cached.
+ * A cache of values kept until anything their computation read changes; this is how reads cache their results. A read
+ * of three players keeps its value through a write that changed a fourth. Every lookup, hit or miss, passes the
+ * value's dependencies up to the caller's tracking scope, so a cached value is subscribed to like a computed one.
  */
 export interface TrackedCache<V> {
+  /** The value for `key`, recomputing it if anything it read has changed. */
   read(key: string, compute: () => V): V;
 }
 
@@ -196,7 +202,7 @@ interface TrackedEntry<V> {
   versions: readonly number[];
 }
 
-/** Builds one. `isEqual` hands back the prior reference when a recompute produced an equal value. */
+/** Creates a {@link TrackedCache}. `isEqual` keeps the previous object when a recompute produces an equal value. */
 export function createTrackedCache<V>(maxEntries: number, isEqual?: (prev: V, next: V) => boolean): TrackedCache<V> {
   const lru = createBoundedLru<TrackedEntry<V>>(maxEntries);
   return {
@@ -216,59 +222,69 @@ export function createTrackedCache<V>(maxEntries: number, isEqual?: (prev: V, ne
 }
 
 /**
- * What a memo's key holds beyond the partition: a scalar, or a structured value — a config object, an options subset —
- * which the kernel interns into a short id, so keying by one costs a key the length of an id rather than of its JSON.
+ * One part of a memo's key beyond the partition: a scalar, or an object or array such as a config. Equal objects map to
+ * the same short id, so an object costs no more in the key than a scalar.
  */
 export type MemoPart = string | number | boolean | null | undefined | readonly unknown[] | Record<string, unknown>;
 
 /** One `MemoPart` per name the memo declared in `by`, in that order. */
 type PartsOf<By extends readonly string[]> = { -readonly [Index in keyof By]: MemoPart };
 
-/** A memo bound to one partition, so neither its key nor its version is the caller's to build. */
+/**
+ * A {@link byVersion} memo for one partition, as returned by `memo.for(key)`. Its entries are keyed by the parts listed
+ * in `by`, and are dropped by any write to the partition.
+ */
 export interface BoundVersionMemo<V, By extends readonly string[]> {
-  /** The value held for these parts at the partition's current version, computed on a miss. */
+  /** The value for these key parts, running `build` and storing its result on a miss. */
   read(...args: [...PartsOf<By>, build: () => V]): V;
-  /** The entry held for these parts, wrapped so a stored `undefined` reads as a hit. */
+  /** The value for these key parts, as `{ value }` so a stored `undefined` is distinguishable from a miss. */
   peek(...parts: PartsOf<By>): { value: V } | undefined;
-  /** Stores a value and returns the reference to use, which `isEqual` may make a prior one. */
+  /** Stores a value and returns the object to use, which is the previous one if `isEqual` says they match. */
   set(...args: [...PartsOf<By>, value: V]): V;
 }
 
 /**
- * A memo bound to one partition whose entries each belong to one unit, and stay valid until that unit changes. Every
- * lookup reports the unit it names, so a read built from these depends on those units and nothing else.
+ * A {@link byUnit} memo for one partition, as returned by `memo.for(key)`. Each entry belongs to one unit and is
+ * kept until that unit's rows change. A read that uses it re-renders only when the units it asked for change.
  */
 export interface BoundUnitMemo<V, By extends readonly string[]> {
-  /** The value held for `unit` and these parts, built on a miss or once the unit has changed. */
+  /** The value for `unit` and these key parts, running `build` on a miss or after the unit changed. */
   read(unit: string, ...args: [...PartsOf<By>, build: () => V]): V;
   /**
-   * The values for `units`, answering what it holds and building every miss in one call, so a read of a roster costs
-   * one query for the players that changed rather than one each. `build` is handed the units to build and answers for
-   * each; a unit it leaves out is held as absent.
+   * The values for `units`, building every missing one in a single `build` call, so a roster read costs one query
+   * for the players that changed rather than one per player. `build` gets the units to build and returns a map of
+   * their values; a unit it leaves out is stored as `undefined`.
    */
   readMany(units: readonly string[], ...args: [...PartsOf<By>, build: (missing: readonly string[]) => ReadonlyMap<string, V>]): Map<string, V>;
 }
 
-/** A declared memo, reached by naming the partition it holds values for. */
+/** A memo declared in a store's `memos` block. */
 export interface Memo<Key, Bound> {
+  /** The memo for one partition. */
   for(key: Key): Bound;
 }
 
-/** A memo as declared, before a store's partitions bind it. {@link byVersion} and {@link byUnit} are the two. */
+/**
+ * A memo definition, before {@link createMemos} attaches it to a store. {@link byVersion} and {@link byUnit} create
+ * them.
+ */
 interface MemoDecl<Bound> {
+  /** The names of the memo's key parts beyond the partition. */
   by: readonly string[];
+  /** Attaches the memo to a store's partitions. */
   bind(store: PartitionBinding<unknown>, diagnostics: MemoDiagnostics): Memo<unknown, Bound>;
 }
 
-/** What a `memos` block's entries are, whatever they hold: what {@link byVersion} and {@link byUnit} return. */
+/** A memo definition, as created by {@link byVersion} or {@link byUnit}. */
 export type MemoDeclaration = MemoDecl<unknown>;
 
-/** What a store's partitions lend their memos: how a key addresses a partition, and what version it holds. */
+/** What a store's partitions give its memos: each partition's key parts and version. */
 export interface PartitionBinding<Key> {
+  /** The partition's key parts. */
   parts: (key: Key) => readonly string[];
-  /** The partition's version. Tracks the partition. */
+  /** The partition's version. Tracked: a derivation that calls it re-runs on any write to the partition. */
   version: (key: Key) => number;
-  /** The version one unit last changed at. Tracks that unit alone. */
+  /** The version at which one unit last changed. Tracked: a derivation that calls it re-runs when that unit changes. */
   unitVersion: (key: Key, unit: string) => number;
 }
 
@@ -305,15 +321,20 @@ function splitArgs<T>(args: readonly unknown[]): { parts: readonly MemoPart[]; l
 }
 
 /**
- * A memo dropped by every write to its partition. Reach for it when several reads derive the same value from a
- * partition's rows, or when one read consults it once per item: a memo keyed the way a single read is keyed holds
- * only what that read's own memo already holds.
+ * Declares a memo of values computed from a whole partition, dropped by any write to it. Use it for a value several
+ * reads share, or one a read looks up per item. A memo keyed exactly like one read adds nothing, since the read
+ * already caches its result.
  */
 export function byVersion<V>() {
   return <const By extends readonly string[] = readonly []>(spec: {
+    /** How many values to keep. */
     max: number;
-    /** What the key holds beyond the partition, in order. A memo keyed by the partition alone names nothing. */
+    /**
+     * Names for the key parts beyond the partition, in the order they are passed; none for a memo keyed by partition
+     * alone.
+     */
     by?: By;
+    /** Keeps the previous object when a rebuilt value is equal to it. */
     isEqual?: (prev: V, next: V) => boolean;
   }): MemoDecl<BoundVersionMemo<V, By>> => ({
     by: spec.by ?? [],
@@ -342,17 +363,17 @@ export function byVersion<V>() {
 }
 
 /**
- * A memo whose entries each belong to one unit — a player, a team — and survive every write that did not change that
- * unit. Reach for it for a value built from one unit's rows: a write that changed other units leaves the entry and its
- * reference alone, and a read built from it depends on the units it names and nothing else.
- *
- * A build's table reads are covered by the unit it reports, so they do not widen the read around it to the partition.
+ * Declares a memo of values built from one unit's rows, such as a player's, each kept until that unit changes. A write
+ * to other units leaves the entry and its object alone, and a read using it re-renders only when its own units change.
+ * Table reads inside `build` count as reads of that unit, not of the whole partition.
  */
 export function byUnit<V>() {
   return <const By extends readonly string[] = readonly []>(spec: {
+    /** How many values to keep. */
     max: number;
-    /** What the key holds beyond the partition and the unit, in order. */
+    /** Names for the key parts beyond the partition and unit, in the order they are passed. */
     by?: By;
+    /** Keeps the previous object when a rebuilt value is equal to it. */
     isEqual?: (prev: V, next: V) => boolean;
   }): MemoDecl<BoundUnitMemo<V, By>> => ({
     by: spec.by ?? [],
@@ -411,19 +432,19 @@ export function byUnit<V>() {
   });
 }
 
-/** What {@link createMemos} hands back: each declaration, bound to the store whose partitions it holds values for. */
+/** The memos {@link createMemos} returns, each attached to the store's partitions. */
 export type BoundMemos<Key, D> = { [K in keyof D]: D[K] extends MemoDecl<infer Bound> ? Memo<Key, Bound> : never };
 
 /**
- * A store's `memos` as something to hand around: what a hydration or a ranking module declares its own block with,
- * having been handed it by the store's `build` that called `definePartitions`.
+ * A store's `memos` function, which declares a block of memos attached to its partitions. A store's `build` passes it
+ * to modules, such as a hydration or a ranker, that declare their own memos.
  */
 export type MemoFactory<Key> = <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
 
 /**
- * Every memo a store holds, declared in one block: what each keeps, how many of them, and what its key holds beyond
- * the partition. Reached through a store's partitions, which is what supplies the rest of a key and the version it is
- * held against — so the block is a complete account of what a store derives onto the heap, and no caller builds a key.
+ * Attaches a block of memo definitions to a store's partitions. Each memo reads its partition's key and version from
+ * the store, so callers pass only the parts named in `by`. Declaring them in one block lists everything a store keeps
+ * in memory beyond its rows.
  */
 export function createMemos<Key, D extends Record<string, MemoDeclaration>>(
   store: string,
@@ -438,10 +459,7 @@ export function createMemos<Key, D extends Record<string, MemoDeclaration>>(
   return out as BoundMemos<Key, D>;
 }
 
-/**
- * The `isEqual` for a read handing back a record of reference-stable values, which a hydration's map of VMs by id is:
- * a rebuilt map whose entries are the same references is not a change, so its readers do not repaint.
- */
+/** Whether two records have the same keys and identical (`Object.is`) values, such as two maps of view models by id. */
 export function shallowEqualRecord<V>(left: Record<string, V>, right: Record<string, V>): boolean {
   if (left === right) return true;
   const aKeys = Object.keys(left);
@@ -453,10 +471,9 @@ export function shallowEqualRecord<V>(left: Record<string, V>, right: Record<str
 }
 
 /**
- * The `isEqual` for a read handing back a struct: every field compared with `Object.is`, except the ones named in
- * `deep`, which carry their own check. A scalar field added to `T` is covered without touching the call, and one
- * holding a freshly built object reads as a change until it is named here — the safe direction, since the cost of
- * that is a repaint rather than a stale value.
+ * Builds an `isEqual` for an object: fields named in `deep` use their given comparison, and every other field
+ * `Object.is`. A field left out that holds a newly built object always compares unequal, which costs a re-render
+ * rather than a stale value.
  */
 export function shallowEqualStruct<T extends object>(deep: { [K in keyof T]?: (left: T[K], right: T[K]) => boolean }): (left: T, right: T) => boolean {
   return (left, right) => {
@@ -480,10 +497,9 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * What a read compares its value with when it names no `isEqual`, which is what nearly every read wants: one level,
- * the way a store would have written it by hand — a list by its elements, a record by its values, anything else by
- * identity. A hydration that rebuilds a list or a map out of unchanged parts therefore bails its readers out without
- * being asked to, and a read only names a comparison where one level is not enough (see {@link shallowEqualStruct}).
+ * A one-level comparison: arrays by their elements, plain objects by their values, anything else by identity. It is
+ * the default `isEqual` for reads, so a rebuilt list or map of unchanged items doesn't re-render. For a value that
+ * needs a deeper comparison, see {@link shallowEqualStruct}.
  */
 export function shallowEqualValue<T>(left: T, right: T): boolean {
   if (Object.is(left, right)) return true;
@@ -492,7 +508,7 @@ export function shallowEqualValue<T>(left: T, right: T): boolean {
   return false;
 }
 
-/** The same `isEqual` for a read handing back a list: a re-run that produced the same values in the same order is not a change. */
+/** Whether two arrays hold identical (`Object.is`) elements in the same order. */
 export function shallowEqualArray<V>(left: readonly V[], right: readonly V[]): boolean {
   if (left === right) return true;
   if (left.length !== right.length) return false;

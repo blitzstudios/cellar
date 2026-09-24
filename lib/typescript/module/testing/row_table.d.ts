@@ -2,11 +2,16 @@
 import { RowShape, RowTable, RowTableSchema } from '../table/types';
 import { NativeShredSpec } from '../write/shred_spec';
 import { SqlJsConnection } from './sqljs_connection';
-/** The table over a database of its own, with every optional connection method, so a test runs the device's paths. */
+/**
+ * Creates a table on a new sql.js database with every optional connection method, so a test runs the device's code
+ * paths.
+ */
 export declare function createTestRowTable<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): RowTable<Row>;
-/** The same, with the connection under it, for a test that also builds a store's capabilities or inspects the SQL. */
+/** Like {@link createTestRowTable}, also returning the connection, for a test that inspects the SQL run. */
 export declare function createTestRowTableWithConnection<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): {
+    /** The table. */
     table: RowTable<Row>;
+    /** Its connection. */
     conn: SqlJsConnection;
 };
 //# sourceMappingURL=row_table.d.ts.map

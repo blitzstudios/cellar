@@ -6,26 +6,36 @@
 import type { Read, ReadCallOptions } from './surface';
 import type { DataResult } from '../store_result';
 
-/** An id a caller may not have yet; a read takes it directly and stays inert until it arrives. */
+/** An id a caller may not have yet. A read accepts it as is, and returns `empty` until it has a value. */
 export type MaybeId = string | undefined | null;
 
-/**
- * The `options` half of a facade read's single argument, intersected with the params — `{ params: P } & ReadOptions` is
- * the call shape every facade read is lint-checked for. It carries the per-call `enabled`, which turns a read off
- * (nothing fetched, `select` skipped, `empty` back) while the screen keeps calling the hook in the same position.
- */
-export type ReadOptions = { options?: ReadCallOptions };
+/** The `options` part of a published read's argument, `{ params, options }`. */
+export type ReadOptions = {
+  /** This caller's read options, such as `enabled: false` to turn the read off while keeping the hook mounted. */
+  options?: ReadCallOptions;
+};
 
-/** Optional *and* nullable, so a caller's own `string | null | undefined` passes straight through. */
+/** `T` with every field optional and nullable, so a caller can pass its own `string | null | undefined` as is. */
 export type Loose<T> = { [K in keyof T]?: T[K] | null };
 
 /**
- * One read's two halves: `useValue` for a component, `getValue` for imperative code, reactive inside a tracking
- * scope. The reactive half keeps a `use` name, or React Compiler takes it for an ordinary call and memoizes it away.
+ * A read as a service publishes it: a hook for components and a getter for other code. The hook is named with `use`
+ * so React Compiler treats it as a hook rather than memoizing the call away.
  */
 export interface PairedRead<Params, T> {
-  useValue: (args: { params: Params } & ReadOptions) => DataResult<T>;
-  getValue: (args: { params: Params }) => T;
+  /** The read as a hook: fetches if needed and re-renders when the value changes. */
+  useValue: (args: {
+    /** The read's args. */
+    params: Params;
+  } & ReadOptions) => DataResult<T>;
+  /**
+   * The read's current value, starting a fetch if the partition has never been fetched. Tracked: a derivation that
+   * calls it re-runs when the value changes.
+   */
+  getValue: (args: {
+    /** The read's args. */
+    params: Params;
+  }) => T;
 }
 
 /**
@@ -35,14 +45,13 @@ export interface PairedRead<Params, T> {
 const hasArrived = (value: unknown): boolean => value !== undefined && value !== null && value !== '';
 
 /**
- * Publishes a read as its reactive and imperative halves, from a thunk resolving it on the store, whichever table it is running on.
- * Params are the read's own args, loosely: the read's {@link Read.requires} says which of them it waits on, and it
- * stays inert until a caller has them all, so a service publishing it names nothing the store already declared.
+ * Publishes a store read as a hook and a getter, for a service's public API. `read` returns the read from the store,
+ * and is called on every use so it always reaches the store's current table. Params are the read's args with every
+ * field optional; the read returns `empty` until every field in its {@link Read.requires} has a value.
  *
- * The halves return the same value but do not fetch alike, so swapping one for the other is not free. `useValue`
- * primes through React Query and refetches on its staleness; `getValue` fetches a partition that has never been
- * fetched and otherwise leaves it, because a one-shot call has no subscription for staleness to act on and a
- * getter in a loop would otherwise drive the network.
+ * The two return the same value but fetch differently. `useValue` fetches through React Query and refetches when the
+ * data goes stale; `getValue` only fetches a partition that has never been fetched, since a one-off call has nothing
+ * to refetch for, and a getter called in a loop would otherwise flood the network.
  */
 export function pairRead<Args, T>(read: () => Read<Args, T>): PairedRead<Loose<Args>, T> {
   /** Takes the read it is about to call, since `requires` belongs to the running table's copy of it. */

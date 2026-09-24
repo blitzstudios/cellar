@@ -18,35 +18,41 @@ import { createOnceGuard } from '../diagnostics/once_guard';
 import { covered } from '../table/read_coverage';
 import { RowShape, RowTable } from '../table/types';
 
-/** What a store declares: how one unit's rows become a view model, and how many of them to hold. */
+/** How to build a view model from one unit's rows, and how many built view models to keep. */
 export interface RowProjectionDef<Row extends RowShape, Vm> {
-  /** Names this projection in a diagnostic, alongside the store — `player.card`. */
+  /** The projection's name, shown with the store's in warnings — `player.card`. */
   name: string;
-  /** Bounds the view models held. A read asking for more units than this can never answer from the memo. */
+  /** How many built view models to keep. A read asking for more units than this can't be served from the cache. */
   max: number;
   /**
-   * The only app-specific part: a unit's rows, in storage order, to its view model — `undefined` for a unit that does
-   * not make one. A table holding one row per unit is handed one, so it reads `of: ([row]) => …`.
+   * Builds the view model from one unit's rows, in storage order, or returns `undefined` for a unit that shouldn't have
+   * one. A table with one row per unit passes a one-row list, so it reads `of: ([row]) => …`.
    */
   of: (rows: readonly Row[]) => Vm | undefined;
   /**
-   * Appended to the warning a read too large for `max` raises, for a store whose answer is not "raise the bound" —
-   * a view-model shape meant for one unit at a time says to read the lean shape instead.
+   * Text added to the warning raised when a read asks for more units than `max`, for a projection where raising `max`
+   * is the wrong fix — such as a rich shape meant for one unit at a time, which should point at the lean one.
    */
   advice?: string;
 }
 
-/** A declared projection, as the reads of a store consume it. Every method hands back reference-stable view models. */
+/**
+ * A view model built per unit and cached, which reads get their results from. A unit is built once however many reads
+ * ask, rebuilt only when its rows change, and the same object is returned until then.
+ */
 export interface RowProjection<Key, Row extends RowShape, Vm> {
-  /** The view model for one unit, or `undefined` where the partition holds no rows for it. Depends on that unit. */
+  /**
+   * The view model for one unit, or `undefined` if the partition has no rows for it. Re-renders only when that unit
+   * changes.
+   */
   one(key: Key, id: string): Vm | undefined;
-  /** In the order `ids` names them. An id the partition holds no rows for is dropped rather than left a gap. */
+  /** The view models for `ids`, in that order. An id with no rows in the partition is skipped, not left as a gap. */
   byIds(key: Key, ids: readonly string[]): Vm[];
-  /** The same set keyed by id, for a caller that indexes rather than iterates. */
+  /** The view models for `ids`, keyed by id, for a caller that looks them up rather than iterates. */
   mapByIds(key: Key, ids: readonly string[]): Record<string, Vm>;
-  /** Every unit with rows matching `filter` in the partition. Depends on the partition, since membership can move. */
+  /** The view models for every unit with rows matching `filter`. Re-renders when anything in the partition changes. */
   where(key: Key, filter?: Partial<Row>): Vm[];
-  /** Every unit in the partition. Depends on the partition. */
+  /** The view models for every unit in the partition. Re-renders when anything in the partition changes. */
   all(key: Key): Vm[];
 }
 

@@ -1,4 +1,4 @@
-/** A {@link SqliteConnection} over sql.js: a real SQLite engine in Jest, on a different build than the device's. */
+/** A {@link SqliteConnection} over sql.js for Jest: real SQLite, though a different build from the device's. */
 
 import path from 'path';
 
@@ -23,6 +23,7 @@ type SqlJsFactory = (config: { locateFile: (file: string) => string }) => Promis
 
 let SqlModule: SqlJsModule | undefined;
 
+/** Loads sql.js. Await it in `beforeAll` before creating a connection. */
 export async function initSqlJs(): Promise<void> {
   if (SqlModule) return;
   // eslint-disable-next-line global-require
@@ -31,28 +32,39 @@ export async function initSqlJs(): Promise<void> {
   SqlModule = await factory({ locateFile: (file: string) => path.join(dist, file) });
 }
 
-/** `'minimal'` implements `execute` alone, the degraded shape; `'full'` implements every optional method. */
+/**
+ * Which connection methods a test connection has: `minimal` has only `execute`, and `full` has every optional method.
+ */
 export type SqlJsCapabilities = 'minimal' | 'full';
 
+/** How many times each connection method has been called. */
 export interface SqlJsCallLog {
   execute: number;
   executeAsync: number;
   executeBatch: number;
   executeBatchAsync: number;
   shredJsonArrayAsync: number;
+  /** Calls to the reader's `execute`. */
   readerExecute: number;
+  /** Calls to a result's `dispose`. */
   dispose: number;
 }
 
+/** A test connection, which also records what was called on it. */
 export interface SqlJsConnection extends SqliteConnection {
+  /** Closes the database. */
   close(): void;
+  /** How many times each method has been called. */
   calls: SqlJsCallLog;
+  /** Every SQL statement run, in order. */
   executed: string[];
 }
 
+/** Options for {@link createSqlJsConnection}. */
 export interface SqlJsConnectionOptions {
+  /** Which optional methods the connection has; `minimal` by default. */
   capabilities?: SqlJsCapabilities;
-  /** Makes `dispose()` null out the result's `_array`, modelling a driver that frees its backing. */
+  /** Makes a result's `dispose()` clear its rows, like a driver that frees them. */
   poisonOnDispose?: boolean;
 }
 
@@ -74,6 +86,7 @@ function shredSql(spec: ShredSpec, rows: ReadonlyArray<Record<string, string | n
   return cmds;
 }
 
+/** Creates a connection to a new in-memory sql.js database. Requires {@link initSqlJs} to have finished. */
 export function createSqlJsConnection(options: SqlJsConnectionOptions = {}): SqlJsConnection {
   if (!SqlModule) throw new Error('createSqlJsConnection: call `await initSqlJs()` in beforeAll first');
   const capabilities = options.capabilities ?? 'minimal';

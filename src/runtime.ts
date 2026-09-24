@@ -1,92 +1,131 @@
 /**
- * The three services the kernel takes from its host rather than owning: where a report goes, the React Query
- * runtime an ingest mounts on, and when a read is live. A host calls
- * {@link configureDataKernel} once during startup, before it binds any store to SQLite. Until it does, each stays
- * inert, so a store still reads its rows and a test still renders.
+ * The three services the app provides to the kernel: where error reports go, the React Query runtime fetches run on,
+ * and when a read is live. The app calls {@link configureDataKernel} once at startup, before binding any store. Until
+ * then each does nothing, so stores still read their rows and tests still render.
  */
 
 import { createOnceGuard } from './diagnostics/once_guard';
 
-/** The Sentry-shaped context a kernel report carries. */
+/** The extra context sent with a kernel error report, in Sentry's shape. */
 export interface CaptureContext {
+  /** Searchable tags, such as the store's name. */
   tags?: Record<string, string>;
+  /** Groups reports into one issue. */
   fingerprint?: string[];
+  /** Details attached to the report. */
   extra?: Record<string, unknown>;
 }
 
-/** Where a kernel report goes, shaped like the two Sentry calls it stands in for so a host wires it in one line. */
+/**
+ * Where the kernel sends error reports. Shaped like Sentry's two capture calls, so the app can pass Sentry's directly.
+ */
 export interface ErrorSink {
+  /** Reports an error. */
   captureException: (error: unknown, context: CaptureContext) => void;
-  captureMessage: (message: string, context: CaptureContext & { level: 'info' }) => void;
+  /** Reports a message that isn't an error, such as a one-time notice. */
+  captureMessage: (
+    message: string,
+    context: CaptureContext & {
+      /** The report's level, always `info`. */
+      level: 'info';
+    },
+  ) => void;
 }
 
-/** A query key as the kernel builds it: the ingest root, then the partition's parts. */
+/** A React Query key built by the kernel: the store's query root, then the partition's key parts. */
 export type QueryKey = readonly (string | undefined)[];
 
-/** One partition's conditional fetch as the kernel hands it over, for the host to gate and mount. */
+/** One partition's fetch, as the kernel passes it to the app's `useQuery`. The fields are React Query's. */
 export interface QuerySpec<T> {
+  /** The partition's query key. */
   queryKey: QueryKey;
+  /** Fetches the partition and writes its rows. */
   queryFn: () => Promise<T>;
+  /** Whether the query should run. */
   enabled?: boolean;
+  /** How long a fetched partition counts as fresh, in ms. */
   staleTime?: number;
+  /** How long an unused query stays cached, in ms. */
   cacheTime?: number;
+  /** Which result fields re-render the caller when they change. */
   notifyOnChangeProps?: readonly string[];
 }
 
-/** The three fields a prime reports to the read that mounted it. */
+/** The fields of a `useQuery` result the kernel reads. */
 export interface QueryStatus {
+  /** Whether the first fetch is in flight and nothing has loaded yet. */
   isInitialLoading: boolean;
+  /** Whether a fetch is in flight. */
   isFetching: boolean;
+  /** Whether the last fetch failed. */
   isError: boolean;
 }
 
-/** The imperative half of the runtime, behind `prefetch`, `invalidate`, `refetch` and `forget`. */
+/** The parts of React Query's `QueryClient` the kernel uses for `prefetch`, `invalidate`, `refetch` and `forget`. */
 export interface QueryClient {
-  fetchQuery: <T>(spec: { queryKey: QueryKey; queryFn: () => Promise<T>; staleTime?: number; cacheTime?: number }) => Promise<T>;
-  invalidateQueries: (filters: { queryKey: QueryKey; exact?: boolean }) => void;
-  removeQueries: (filters: { queryKey: QueryKey }) => void;
+  /** Fetches a query, or returns its cached result if still fresh. */
+  fetchQuery: <T>(spec: Pick<QuerySpec<T>, 'queryKey' | 'queryFn' | 'staleTime' | 'cacheTime'>) => Promise<T>;
+  /** Marks matching queries stale, refetching the ones in use. */
+  invalidateQueries: (filters: {
+    /** The key to match; queries whose key starts with it match, unless `exact`. */
+    queryKey: QueryKey;
+    /** Matches only a query with exactly this key. */
+    exact?: boolean;
+  }) => void;
+  /** Removes matching queries from the cache. */
+  removeQueries: (filters: {
+    /** The key to match; queries whose key starts with it match. */
+    queryKey: QueryKey;
+  }) => void;
 }
 
 /**
- * The query runtime a store's fetch side runs on. `useQuery` and `useQueries` are hooks, so a host passes its own
- * focus-gated drop-ins and keeps that policy. `client` is read per call, letting a host install it after this.
+ * The React Query runtime store fetches run on. The app passes its own hooks, which can add policy such as pausing on
+ * blur.
  */
 export interface QueryRuntime {
+  /** Returns the query client. Called on each use, so the app can create the client after configuring the kernel. */
   client: () => QueryClient;
+  /** React Query's `useQuery`, or a drop-in for it. */
   useQuery: <T>(spec: QuerySpec<T>) => QueryStatus;
-  useQueries: <T>(specs: { queries: readonly QuerySpec<T>[] }) => readonly QueryStatus[];
+  /** React Query's `useQueries`, or a drop-in for it. */
+  useQueries: <T>(specs: {
+    /** The queries to run. */
+    queries: readonly QuerySpec<T>[];
+  }) => readonly QueryStatus[];
 }
 
 /**
- * Whether a read should still be taking writes, and how to hear about that changing.
+ * Tells reads whether they are live, meaning they take writes and update. A read that isn't live keeps its last value
+ * until it is live again. The app decides what makes a read not live, such as its screen being blurred.
  *
- * The kernel never learns why a gate went dead — a blurred screen, a hidden subtree, a backgrounded app are all the
- * same boolean to it, and the host owns which of those count. It is deliberately not a boolean returned from a hook
- * either: this gates a read's *subscription*, not its render. A read that re-rendered when the gate moved would wake
- * every screen in the stack on each navigation, which is the cost being avoided.
+ * It is a getter and a listener rather than a hook's return value, because it controls whether a read subscribes to
+ * writes, not whether it renders. If a change in it re-rendered reads, every screen in the stack would re-render on
+ * each navigation.
  */
 export interface ReadGate {
-  /** While false, reads under this gate hold the value they last had and stop taking writes. */
+  /** Whether reads under this gate are live. */
   isLive: () => boolean;
-  /** Fires on every transition, both directions. Must not re-render the caller. */
+  /** Subscribes to changes in `isLive`, returning an unsubscribe. The listener must not re-render its caller. */
   onChange: (listener: () => void) => () => void;
 }
 
-/**
- * The host's policy for when a read is live. `useReadGate` is a hook so it can read the enclosing subtree's owner
- * from context.
- *
- * It MUST return a reference-stable gate for as long as that owner is the same one — the kernel keys its
- * subscription on the gate's identity, so one rebuilt each render would resubscribe each render.
- */
+/** The app's policy for when reads are live. */
 export interface ReadGateRuntime {
+  /**
+   * Returns the gate for the component calling it, typically its screen's, read from context. Must return the same
+   * object for as long as that screen stays the same, since a read resubscribes whenever the gate object changes.
+   */
   useReadGate: () => ReadGate;
 }
 
-/** Everything a host supplies. Each part may be configured on its own. */
+/** The services the app provides to the kernel. */
 export interface DataKernelRuntime {
+  /** Where error reports go. */
   errors: ErrorSink;
+  /** The React Query runtime fetches run on. */
   query: QueryRuntime;
+  /** When reads are live. */
   gate: ReadGateRuntime;
 }
 
@@ -101,7 +140,7 @@ function warnUnconfigured(what: string): void {
   );
 }
 
-/** Drops every report. The default until a host configures one. */
+/** An error sink that drops every report; the default until the app configures one. */
 export const INERT_ERRORS: ErrorSink = {
   captureException: () => {},
   captureMessage: () => {},
@@ -120,8 +159,8 @@ const INERT_CLIENT: QueryClient = {
 };
 
 /**
- * Holds each hook's position in the render and stays idle, so a store whose host never configured a runtime renders
- * and reads instead of breaking the rules of hooks.
+ * A query runtime that fetches nothing; the default until the app configures one. Its hooks still run, so stores
+ * render and read their rows without breaking the rules of hooks.
  */
 export const INERT_QUERY: QueryRuntime = {
   client: () => INERT_CLIENT,
@@ -146,6 +185,7 @@ const ALWAYS_LIVE: ReadGate = Object.freeze({
   onChange: () => NO_UNSUBSCRIBE,
 });
 
+/** A gate runtime whose reads are always live; the default until the app configures one. */
 export const INERT_GATE: ReadGateRuntime = {
   useReadGate: () => ALWAYS_LIVE,
 };
@@ -153,8 +193,8 @@ export const INERT_GATE: ReadGateRuntime = {
 let runtime: DataKernelRuntime = { errors: INERT_ERRORS, query: INERT_QUERY, gate: INERT_GATE };
 
 /**
- * Installs a host's services. Each part given replaces the one before it, so a host may configure error reporting,
- * the query runtime and the read gate from different places, and a test may install one and leave the rest inert.
+ * Sets the services the kernel uses. Each part passed replaces the current one and the rest are kept, so the app can
+ * configure them from different places, and a test can set one and leave the others as defaults.
  */
 export function configureDataKernel(next: Partial<DataKernelRuntime>): void {
   runtime = {
@@ -164,14 +204,17 @@ export function configureDataKernel(next: Partial<DataKernelRuntime>): void {
   };
 }
 
+/** The configured error sink. */
 export function errorSink(): ErrorSink {
   return runtime.errors;
 }
 
+/** The configured query runtime. */
 export function queryRuntime(): QueryRuntime {
   return runtime.query;
 }
 
+/** The configured read gate runtime. */
 export function readGateRuntime(): ReadGateRuntime {
   return runtime.gate;
 }

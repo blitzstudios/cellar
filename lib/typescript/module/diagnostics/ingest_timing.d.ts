@@ -1,41 +1,44 @@
-/** A bounded ring of what the recent fetch-fed ingests cost, each split into network wait and shred. */
-/**
- * One partition's fetch, as the diagnostics dump reports it: how long the request took against how long the shred did,
- * with the body's size and the row count to read them against. This is what says whether a slow load was the network
- * or the ingest.
- */
+/** Timings of the most recent partition fetches, each split into network time and write time. */
+/** The timing of one partition fetch, which shows whether a slow load was the network or the write. */
 export interface IngestTiming {
+    /** The store's query root. */
     store: string;
+    /** The partition's key. */
     partition: string;
+    /** How long the request took, in ms. */
     fetchMs: number;
+    /** How long writing the rows took, in ms. */
     ingestMs: number;
+    /** The response body's length in characters; null for a 304. */
     chars: number | null;
-    /** `-1` when the fetch 304'd, `-2` when it brought back a body identical to the one already shredded. */
+    /** How many rows were written: `-1` for a 304, `-2` for a body identical to the last one. */
     rows: number;
+    /** When the write finished, as a `Date.now()` timestamp. */
     at: number;
 }
-/** One store's share of the recorded ingests, totalled: which store a session spent its fetch and shred time in. */
+/** One store's totals over the recorded fetches, which show where a session's fetch and write time went. */
 export interface IngestRollup {
+    /** The store's query root. */
     store: string;
+    /** How many fetches, 304s included. */
     fetches: number;
+    /** Total request time, in ms. */
     fetchMs: number;
+    /** Total write time, in ms. */
     ingestMs: number;
+    /** Total response size, in characters. */
     chars: number;
+    /** Total rows written. */
     rows: number;
 }
-/** Files one ingest in the ring, which the fetch does for every partition it lands, 304s included. */
+/** Records one fetch's timing, dropping the oldest past 128. Every partition fetch records one, 304s included. */
 export declare function recordIngestTiming(timing: IngestTiming): void;
 /**
- * The ingests still in the ring, oldest first, for a caller that wants them one by one — the developer overlay's
- * diagnostics dump takes them this way and rolls them up beside it. The ring keeps only the most recent, so a dump
- * taken deep into a session no longer holds the launch's.
+ * The recorded fetch timings, oldest first. Only the latest 128 are kept, so late in a session the launch's are gone.
  */
 export declare function getIngestTimings(): IngestTiming[];
-/** Empties the ring, so what a measurement or a test reads back is only what it caused. */
+/** Clears the recorded timings, so a measurement or test sees only its own. */
 export declare function clearIngestTimings(): void;
-/**
- * The recorded ingests totalled per store, costliest first — the summary to read before the individual timings, since
- * it names which store to look at. 304s count as fetches and carry no rows, so they show as time spent for nothing new.
- */
+/** Fetch timings totalled per store, most time first. 304s count as fetches with no rows. */
 export declare function rollupIngestTimings(timings?: readonly IngestTiming[]): IngestRollup[];
 //# sourceMappingURL=ingest_timing.d.ts.map

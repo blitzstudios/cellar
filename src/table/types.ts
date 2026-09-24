@@ -2,111 +2,155 @@
 
 import type { WriteResult } from './change_set';
 
+/** A value a SQLite column can hold here: text, a number, or null. */
 export type SqlValue = string | number | null;
 
-/** One row's column values; `undefined` binds as null, which covers a generated column a category leaves blank. */
+/**
+ * One row, as column name to value. `undefined` binds as null, which covers a generated column a category leaves blank.
+ */
 export type RowShape = Record<string, SqlValue | undefined>;
 
 /**
- * The storage classes a column can be declared as, and the whole of what a row can hold: a flag is an `INTEGER` of 0
- * or 1, and anything structured is `TEXT` holding its JSON.
+ * The type a column is declared as. These three are all a row can hold: a flag is an `INTEGER` of 0 or 1, and anything
+ * structured is `TEXT` holding its JSON.
  */
 export type ColumnType = 'TEXT' | 'INTEGER' | 'REAL';
 
-/**
- * One column as SQLite will create it. `notNull` is enforced by the database, so a row the constraint rejects fails in
- * a test as it would on device.
- */
+/** One column of a row table: its type, and whether it may be null. */
 export interface ColumnDef {
+  /** The column's SQLite type. */
   type: ColumnType;
+  /** Rejects a row that leaves this column null. SQLite enforces it, so a test fails the same way the device does. */
   notNull?: boolean;
 }
 
-/** A secondary index over the columns a read filters on, named so `init` and a bulk write can create and drop it by name. */
+/** A secondary index over columns a read filters on. */
 export interface IndexDef<Row extends RowShape> {
+  /** The index's name, which `init` and a bulk write create and drop it by. */
   name: string;
+  /** The indexed columns, in index order. */
   columns: ReadonlyArray<keyof Row & string>;
 }
 
-/** Etag side-table, keyed by the columns that address a partition. */
+/** The side table that stores each partition's ETag, so a refetch can send `If-None-Match` and get a 304 back. */
 export interface MetaDef<Row extends RowShape> {
+  /** The side table's name. */
   table: string;
+  /** The row columns that identify a partition, which key the side table. */
   keyColumns: ReadonlyArray<keyof Row & string>;
+  /** The column the ETag is stored in. */
   column: string;
 }
 
-/** One row table's declaration: its columns in `INSERT` bind order, which is the `columns` object's key order. */
+/** Everything a row table is built from: its name, columns, key, unit, indexes and ETag table. */
 export interface RowTableSchema<Row extends RowShape> {
+  /** The SQLite table's name. */
   table: string;
+  /** Every column, keyed by name. The key order is the `INSERT` bind order. */
   columns: { [K in keyof Row]: ColumnDef };
-  /** `[]` for a snapshot table that legitimately holds duplicate rows, such as one refilled wholesale by each fetch. */
+  /**
+   * The columns that identify a row. A write with a row whose key is already there replaces that row. `[]` for a
+   * table that holds duplicate rows, such as one refilled wholesale by each fetch.
+   */
   primaryKey: ReadonlyArray<keyof Row & string>;
   /**
-   * What a view model is about — a player, a team — and so the grain a write reports its changes in and a read
-   * subscribes at. One unit may span many rows: a player's games in a week are several rows and one unit. A write
-   * rewrites a changed unit whole and leaves an unchanged one untouched, and a reader of one unit wakes only when it
-   * changes.
+   * The column that groups rows into the things a screen shows — `player_id` groups a player's rows, `team` a team's.
+   * A write reports which values of it changed, and a read of one value re-renders only when that value's rows change.
+   * One value can cover many rows: a player's games in a week are several rows and one unit.
    */
   unit: keyof Row & string;
+  /** Secondary indexes for the columns reads filter on. */
   indexes?: ReadonlyArray<IndexDef<Row>>;
+  /** Where each partition's ETag is stored; omit it and fetches never send `If-None-Match`. */
   meta?: MetaDef<Row>;
+  /**
+   * Marks a table that pushes can write rows into that no fetch returns. A schema change that rebuilds such a table
+   * loses those rows, so the rebuild is reported.
+   */
   pushFed?: boolean;
+  /**
+   * Bump to drop and rebuild the table on the next launch. For a change the schema itself does not show, such as a
+   * row builder that now fills a column differently.
+   */
   rebuildVersion?: number;
 }
 
-/** What a `find` takes past its row filter, for a hydration that wants its rows in a column's order rather than in storage order. */
+/** Options for {@link RowTable.find} beyond its row filter. */
 export interface FindOpts<Row extends RowShape> {
-  /** Sorted in JS after the read, and a string compares by code unit, so a display name sorts by ASCII. */
+  /**
+   * A column to sort the rows by. Sorted in JS after the read, comparing strings by code unit, so text sorts by ASCII.
+   */
   orderBy?: keyof Row & string;
 }
 
 /**
- * The whole contract a store has with its rows — three writes, reads over a `where`, and the ETag pair. Nothing here
- * touches a version atom: a write reports the units it changed, and the partition's ingest is what bumps with them.
+ * A store's rows in one SQLite table: writes that report which units changed, reads over a column filter, and each
+ * partition's ETag.
  *
  * Every write compares what it was handed with what the table holds and rewrites only the units that differ, so a
- * write whose payload matches the table changes nothing and reports an empty change set.
+ * write whose payload matches the table changes nothing and reports an empty change set. Nothing here bumps a version;
+ * the partition's ingest does that with the units a write reports.
  */
 export interface RowTable<Row extends RowShape> {
+  /** Creates the table, its indexes and its ETag table, migrating an older database whose schema differs. */
   init(): void;
-  /**
-   * The schema's primary key, so a caller holding only the table can work out what identifies a row without being
-   * handed the schema too. `[]` for a table that declares none.
-   */
+  /** The columns that identify a row, from the schema; `[]` for a table that declares none. */
   readonly primaryKey: ReadonlyArray<keyof Row & string>;
-  /** The schema's unit: the column a write reports its changes by and a view model is built per. */
+  /** The schema's unit column: what a write reports its changes by and a view model is built per. */
   readonly unit: keyof Row & string;
   /**
-   * Merges `rows` in by primary key, leaving every other row alone, which is what a socket delta wants. Requires a
-   * primary key: without one there is nothing to replace on. Reports the units of the rows that actually differed.
+   * Adds or replaces `rows` by primary key and leaves every other row alone, which is what a socket delta wants.
+   * Needs a primary key. Reports the units whose rows actually changed.
    */
-  upsert(rows: readonly Row[], opts?: { chunk?: number }): Promise<WriteResult>;
+  upsert(
+    rows: readonly Row[],
+    opts?: {
+      /** Rows per transaction; 250 by default, which keeps each one under a frame. */
+      chunk?: number;
+    },
+  ): Promise<WriteResult>;
   /**
-   * Makes the rows matching `where` be exactly `rows`, so a slice of 300 can become a slice of 3, or of none. Every row
-   * must satisfy `where`, since one that doesn't lands where no later write to the slice can reach it. Reports the
-   * units that were added, removed, or whose rows differ.
+   * Replaces the rows matching `where` with exactly `rows`, so a slice of 300 can become a slice of 3, or of none.
+   * Every row must match `where`, or it lands where no later write to the slice can reach it. Reports the units that
+   * were added, removed, or changed.
    */
   overwrite(where: Partial<Row>, rows: readonly Row[]): WriteResult;
   /**
-   * The same replacement from an undecoded response body: shredded in C++ when the connection and the shred spec
-   * allow, and through `parseRows` when they don't.
+   * The same replacement as {@link RowTable.overwrite}, from a response body not yet parsed: shredded in C++ when the
+   * connection and the store's shred spec allow it, and through `parseRows` when they don't.
    */
   shred(where: Partial<Row>, rawJson: string, parseRows: (rawJson: string) => Row[]): Promise<WriteResult>;
+  /** The first row matching `where`, or `undefined`. */
   getOne(where: Partial<Row>): Row | undefined;
+  /** Every row matching `where`, in storage order unless `opts.orderBy` names a column. */
   find(where: Partial<Row>, opts?: FindOpts<Row>): Row[];
-  /** Returns matching rows in storage order; the caller reorders them to match `values`. */
-  findIn(where: Partial<Row>, column: keyof Row & string, values: readonly string[], opts?: { chunk?: number }): Row[];
+  /**
+   * The rows matching `where` whose `column` is one of `values`, in storage order; the caller reorders them to match
+   * `values` if it needs to.
+   */
+  findIn(
+    where: Partial<Row>,
+    column: keyof Row & string,
+    values: readonly string[],
+    opts?: {
+      /** Values per `IN (…)` query; 900 by default, under SQLite's bind limit. */
+      chunk?: number;
+    },
+  ): Row[];
+  /** Whether any row matches `where`. */
   has(where: Partial<Row>): boolean;
   /**
-   * The distinct units among the rows matching `where`, in storage order, without the rows behind them: what a
-   * projection asks to learn which units a filter holds before reading only the ones it has not built.
+   * The distinct unit values among the rows matching `where`, in storage order, without reading the rows: how a
+   * projection learns which units a filter holds before building only the ones it has not built yet.
    */
   unitsWhere(where: Partial<Row>): string[];
+  /** The ETag stored for the partition `where` names, or `undefined`. */
   getMeta(where: Partial<Row>): string | undefined;
+  /** Stores the ETag for the partition `where` names; `undefined` clears it. */
   setMeta(where: Partial<Row>, value: string | undefined): void;
 }
 
-/** A schema's columns in declaration order, which is the order an `INSERT` binds them and the order the fingerprint hashes. */
+/** A schema's column names in declaration order, which is the order an `INSERT` binds them. */
 export function columnNames<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string> {
   return Object.keys(schema.columns) as Array<keyof Row & string>;
 }

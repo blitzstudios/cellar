@@ -1,40 +1,55 @@
-/** The seam between the stores and whatever SQLite driver the platform provides. */
+/** The interface between the stores and the platform's SQLite driver. */
 
 import { ShredSpec } from '../write/shred_spec';
 
 /**
- * What one statement hands back: the rows under `rows._array`, and `dispose` to release the result's C++ backing. You
- * build one when adapting a driver; a caller reading rows goes through {@link readRows}, which unwraps and disposes.
+ * What a driver returns for one statement. Reading rows should go through {@link readRows}, which unwraps the rows and
+ * calls `dispose`.
  */
 export interface QueryExecResult {
-  rows?: { _array?: unknown[] };
+  /** The result rows. */
+  rows?: {
+    /** The rows, as objects keyed by column. */
+    _array?: unknown[];
+  };
+  /** Frees the result's native memory. */
   dispose?: () => void;
 }
 
 /**
- * Everything the kernel asks of a platform's SQLite binding, and the type a driver adapter implements. Only `execute`
- * is required: every optional member is an acceleration its caller has a fallback for, so a store runs over a
- * connection that offers nothing but the one method.
+ * A SQLite database handle, as the kernel uses it; a driver adapter implements this. Only `execute` is required: each
+ * optional method is a faster path the kernel falls back from when it's missing.
  */
 export interface SqliteConnection {
+  /** Runs one statement synchronously. */
   execute(sql: string, params?: ReadonlyArray<string | number | null>): QueryExecResult;
+  /** Runs several statements in one transaction, synchronously. */
   executeBatch?(commands: ReadonlyArray<[string, ReadonlyArray<string | number | null>]>): void;
+  /** Runs one statement off the JS thread. */
   executeAsync?(sql: string, params?: ReadonlyArray<string | number | null>): Promise<QueryExecResult>;
+  /** Runs several statements in one transaction, off the JS thread. */
   executeBatchAsync?(commands: ReadonlyArray<[string, ReadonlyArray<string | number | null>]>): Promise<void>;
+  /**
+   * Parses a JSON response and writes its rows with a native shred program, off the JS thread; resolves to the number
+   * of rows written.
+   */
   shredJsonArrayAsync?(spec: ShredSpec, rawJson: string, binds: ReadonlyArray<string | number | null>): Promise<number>;
-  /** A read-only second handle; nitro-sqlite serializes per handle, so under WAL this one reads during a write. */
+  /** A second, read-only handle to the same database, so reads can run while a write holds the main one. */
   reader?: PinnedConnection;
 }
 
-/** A connection {@link readRows} uses exactly as given, so a connection-local `TEMP` table stays visible. */
-export type PinnedConnection = SqliteConnection & { readonly reader?: undefined };
+/** A connection with no separate reader, so every statement runs on this one handle and sees its `TEMP` tables. */
+export type PinnedConnection = SqliteConnection & {
+  /** Always absent. */
+  readonly reader?: undefined;
+};
 
-/** Pins reads to a single handle: the connection's reader when it has one, and otherwise the connection itself. */
+/** The one handle to run reads on: the connection's reader if it has one, otherwise the connection itself. */
 export function pinnedReader(conn: SqliteConnection): PinnedConnection {
   return conn.reader ?? { ...conn, reader: undefined };
 }
 
-/** One statement and its binds: the unit {@link runBatch} takes, and what a row table builds its deletes and inserts as. */
+/** One SQL statement and its parameters, as {@link runBatch} takes them. */
 export type BatchCommand = [string, ReadonlyArray<string | number | null>];
 
 /**
@@ -146,9 +161,8 @@ export function guardedConnection(
 }
 
 /**
- * Runs a `SELECT` and hands back its rows as plain JS objects, which is how everything in this layer reads a database.
- * Reads go to the connection's dedicated reader handle wherever there is one, so a statement that depends on
- * connection-local state — a `TEMP` table the caller just created — has to be issued against a {@link PinnedConnection}.
+ * Runs a `SELECT` and returns its rows as plain objects. It runs on the connection's reader if it has one, so a query of
+ * a `TEMP` table the caller just created must be passed a {@link PinnedConnection}.
  */
 export function readRows<T>(conn: SqliteConnection, sql: string, params?: ReadonlyArray<string | number | null>): T[] {
   const result = (conn.reader ?? conn).execute(sql, params);

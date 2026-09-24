@@ -1,12 +1,16 @@
-/** What a read knows about the fetch behind its partition: whether it is loading, in flight, or has failed. */
+/**
+ * The state of the fetch behind a read's partitions: whether it is loading for the first time, in flight, or failed.
+ */
 export interface PrimeState {
+    /** Whether the first fetch is in flight and nothing has loaded yet. */
     isInitialLoading: boolean;
     /**
-     * Whether a fetch is in flight. Accurate whenever it is read, but a change in it does not itself repaint a reader —
-     * see `NOTIFY_ON_PRIME_STATE`. A spinner that has to appear for a background refresh needs its own trigger; one
-     * that appears only before there is anything to show wants `isInitialLoading`.
+     * Whether a fetch is in flight, including a background refetch. Correct when read, but a change in it alone does
+     * not re-render the reader; see `NOTIFY_ON_PRIME_STATE`. A spinner for a background refetch needs its own trigger;
+     * one shown only before anything has loaded should use `isInitialLoading`.
      */
     isFetching: boolean;
+    /** Whether the last fetch failed. */
     isError: boolean;
 }
 /**

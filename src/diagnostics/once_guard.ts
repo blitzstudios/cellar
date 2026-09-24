@@ -1,19 +1,20 @@
-/** Fire-once dedup. Every guard registers itself here, so {@link resetOnceGuards} re-arms all of them at once. */
+/** Keys that can each be marked once, for firing a warning once. {@link resetOnceGuards} clears every guard. */
 
 import { cacheKey } from '../key';
 
 const resets: Array<() => void> = [];
 
+/** A set of keys that can each be marked once. */
 interface OnceGuard {
-  /** Whether these parts were already marked, marking them if not. Several parts name one key together. */
+  /** Whether the key made of these parts was already marked; marks it if not. */
   seen(...parts: readonly string[]): boolean;
-  /** A read-only test of their mark. */
+  /** Whether the key made of these parts is marked, without marking it. */
   has(...parts: readonly string[]): boolean;
 }
 
 /**
- * A set of keys that can each be marked once, for a warning or a degradation report that would otherwise fire on every
- * call — a per-render DEV warning, or a Sentry report from a path a socket runs thousands of times.
+ * Creates a set of keys that can each be marked once, for a warning or report that would otherwise fire on every call,
+ * such as a dev warning during render or a Sentry report on a path a socket hits thousands of times.
  */
 export function createOnceGuard(): OnceGuard {
   const marked = new Set<string>();
@@ -29,17 +30,14 @@ export function createOnceGuard(): OnceGuard {
   };
 }
 
-/**
- * Enrols other state in that same reset, for a module whose warning carries something beside its guard — a batch it is
- * accumulating over a tick, say. Without this a reset re-arms the guard and leaves the state it was warning about.
- */
+/** Runs `reset` whenever {@link resetOnceGuards} does, for other state a warning keeps, such as a batch it collects. */
 export function onGuardReset(reset: () => void): void {
   resets.push(reset);
 }
 
 /**
- * Re-arms every guard in the process. Marks outlive a test, so a test asserting that something warns calls this first,
- * or it passes or fails on whichever test ran before it.
+ * Clears every guard's marks. Marks outlast a test, so a test that expects a warning should call this first, or its
+ * result depends on the tests that ran before it.
  */
 export function resetOnceGuards(): void {
   for (const reset of resets) reset();

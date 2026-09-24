@@ -86,20 +86,19 @@ function assertDeleteWhereMatches(table: string, variant: string, spec: { delete
   );
 }
 
+/** Options for {@link createSqliteRowTable}. */
 export interface SqliteRowTableOptions {
   /**
-   * Builds the table, its indexes and its ETag table in the connection's temp schema, which `temp_store = MEMORY` keeps
-   * in memory. Every statement names the table unqualified, and SQLite looks a name up in the temp schema first, so
-   * nothing else changes. A temp table belongs to one connection and starts empty, so it has no dedicated reader and
-   * no migration.
+   * Creates the table, its indexes and its ETag table as `TEMP` tables, held in memory and starting empty each
+   * launch. A temp table is visible only to its own connection, so it is never read through a separate reader.
    */
   temporary?: boolean;
 }
 
 /**
- * The {@link RowTable} over a real database, and the point of the whole layer: the rows stay in SQLite, and only the
- * ones a read selects are ever built as JS objects. `defineSqliteStore` constructs one once a connection is bound, and
- * its `init` has to run before any other call, since that is what creates the table or rebuilds a stale one.
+ * Creates a {@link RowTable} backed by a SQLite table. Rows stay in SQLite, and only the ones a read selects become JS
+ * objects. `defineSqliteStore` creates one when a store is bound. Call its `init` before anything else, which creates
+ * the table or rebuilds an outdated one.
  */
 export function createSqliteRowTable<Row extends RowShape>(
   schema: RowTableSchema<Row>,

@@ -4,13 +4,17 @@ import { createMemos, MemoFactory } from '../caches';
 import { VersionAtom } from '../reactivity/version_atom';
 
 /**
- * The `memos` a `definePartitions` hands its hydration, for a test building that hydration directly. Pass the same atom
- * the module under test bumps, or a memo will answer from an entry the test thought it had invalidated, and `parts` for
- * a store whose key is an object rather than one string.
+ * A `memos` function like the one `definePartitions` gives a store's modules, for testing a module on its own. Pass the
+ * version atom the test bumps, or its memos won't see the writes.
  */
 export function testMemos<Key = string>(
   version: VersionAtom,
-  opts: { store?: string; parts?: (key: Key) => readonly string[] } = {},
+  opts: {
+    /** The store name shown in warnings; `test` by default. */
+    store?: string;
+    /** A key's parts, for a key that isn't a single string. */
+    parts?: (key: Key) => readonly string[];
+  } = {},
 ): MemoFactory<Key> {
   const parts = opts.parts ?? ((key: Key) => [(key as unknown as string) ?? '']);
   return (decls) =>

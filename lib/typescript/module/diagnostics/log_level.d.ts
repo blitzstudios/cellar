@@ -1,16 +1,15 @@
 /**
- * How much the kernel says on the host's console. Telemetry is separate and unaffected: a report still reaches the
- * error sink whatever this is set to, because what a host shows a developer and what it collects from the field are
- * different questions.
+ * How much the kernel logs to the console: nothing, errors, warnings too, or notices too. It doesn't affect error
+ * reports, which reach the error sink at any level.
  *
- * `error` by default rather than `info`, because most of what the advisory levels report cannot be acted on at the
- * call site — a read of a slice still primes its whole partition, and where the API offers nothing narrower there is
- * no remedy to reach for. Printed every launch those teach a reader to skip the channel, which costs the reports
- * that do matter.
+ * The default is `error`, because most warnings and notices can't be acted on where they appear, and logging them on
+ * every launch teaches people to ignore the console.
  */
 export type LogLevel = 'silent' | 'error' | 'warn' | 'info';
+/** Sets how much the kernel logs to the console. */
 export declare function setLogLevel(level: LogLevel): void;
+/** How much the kernel logs to the console. */
 export declare function getLogLevel(): LogLevel;
-/** Whether a message of this level prints. `silent` is not askable: nothing is logged at it. */
+/** Whether a message of this level is logged at the current level. */
 export declare function shouldLog(level: Exclude<LogLevel, 'silent'>): boolean;
 //# sourceMappingURL=log_level.d.ts.map

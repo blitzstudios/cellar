@@ -2,41 +2,51 @@
 import { VersionAtom } from '../reactivity/version_atom';
 import { PrimeState } from '../prime_state';
 import { ChangeSet, WriteResult } from '../table/change_set';
-/**
- * What the ingest reads off a store's request, and so the shape a `write/raw_query.ts` has to hand back: the undecoded
- * body, the ETag to keep for the next conditional request, and the flag the API layer sets when the server answered
- * 304. On a 304 the body is whatever was already cached, so the ingest stops and leaves the partition's rows alone.
- */
+/** The response a partition's query resolves to. */
 export interface RawFetchResponse {
+    /** The response body, ideally as unparsed text. */
     data?: unknown;
+    /** The response's ETag, sent with the partition's next request. */
     etag?: string;
+    /** Set when the server answered 304 Not Modified, in which case the partition's rows are left as they are. */
     __etagMatch?: boolean;
 }
-/**
- * A store's request described but not run — the React Query descriptor `write/raw_query.ts` builds and a partition's
- * `fetch.query` returns. Its `staleTime` / `cacheTime` are the partition's refetch policy, since the kernel, not the
- * store, is what mounts the query.
- */
+/** A partition's request, as `fetch.query` returns it; the kernel runs it through React Query. */
 export interface RawQuery {
+    /** Makes the request. */
     queryFn: () => Promise<RawFetchResponse | undefined>;
+    /** How long a fetched partition counts as fresh, in ms. */
     staleTime?: number;
+    /** How long an unused query stays cached, in ms. */
     cacheTime?: number;
 }
-/** A store's fetch side, keyed by whatever names a partition. Prefer `definePartitions`, which derives it. */
+/** How {@link createFetchIngest} fetches a store's partitions. `definePartitions` builds this for a store. */
 export interface FetchIngestConfig<Key> {
+    /** The first element of every partition's React Query key. */
     ingestKeyRoot: string;
+    /** The store's version atom, bumped when a fetch changes rows. */
     version: VersionAtom;
+    /** A partition's key parts. */
     toParts: (key: Key) => readonly string[];
+    /** The partition's request, sending `etag` when there is one. */
     rawQuery: (key: Key, etag?: string) => RawQuery;
+    /** The partition's stored ETag. */
     getEtag: (key: Key) => string | undefined;
+    /** Stores the partition's ETag. */
     setEtag: (key: Key, etag: string) => void;
-    /** Replaces the partition's rows, reporting which units that changed and how many rows the body held. */
+    /** Replaces the partition's rows with the body's, returning which units changed and how many rows the body held. */
     ingestRaw: (key: Key, rawJson: string) => Promise<WriteResult>;
+    /** Tells the partition's readers which units a fetch changed, returning the new version. */
     bump?: (key: Key, changes: ChangeSet) => number;
-    /** Held for the length of the request: `ingestRaw` replaces the partition, so socket writes queue behind it. */
+    /**
+     * Holds the partition's socket pushes during the request, since `ingestRaw` replaces its rows; returns the release.
+     */
     holdWrites?: (key: Key) => () => void;
 }
-/** An identity transform that keeps a body as text: axios 0.15.3 ignores `responseType` and parses string bodies. */
+/**
+ * An axios `transformResponse` that keeps a response body as text. Our axios (0.15.3) parses string bodies as JSON
+ * whatever `responseType` says.
+ */
 export declare const RAW_TEXT_RESPONSE_TRANSFORM: ((data: unknown) => unknown)[];
 /**
  * A partition's fetch as the rest of the kernel drives it: the priming hooks a read mounts, and the imperative starts,

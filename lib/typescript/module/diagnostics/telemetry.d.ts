@@ -1,16 +1,21 @@
 /**
- * The report an off-heap path files when it stays correct while losing the win it exists for, such as a native shred
- * that fell back to JS. Each site reports once per session, to the dev console and to Sentry. `severity: 'info'` files
- * the other kind: something expected that a reader of the same channel should not mistake for a fault.
+ * Reports for when a store still works but loses the benefit a path exists for, such as a native shred falling back to
+ * JS. Each is sent once per session, to the dev console and the error sink. `severity: 'info'` is for expected events
+ * that shouldn't read as faults.
  */
-/** Files one degradation, at most once per `scope` per session. */
+/** Reports that a store lost a benefit it should have had, at most once per `scope` per session. */
 export declare function reportStoreDegradation(args: {
-    /** Stable, queryable site identifier, e.g. `row_table.native_shred.<store>`. */
+    /** Where it happened, as a stable, searchable id, such as `row_table.native_shred.<store>`. */
     scope: string;
+    /** What happened, in a sentence. */
     context: string;
+    /** The error behind it, if any. */
     error?: unknown;
+    /** Details attached to the report. */
     extra?: Record<string, unknown>;
+    /** `error` by default; `info` for an expected event, sent as a message rather than an exception. */
     severity?: 'error' | 'info';
+    /** The chance the report reaches the error sink, from 0 to 1; 1 by default. */
     sampleRate?: number;
 }): void;
 //# sourceMappingURL=telemetry.d.ts.map

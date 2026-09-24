@@ -1,50 +1,49 @@
 /**
- * Turning a partition's rows into a read's value: a list, an id-ordered list, a keyed record, or groups.
+ * Turns table rows into a read's value: a list, a list in id order, a record keyed by id, or groups.
  *
- * The shaping hangs off the query rather than standing beside it, because everything a shaper needs — which column
- * holds the id, which ids were asked for — is something the query was already told. A hydration that says it twice can
- * say it two different ways, and the shapes it hands back would disagree with the rows it holds.
- *
- * Each shape hands back the caller's stable `empty` when nothing survives, so an empty result keeps one identity and
- * the read's bail-out holds. A row set costs one object per query, which is noise beside the query's own row array,
- * and a hydration only reaches one on a cache miss.
+ * The shapes are methods on the query's result, because the query already knows what they need, such as which column
+ * holds the id and which ids were asked for. Each shape returns the caller's `empty` when no rows are left, so an empty
+ * result is always the same object.
  */
 import { FindOpts, RowShape, RowTable } from '../table/types';
 /** Columns whose value is always a string, so they can key a `Map` or `Record` directly. */
 type StringColumn<Row> = {
     [K in keyof Row]-?: Row[K] extends string ? K : never;
 }[keyof Row] & string;
-/** Rows in hand, and the shapes any set of them can take. */
+/** A query's rows, with methods to shape them. */
 export interface RowSet<Row extends RowShape> {
-    /** The rows themselves, for a hydration deriving something no shape here covers. */
+    /** The rows, for a value none of the shapes covers. */
     readonly rows: readonly Row[];
     /**
-     * The plain shape, and the one a hydration reaches for unless it needs another: every row through the mapper,
-     * dropping the ones it turns down. The order is the query's, so a read that owes its caller an order asks the query.
+     * Maps each row with `toVm`, dropping rows it returns `undefined` for. Keeps the query's order; to sort, pass an
+     * `orderBy` to the query.
      */
     map<T>(toVm: (row: Row) => T | undefined, empty: T[]): T[];
-    /** Each group is in the order the rows arrived. */
+    /** Groups the rows by a column's value, each group in query order. */
     groupBy(column: StringColumn<Row>): Map<string, Row[]>;
 }
-/** The rows an `in` query matched, which can additionally be shaped around the ids it named. */
+/** The rows of an `in` query, with extra shapes based on the ids it asked for. */
 export interface IdRowSet<Row extends RowShape> extends RowSet<Row> {
-    /** The rows in the order the ids were named, which SQL `IN` and `findIn`'s chunking both scramble. */
+    /** Maps the rows with `toVm`, in the order the ids were given, which SQL `IN` doesn't keep. */
     ordered<T>(toVm: (row: Row) => T | undefined, empty: T[]): T[];
-    /** Keyed by the column the query named. On a duplicate key, the last row wins. */
+    /** Maps the rows with `toVm` into a record keyed by the query's column. With duplicate keys, the last row wins. */
     indexed<T>(toVm: (row: Row) => T | undefined, empty: Record<string, T>): Record<string, T>;
-    /** Grouped by the column the query named, each group in the order the rows arrived. */
+    /** Groups the rows by the query's column, each group in query order. */
     grouped(): Map<string, Row[]>;
 }
-/** A table's rows, queried and shaped in one expression. Built once per hydration by {@link rowsOf}. */
+/** Queries a table and shapes the result in one expression. Created by {@link rowsOf}. */
 export interface RowReader<Row extends RowShape> {
-    /** The rows matching a filter, `opts` ordering them where storage order will not do. */
+    /** The rows matching `filter`, in storage order unless `opts` sorts them. */
     where(filter: Partial<Row>, opts?: FindOpts<Row>): RowSet<Row>;
-    /** The rows whose `column` is one of `values`, shapeable in that order or keyed by that column. */
+    /**
+     * The rows matching `filter` whose `column` is one of `values`, which can be shaped in `values` order or keyed by
+     * `column`.
+     */
     in(filter: Partial<Row>, column: StringColumn<Row>, values: readonly string[]): IdRowSet<Row>;
-    /** Rows from somewhere other than a `find` — a native filtered read, or a set already in hand — shaped the same way. */
+    /** Rows from elsewhere, such as a SQL query, with the same shapes. */
     given(rows: readonly Row[]): RowSet<Row>;
 }
-/** Binds the shapes above to one table, which is what a hydration holds instead of the table itself. */
+/** Creates a {@link RowReader} for a table, which a hydration uses in place of the table itself. */
 export declare function rowsOf<Row extends RowShape>(table: RowTable<Row>): RowReader<Row>;
 export {};
 //# sourceMappingURL=row_shaping.d.ts.map
