@@ -1,12 +1,14 @@
+import type { ReadDef } from '../read/surface';
+
 /**
  * Whether a read touched the table somewhere nothing reported what it read.
  *
  * A read's dependencies are found by running it: a projection or a unit memo reports the units it read, a partition
- * memo reports the partition. A `select` that reads rows straight off the table reports nothing, and if it also read
- * one unit memo, it would look as though it depended on that unit alone. So every table read counts itself here unless
- * it runs inside {@link covered} — which the kernel's own reporting constructs wrap their reads in — and a read that
- * made an uncovered table read is made to depend on its whole partition. A store can lose precision this way, never
- * correctness.
+ * memo reports the partition. A {@linkcode ReadDef.select | select} that reads rows straight off the table reports
+ * nothing, and if it also read one unit memo, it would look as though it depended on that unit alone. So every table
+ * read counts itself here unless it runs inside {@linkcode covered} — which the kernel's own reporting constructs wrap
+ * their reads in — and a read that made an uncovered table read is made to depend on its whole partition. A store can
+ * lose precision this way, never correctness.
  */
 
 let covering = 0;
@@ -31,3 +33,7 @@ export function covered<T>(read: () => T): T {
 export function uncoveredReads(): number {
   return uncovered;
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { ReadDef };

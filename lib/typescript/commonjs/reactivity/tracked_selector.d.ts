@@ -1,9 +1,10 @@
 /**
- * `createTrackedSelector`, a replacement for Reselect's `createSelector` for a Redux selector that reads store data,
- * usually by calling a service getter in its `resultFn`. Reselect caches on its inputs only, so such a selector would
- * keep returning its old result after a store write. This one also records every store version `resultFn` read, and
- * recomputes when one of those changes.
+ * {@linkcode createTrackedSelector}, a replacement for Reselect's `createSelector` for a Redux selector that reads
+ * store data, usually by calling a service getter in its `resultFn`. Reselect caches on its inputs only, so such a
+ * selector would keep returning its old result after a store write. This one also records every store version
+ * `resultFn` read, and recomputes when one of those changes.
  */
+import type { Read } from '../read/surface';
 /**
  * One entry in a tracked selector's `inputs`: a function called with the selector's own arguments (such as Redux state
  * and props), whose return value is passed to `resultFn`. The selector recomputes when any input's value changes.
@@ -11,7 +12,7 @@
 export type InputSelector<Args extends readonly unknown[], T = unknown> = (...args: Args) => T;
 /** Compares an input's previous and new value; when every input is equal, the selector can return its cached result. */
 export type EqualityFn = (left: unknown, right: unknown) => boolean;
-/** Options for {@link createTrackedSelector}. */
+/** Options for {@linkcode createTrackedSelector}. */
 export interface TrackedSelectorOptions {
     /**
      * How an input's previous and new values are compared; `Object.is` by default. Pass a shallow or deep comparison for
@@ -32,8 +33,9 @@ export interface TrackedSelectorOptions {
  * `resultFn` read changes (a partition or unit it looked at was written).
  *
  * Each call also reports the store data `resultFn` read to the enclosing tracking scope, so a component calling it
- * inside `useTrackedStores` or a `useValue` computation re-renders when that data changes. Called outside any tracking
- * scope, its results are still correct, but nothing re-renders on a write; dev logs a warning.
+ * inside `useTrackedStores` or a {@linkcode Read.useValue | useValue} computation re-renders when that data changes.
+ * Called outside any tracking scope, its results are still correct, but nothing re-renders on a write; dev logs a
+ * warning.
  */
 export declare function createTrackedSelector<Args extends readonly unknown[], V1, R>(inputs: readonly [InputSelector<Args, V1>], resultFn: (v1: V1) => R, options?: TrackedSelectorOptions): (...args: Args) => R;
 export declare function createTrackedSelector<Args extends readonly unknown[], V1, V2, R>(inputs: readonly [InputSelector<Args, V1>, InputSelector<Args, V2>], resultFn: (v1: V1, v2: V2) => R, options?: TrackedSelectorOptions): (...args: Args) => R;
@@ -117,4 +119,5 @@ export declare function createTrackedSelector<Args extends readonly unknown[], V
     InputSelector<Args, V11>,
     InputSelector<Args, V12>
 ], resultFn: (v1: V1, v2: V2, v3: V3, v4: V4, v5: V5, v6: V6, v7: V7, v8: V8, v9: V9, v10: V10, v11: V11, v12: V12) => R, options?: TrackedSelectorOptions): (...args: Args) => R;
+export type { Read };
 //# sourceMappingURL=tracked_selector.d.ts.map

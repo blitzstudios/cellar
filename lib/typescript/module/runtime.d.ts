@@ -1,8 +1,10 @@
 /**
  * The three services the app provides to the kernel: where error reports go, the React Query runtime fetches run on,
- * and when a read is live. The app calls {@link configureDataKernel} once at startup, before binding any store. Until
- * then each does nothing, so stores still read their rows and tests still render.
+ * and when a read is live. The app calls {@linkcode configureDataKernel} once at startup, before binding any store.
+ * Until then each does nothing, so stores still read their rows and tests still render.
  */
+import type { FetchIngest } from './write/fetch_ingest';
+import type { PartitionLifecycle } from './define_partitions';
 /** The extra context sent with a kernel error report, in Sentry's shape. */
 export interface CaptureContext {
     /** Searchable tags, such as the store's name. */
@@ -26,7 +28,10 @@ export interface ErrorSink {
 }
 /** A React Query key built by the kernel: the store's query root, then the partition's key parts. */
 export type QueryKey = readonly (string | undefined)[];
-/** One partition's fetch, as the kernel passes it to the app's `useQuery`. The fields are React Query's. */
+/**
+ * One partition's fetch, as the kernel passes it to the app's {@linkcode QueryRuntime.useQuery | useQuery}. The fields
+ * are React Query's.
+ */
 export interface QuerySpec<T> {
     /** The partition's query key. */
     queryKey: QueryKey;
@@ -39,13 +44,14 @@ export interface QuerySpec<T> {
     /** How long an unused query stays cached, in ms. */
     cacheTime?: number;
     /**
-   * The result fields whose changes re-render the caller. The kernel passes `isInitialLoading` and `isError` only, so
-   * a refetch starting and finishing doesn't re-render every reader of the partition; new rows re-render them through
-   * the partition's version instead.
-   */
+     * The result fields whose changes re-render the caller. The kernel passes
+     * {@linkcode QueryStatus.isInitialLoading | isInitialLoading} and {@linkcode QueryStatus.isError | isError} only, so
+     * a refetch starting and finishing doesn't re-render every reader of the partition; new rows re-render them through
+     * the partition's version instead.
+     */
     notifyOnChangeProps?: readonly string[];
 }
-/** The fields of a `useQuery` result the kernel reads. */
+/** The fields of a {@linkcode QueryRuntime.useQuery | useQuery} result the kernel reads. */
 export interface QueryStatus {
     /** Whether the first fetch is in flight and nothing has loaded yet. */
     isInitialLoading: boolean;
@@ -54,7 +60,11 @@ export interface QueryStatus {
     /** Whether the last fetch failed. */
     isError: boolean;
 }
-/** The parts of React Query's `QueryClient` the kernel uses for `prefetch`, `invalidate`, `refetch` and `forget`. */
+/**
+ * The parts of React Query's {@linkcode QueryClient} the kernel uses for {@linkcode FetchIngest.prefetch | prefetch},
+ * {@linkcode PartitionLifecycle.invalidate | invalidate}, {@linkcode PartitionLifecycle.refetch | refetch} and
+ * {@linkcode PartitionLifecycle.forget | forget}.
+ */
 export interface QueryClient {
     /** Fetches a query, or returns its cached result if still fresh. */
     fetchQuery: <T>(spec: Pick<QuerySpec<T>, 'queryKey' | 'queryFn' | 'staleTime' | 'cacheTime'>) => Promise<T>;
@@ -78,9 +88,9 @@ export interface QueryClient {
 export interface QueryRuntime {
     /** Returns the query client. Called on each use, so the app can create the client after configuring the kernel. */
     client: () => QueryClient;
-    /** React Query's `useQuery`, or a drop-in for it. */
+    /** React Query's {@linkcode QueryRuntime.useQuery | useQuery}, or a drop-in for it. */
     useQuery: <T>(spec: QuerySpec<T>) => QueryStatus;
-    /** React Query's `useQueries`, or a drop-in for it. */
+    /** React Query's {@linkcode QueryRuntime.useQueries | useQueries}, or a drop-in for it. */
     useQueries: <T>(specs: {
         /** The queries to run. */
         queries: readonly QuerySpec<T>[];
@@ -101,9 +111,10 @@ export interface ReadGate {
     /** Whether reads under this gate are live now: subscribed to their data, and re-rendering when it changes. */
     isLive: () => boolean;
     /**
-   * Calls `listener` whenever `isLive` changes, in either direction, and returns a function that unsubscribes it. It
-   * must not re-render the component that subscribed; the reads resubscribe or unsubscribe themselves.
-   */
+     * Calls `listener` whenever {@linkcode ReadGate.isLive | isLive} changes, in either direction, and returns a function
+     * that unsubscribes it. It must not re-render the component that subscribed; the reads resubscribe or unsubscribe
+     * themselves.
+     */
     onChange: (listener: () => void) => () => void;
 }
 /**
@@ -146,4 +157,5 @@ export declare function errorSink(): ErrorSink;
 export declare function queryRuntime(): QueryRuntime;
 /** The configured read gate runtime. */
 export declare function readGateRuntime(): ReadGateRuntime;
+export type { FetchIngest, PartitionLifecycle };
 //# sourceMappingURL=runtime.d.ts.map

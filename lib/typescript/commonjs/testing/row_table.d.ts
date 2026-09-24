@@ -7,7 +7,7 @@ import { SqlJsConnection } from './sqljs_connection';
  * paths.
  */
 export declare function createTestRowTable<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): RowTable<Row>;
-/** Like {@link createTestRowTable}, also returning the connection, for a test that inspects the SQL run. */
+/** Like {@linkcode createTestRowTable}, also returning the connection, for a test that inspects the SQL run. */
 export declare function createTestRowTableWithConnection<Row extends RowShape>(schema: RowTableSchema<Row>, nativeShredSpec?: NativeShredSpec): {
     /** The table. */
     table: RowTable<Row>;

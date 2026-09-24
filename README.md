@@ -14,6 +14,19 @@ const { data: items, isLoading } = GroupItems.useValue({ params: { groupId } });
 That read is subscribed to one slice of one table. It fetches the slice if the database doesn't have it yet,
 re-renders when a row in it changes, and re-renders nothing when a row outside it does.
 
+## Concepts
+
+A store's table is divided into partitions, and each partition into units.
+
+| term | what it is |
+| --- | --- |
+| **store** | one SQLite table and the reads and fetches over it, declared with `defineSqliteStore`. On device the table lives in the device's SQLite; on the web and in tests, in sql.js |
+| **partition** | the set of rows one fetch returns and replaces, picked out by column values (`{ group_id: 'g1' }`). Each has its own fetch, ETag and version |
+| **unit** | the rows in one partition that share a value in the schema's `unit` column: with `unit: 'item_id'`, one item's rows, whether one row or several. The unit is how finely change is tracked |
+| **change set** | what a write changed: the unit value of every row it added, changed or removed. The write replaces those units' rows, then bumps the partition's version and the version of each changed unit |
+| **read** | a query declared on a store, used as a hook or a getter. It fetches its partition if needed, and recomputes when what it depends on changes: a read that asks for particular units (through a projection or a unit memo) depends on those units; one that looks at the whole partition depends on the partition. The component re-renders only if the recomputed value differs |
+| **shred** | turning a JSON response into rows: in C++ from a `NativeShredSpec`, so no JS object is built per row, or in JS with each column's `js` builder |
+
 ## Why
 
 A reference dataset held in JS costs heap for as long as the process lives — every object, on every launch,
@@ -34,7 +47,7 @@ same engine compiled to WebAssembly, through `./sqljs`. Tests use sql.js too, th
 
 ```jsonc
 // package.json
-"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.3-gitpkg"
+"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.4-gitpkg"
 ```
 
 ## Quick start
@@ -68,7 +81,8 @@ export const itemSchema: RowTableSchema<ItemRow> = {
   table: 'items',
   columns: itemShred.columnDefs,
   primaryKey: ['group_id', 'item_id'],
-  // What a view model is about: the grain every write reports its changes in, and a read subscribes at.
+  // Divides each partition into units, one per item: writes report the items they changed, and a read of particular
+  // items recomputes only when one of those changes.
   unit: 'item_id',
   indexes: [{ name: 'idx_items_group', columns: ['group_id'] }],
   // Where the per-slice ETag is kept, so a refetch can come back 304.
@@ -251,19 +265,6 @@ render when it goes live again. They do not blank, and the gate never reaches th
 re-rendered on gate changes would wake every screen in the stack on each navigation, which is the cost this
 avoids. Configure no gate and every read stays live.
 
-## Concepts
-
-Three words, and they nest:
-
-| term | what it is |
-| --- | --- |
-| **table** | the rows themselves, in SQLite: the device's own, and sql.js on web and in tests, behind one `RowTable` interface |
-| **partition** | one addressable slice of a table: what a fetch replaces and an ETag belongs to |
-| **unit** | what a view model is about — an item, a player — declared on the schema. Every write reports the units it changed, and a read of named units depends on those alone. One unit may span several rows |
-| **store** | the module wrapping both, declared with `defineSqliteStore` |
-
-A store has as many partitions as its callers ask for — one per group, or thousands, one per entity.
-
 ## What you get without writing it
 
 - **Conditional fetch.** Each slice keeps its own ETag, so a refetch that hasn't changed costs a 304 and no
@@ -274,8 +275,8 @@ A store has as many partitions as its callers ask for — one per group, or thou
 - **Schema migration with no migration to write.** `init` fingerprints the schema it built. A database whose
   fingerprint no longer matches is migrated on the spot — widened by `ALTER TABLE ADD COLUMN` when the change
   only added columns, rebuilt from the next fetch otherwise.
-- **Writes that say what they changed.** Every write compares what it was handed with what the table holds,
-  rewrites only the units that differ, and reports them. A refetch that brings back what the table already holds
+- **Writes that say what they changed.** Every write compares its rows with what the table holds and reports its
+  change set: the units with a row added, changed or removed. A refetch that brings back what the table already holds
   changes nothing and wakes nobody; a live poll where four players moved wakes the readers of those four.
 - **Reactivity per unit, found by reading.** A read subscribes to exactly what it read, discovered by running it: a
   read of named units through a projection or a unit memo depends on those units, and a read over the whole slice
@@ -316,8 +317,8 @@ The three writes differ in what they delete. `upsert` merges by primary key and 
 socket delta wants. `overwrite(where, rows)` makes the slice matching `where` be exactly `rows`. `shred` is that
 same replacement from an undecoded response body.
 
-On SQLite each write lands its rows in a staging table and one transaction compares them with the table, every
-column and null-safe, then rewrites only the units that differ. A slice that holds nothing yet skips the stage:
+On SQLite each write lands its rows in a staging table, and one transaction compares them with the table (every
+column, null-safe) and replaces the rows of each changed unit. A slice that holds nothing yet skips the stage:
 with nothing to compare against, its rows go straight in and every unit counts as new.
 
 ### Getting rows in

@@ -3,8 +3,8 @@
 import { ShredSpec } from '../write/shred_spec';
 
 /**
- * What a driver returns for one statement. Reading rows should go through {@link readRows}, which unwraps the rows and
- * calls `dispose`.
+ * What a driver returns for one statement. Reading rows should go through {@linkcode readRows}, which unwraps the rows
+ * and calls {@linkcode QueryExecResult.dispose | dispose}.
  */
 export interface QueryExecResult {
   /** The result rows. */
@@ -17,8 +17,9 @@ export interface QueryExecResult {
 }
 
 /**
- * A SQLite database handle, as the kernel uses it; a driver adapter implements this. Only `execute` is required: each
- * optional method is a faster path the kernel falls back from when it's missing.
+ * A SQLite database handle, as the kernel uses it; a driver adapter implements this. Only
+ * {@linkcode SqliteConnection.execute | execute} is required: each optional method is a faster path the kernel falls
+ * back from when it's missing.
  */
 export interface SqliteConnection {
   /** Runs one statement synchronously. */
@@ -49,12 +50,12 @@ export function pinnedReader(conn: SqliteConnection): PinnedConnection {
   return conn.reader ?? { ...conn, reader: undefined };
 }
 
-/** One SQL statement and its parameters, as {@link runBatch} takes them. */
+/** One SQL statement and its parameters, as {@linkcode runBatch} takes them. */
 export type BatchCommand = [string, ReadonlyArray<string | number | null>];
 
 /**
  * Runs `commands` as one transaction, which is what makes a delete-then-insert replacement all-or-nothing. It holds
- * the JS thread for the length of the write, so anything ingest-sized wants {@link runBatchAsync} instead.
+ * the JS thread for the length of the write, so anything ingest-sized wants {@linkcode runBatchAsync} instead.
  */
 export function runBatch(conn: SqliteConnection, commands: ReadonlyArray<BatchCommand>): void {
   if (conn.executeBatch) {
@@ -161,8 +162,8 @@ export function guardedConnection(
 }
 
 /**
- * Runs a `SELECT` and returns its rows as plain objects. It runs on the connection's reader if it has one, so a query of
- * a `TEMP` table the caller just created must be passed a {@link PinnedConnection}.
+ * Runs a `SELECT` and returns its rows as plain objects. It runs on the connection's reader if it has one, so a query
+ * of a `TEMP` table the caller just created must be passed a {@linkcode PinnedConnection}.
  */
 export function readRows<T>(conn: SqliteConnection, sql: string, params?: ReadonlyArray<string | number | null>): T[] {
   const result = (conn.reader ?? conn).execute(sql, params);

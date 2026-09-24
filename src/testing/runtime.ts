@@ -1,15 +1,17 @@
 /**
- * Kernel services for tests, as Jest mocks: every query call and error report is recorded, `fetchQuery` runs the
- * query's `queryFn`, and `useQuery` reports idle. Install once per test file, at module scope.
+ * Kernel services for tests, as Jest mocks: every query call and error report is recorded,
+ * {@linkcode QueryClient.fetchQuery | fetchQuery} runs the query's {@linkcode QuerySpec.queryFn | queryFn}, and
+ * {@linkcode QueryRuntime.useQuery | useQuery} reports idle. Install once per test file, at module scope.
  */
 
 import { configureDataKernel, QuerySpec, QueryStatus } from '../runtime';
+import type { QueryClient, QueryRuntime } from '../runtime';
 
 const IDLE: QueryStatus = { isInitialLoading: false, isFetching: false, isError: false };
 
-/** The mocks {@link installTestRuntime} installs, one per service method. */
+/** The mocks {@linkcode installTestRuntime} installs, one per service method. */
 export interface TestRuntime {
-  /** Runs the query's `queryFn`. */
+  /** Runs the query's {@linkcode QuerySpec.queryFn | queryFn}. */
   fetchQuery: jest.Mock;
   invalidateQueries: jest.Mock;
   removeQueries: jest.Mock;
@@ -51,3 +53,7 @@ export function installTestRuntime(): TestRuntime {
 
   return spies;
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { QueryClient, QueryRuntime, QuerySpec };

@@ -11,7 +11,7 @@
 export declare const ALL_UNITS: "all";
 /**
  * What a write changed: the unit value (such as a `player_id`) of each row it added, changed or removed, or
- * {@link ALL_UNITS} when every unit counts as changed. An empty set means the write changed nothing.
+ * {@linkcode ALL_UNITS} when every unit counts as changed. An empty set means the write changed nothing.
  */
 export type ChangeSet = typeof ALL_UNITS | ReadonlySet<string>;
 /** What a row table write returns: its change set, and how many rows it was given. */
@@ -30,7 +30,7 @@ export declare const NO_CHANGES: ReadonlySet<string>;
 export declare function isUnchanged(changes: ChangeSet): boolean;
 /**
  * Combines the change sets of two writes into one (every unit either changed), such as the chunks of one push. If
- * either is {@link ALL_UNITS}, so is the result.
+ * either is {@linkcode ALL_UNITS}, so is the result.
  */
 export declare function unionChanges(left: ChangeSet, right: ChangeSet): ChangeSet;
 /** Whether a write touched any of `units`. Walks the smaller side, since a change set is usually a handful. */

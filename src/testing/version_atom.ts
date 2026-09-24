@@ -1,9 +1,9 @@
-/** A real {@link VersionAtom} that also records its bumps, for tests. */
+/** A real {@linkcode VersionAtom} that also records its bumps, for tests. */
 
 import { createVersionAtom, VersionAtom } from '../reactivity/version_atom';
 import { ALL_UNITS, ChangeSet, isUnchanged } from '../table/change_set';
 
-/** Creates a {@link VersionAtom} that records each bump that changed something. */
+/** Creates a {@linkcode VersionAtom} that records each bump that changed something. */
 export function createTestVersionAtom(root = 'test_version'): VersionAtom & {
   /** Each bumped partition's key parts joined with `:`, in order. */
   bumped: string[];
@@ -23,3 +23,7 @@ export function createTestVersionAtom(root = 'test_version'): VersionAtom & {
   };
   return Object.assign(atom, { bump, bumped, bumpedWith });
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { VersionAtom };

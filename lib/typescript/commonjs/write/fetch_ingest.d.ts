@@ -1,17 +1,22 @@
 /**
  * The fetch ingest: how a store fetches a partition (the set of rows one fetch returns and replaces) and writes the
  * response. There is one React Query query per partition. Its query function sends the partition's stored ETag, writes
- * the response body as the partition's rows (with the native shredder or the store's `parse`), stores the new ETag,
- * and bumps the partition's version with the write's change set, which re-renders the readers of the changed units.
+ * the response body as the partition's rows (with the native shredder or the store's
+ * {@linkcode PartitionFetchSpec.parse | parse}), stores the new ETag, and bumps the partition's version with the
+ * write's change set, which re-renders the readers of the changed units.
  */
 import { VersionAtom } from '../reactivity/version_atom';
 import { PrimeState } from '../prime_state';
 import { ChangeSet, WriteResult } from '../table/change_set';
+import type { PartitionFetchSpec, Partitions, PartitionsConfig, definePartitions } from '../define_partitions';
+import type { DataResult } from '../store_result';
+import type { IngestTiming } from '../diagnostics/ingest_timing';
+import type { CommonDef } from '../read/surface';
 /** What a partition's request resolves to: the response body, its ETag, and whether the server answered 304. */
 export interface RawFetchResponse {
     /**
-     * The response body. Best as the unparsed JSON text (see `RAW_TEXT_RESPONSE_TRANSFORM`), which the native shredder
-     * can write without building JS objects; a parsed body is turned back into text with `JSON.stringify` first.
+     * The response body. Best as the unparsed JSON text (see {@linkcode RAW_TEXT_RESPONSE_TRANSFORM}), which the native
+     * shredder can write without building JS objects; a parsed body is turned back into text with `JSON.stringify` first.
      */
     data?: unknown;
     /** The response's ETag header. It is stored for the partition and sent as `If-None-Match` on the next request. */
@@ -23,8 +28,8 @@ export interface RawFetchResponse {
     __etagMatch?: boolean;
 }
 /**
- * A partition's request, described but not run, as a partition's `fetch.query` returns it. The kernel runs it as the
- * query function of the partition's React Query query, with these timings.
+ * A partition's request, described but not run, as a partition's {@linkcode PartitionFetchSpec.query | fetch.query}
+ * returns it. The kernel runs it as the query function of the partition's React Query query, with these timings.
  */
 export interface RawQuery {
     /** Makes the request, and resolves to the response body, its ETag, and whether the server answered 304. */
@@ -41,8 +46,9 @@ export interface RawQuery {
     cacheTime?: number;
 }
 /**
- * How {@link createFetchIngest} fetches and writes a store's partitions (a partition is the set of rows one fetch
- * returns and replaces). `definePartitions` builds this from a store's `fetch` spec.
+ * How {@linkcode createFetchIngest} fetches and writes a store's partitions (a partition is the set of rows one fetch
+ * returns and replaces). {@linkcode definePartitions} builds this from a store's
+ * {@linkcode PartitionsConfig.fetch | fetch} spec.
  */
 export interface FetchIngestConfig<Key> {
     /**
@@ -67,7 +73,8 @@ export interface FetchIngestConfig<Key> {
     ingestRaw: (key: Key, rawJson: string) => Promise<WriteResult>;
     /**
      * Bumps the partition's version with the write's change set and returns the new version. Defaults to
-     * `version.bump`; `definePartitions` passes its own, which also calls `onChanged`.
+     * {@linkcode VersionAtom.bump | version.bump}; {@linkcode definePartitions} passes its own, which also calls
+     * {@linkcode PartitionsConfig.onChanged | onChanged}.
      */
     bump?: (key: Key, changes: ChangeSet) => number;
     /**
@@ -84,29 +91,34 @@ export interface FetchIngestConfig<Key> {
  */
 export declare const RAW_TEXT_RESPONSE_TRANSFORM: ((data: unknown) => unknown)[];
 /**
- * A store's fetching, as {@link createFetchIngest} creates it: the hooks reads use to fetch their partitions, and the
- * imperative fetches `definePartitions` publishes as the store's `lifecycle`. A partition is the set of rows one fetch
- * returns and replaces; each has one React Query query.
+ * A store's fetching, as {@linkcode createFetchIngest} creates it: the hooks reads use to fetch their partitions, and
+ * the imperative fetches {@linkcode definePartitions} publishes as the store's
+ * {@linkcode Partitions.lifecycle | lifecycle}. A partition is the set of rows one fetch returns and replaces; each has
+ * one React Query query.
  */
 export interface FetchIngest<Key> {
     /**
-     * A hook that fetches the partition if it hasn't been fetched or is older than its `staleTime`, and returns the
-     * fetch's state. `undefined` or a key that names no partition keeps the hook's place and fetches nothing.
+     * A hook that fetches the partition if it hasn't been fetched or is older than its
+     * {@linkcode RawQuery.staleTime | staleTime}, and returns the fetch's state. `undefined` or a key that names no
+     * partition keeps the hook's place and fetches nothing.
      */
     usePrime: (key: Key | undefined, enabled?: boolean, opts?: PrimeIntent) => PrimeState;
     /**
-     * A hook that fetches each of the partitions that hasn't been fetched or is older than its `staleTime`, and returns
-     * their combined state: loading or fetching if any is, failed only if every one failed.
+     * A hook that fetches each of the partitions that hasn't been fetched or is older than its
+     * {@linkcode RawQuery.staleTime | staleTime}, and returns their combined state: loading or fetching if any is, failed
+     * only if every one failed.
      */
     usePrimeMany: (keys: readonly Key[], enabled?: boolean, opts?: PrimeIntent) => PrimeState;
     /**
-     * Starts `prefetch` without waiting for it or reporting its failure, for code that only needs the fetch to happen.
+     * Starts {@linkcode FetchIngest.prefetch | prefetch} without waiting for it or reporting its failure, for code that
+     * only needs the fetch to happen.
      */
     ensure: (key: Key) => void;
     /**
-     * Fetches the partition, outside a component, unless it was fetched within `staleTime` (then resolves at once) or a
-     * fetch is already in flight (then waits for that one). Resolves once the rows are written, with the partition's
-     * version and the number of rows written (-1 for a 304, -2 for a body identical to the last one).
+     * Fetches the partition, outside a component, unless it was fetched within {@linkcode RawQuery.staleTime | staleTime}
+     * (then resolves at once) or a fetch is already in flight (then waits for that one). Resolves once the rows are
+     * written, with the partition's version and the number of rows written (-1 for a 304, -2 for a body identical to the
+     * last one).
      */
     prefetch: (key: Key, opts?: {
         /** How old the last fetch may be, in ms, for this call to skip fetching. Defaults to the partition query's. */
@@ -136,18 +148,20 @@ export interface FetchIngest<Key> {
 /** What a caller fetching a partition intends to do with it, which decides whether a very large fetch is reported. */
 export interface PrimeIntent {
     /**
-     * True when the caller will use only part of the partition, such as a read with a `varyBy`. A fetch of more than
-     * 5,000 rows or 2M characters is reported once per session only when every caller that fetched the partition wanted a
-     * part of it, since then most of what was fetched isn't used.
+     * True when the caller will use only part of the partition, such as a read with a
+     * {@linkcode CommonDef.varyBy | varyBy}. A fetch of more than 5,000 rows or 2M characters is reported once per
+     * session only when every caller that fetched the partition wanted a part of it, since then most of what was fetched
+     * isn't used.
      */
     slice?: boolean;
 }
 /**
- * Creates a store's fetching: one React Query query per partition (the set of rows one fetch returns and replaces).
- * Its query function sends the partition's stored ETag; on a 304, keeps the rows; otherwise writes the body with
- * `ingestRaw`, stores the new ETag, and bumps the partition's version with the write's change set, so the readers of
- * the changed units re-render. `definePartitions` creates it from a store's `fetch` spec, so a store declares that spec
- * rather than calling this.
+ * Creates a store's fetching: one React Query query per partition (the set of rows one fetch returns and replaces). Its
+ * query function sends the partition's stored ETag; on a 304, keeps the rows; otherwise writes the body with
+ * {@linkcode FetchIngestConfig.ingestRaw | ingestRaw}, stores the new ETag, and bumps the partition's version with the
+ * write's change set, so the readers of the changed units re-render. {@linkcode definePartitions} creates it from a
+ * store's {@linkcode PartitionsConfig.fetch | fetch} spec, so a store declares that spec rather than calling this.
  */
 export declare function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest<Key>;
+export type { CommonDef, DataResult, IngestTiming, PartitionFetchSpec, Partitions, PartitionsConfig, PrimeState, VersionAtom, definePartitions };
 //# sourceMappingURL=fetch_ingest.d.ts.map

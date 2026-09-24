@@ -1,4 +1,4 @@
-/** A {@link SqliteConnection} over sql.js for Jest: real SQLite, though a different build from the device's. */
+/** A {@linkcode SqliteConnection} over sql.js for Jest: real SQLite, though a different build from the device's. */
 
 import path from 'path';
 
@@ -33,7 +33,8 @@ export async function initSqlJs(): Promise<void> {
 }
 
 /**
- * Which connection methods a test connection has: `minimal` has only `execute`, and `full` has every optional method.
+ * Which connection methods a test connection has: `minimal` has only {@linkcode SqliteConnection.execute | execute},
+ * and `full` has every optional method.
  */
 export type SqlJsCapabilities = 'minimal' | 'full';
 
@@ -44,9 +45,9 @@ export interface SqlJsCallLog {
   executeBatch: number;
   executeBatchAsync: number;
   shredJsonArrayAsync: number;
-  /** Calls to the reader's `execute`. */
+  /** Calls to the reader's {@linkcode SqliteConnection.execute | execute}. */
   readerExecute: number;
-  /** Calls to a result's `dispose`. */
+  /** Calls to a result's {@linkcode QueryExecResult.dispose | dispose}. */
   dispose: number;
 }
 
@@ -60,11 +61,11 @@ export interface SqlJsConnection extends SqliteConnection {
   executed: string[];
 }
 
-/** Options for {@link createSqlJsConnection}. */
+/** Options for {@linkcode createSqlJsConnection}. */
 export interface SqlJsConnectionOptions {
   /** Which optional methods the connection has; `minimal` by default. */
   capabilities?: SqlJsCapabilities;
-  /** Makes a result's `dispose()` clear its rows, like a driver that frees them. */
+  /** Makes a result's {@linkcode QueryExecResult.dispose | dispose()} clear its rows, like a driver that frees them. */
   poisonOnDispose?: boolean;
 }
 
@@ -86,7 +87,7 @@ function shredSql(spec: ShredSpec, rows: ReadonlyArray<Record<string, string | n
   return cmds;
 }
 
-/** Creates a connection to a new in-memory sql.js database. Requires {@link initSqlJs} to have finished. */
+/** Creates a connection to a new in-memory sql.js database. Requires {@linkcode initSqlJs} to have finished. */
 export function createSqlJsConnection(options: SqlJsConnectionOptions = {}): SqlJsConnection {
   if (!SqlModule) throw new Error('createSqlJsConnection: call `await initSqlJs()` in beforeAll first');
   const capabilities = options.capabilities ?? 'minimal';
@@ -191,3 +192,7 @@ export function createSqlJsConnection(options: SqlJsConnectionOptions = {}): Sql
     },
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { QueryExecResult, SqliteConnection };

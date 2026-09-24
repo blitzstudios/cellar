@@ -1,6 +1,7 @@
 /**
- * The {@link SqliteConnection} for web, over sql.js (SQLite compiled to WebAssembly). Each store's database is held in
- * memory for the life of the page. The app loads sql.js and passes the module in, and device builds never import this.
+ * The {@linkcode SqliteConnection} for web, over sql.js (SQLite compiled to WebAssembly). Each store's database is held
+ * in memory for the life of the page. The app loads sql.js and passes the module in, and device builds never import
+ * this.
  */
 import type { BindOptions } from '../define_sqlite_store';
 import type { SqliteConnection } from '../table/connection';
@@ -31,8 +32,8 @@ interface BindableStore {
     bindSqlite: (conn: SqliteConnection, options?: BindOptions) => void;
 }
 /**
- * Opens a new in-memory sql.js database as a {@link SqliteConnection}. sql.js is synchronous, so the async methods wrap
- * the sync ones.
+ * Opens a new in-memory sql.js database as a {@linkcode SqliteConnection}. sql.js is synchronous, so the async methods
+ * wrap the sync ones.
  */
 export declare function openSqlJsConnection(SQL: SqlJsModule): SqliteConnection;
 /**
@@ -40,5 +41,5 @@ export declare function openSqlJsConnection(SQL: SqlJsModule): SqliteConnection;
  * empty.
  */
 export declare function bindSqlJsStore(label: string, SQL: SqlJsModule, store: BindableStore): void;
-export {};
+export type { SqliteConnection };
 //# sourceMappingURL=sqljs_connection.d.ts.map

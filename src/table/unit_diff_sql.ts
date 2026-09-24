@@ -16,16 +16,21 @@
 import { columnNames, RowShape, RowTableSchema, SqlValue } from './types';
 import { whereClause } from './query';
 import type { BatchCommand } from './connection';
+import type { RowTable } from './types';
 
-/** Where a table's writes stage: TEMP tables on the writer, so they are invisible to the reader and to the schema stamps. */
+/**
+ * Where a table's writes stage: TEMP tables on the writer, so they are invisible to the reader and to the schema
+ * stamps.
+ */
 export interface StageNames {
   stage: string;
   changes: string;
 }
 
 /**
- * The staging tables for one row table. The sync path gets a stage of its own, since `overwrite` runs without waiting
- * for the async write queue and must not empty a stage an async write has filled.
+ * The staging tables for one row table. The sync path gets a stage of its own, since
+ * {@linkcode RowTable.overwrite | overwrite} runs without waiting for the async write queue and must not empty a stage
+ * an async write has filled.
  *
  * The stage is named for the schema's fingerprint, so a schema that changes within a session — a Fast Refresh — stages
  * into a table with its new columns rather than one left over with the old, and nothing ever has to be dropped.
@@ -156,3 +161,7 @@ export function unitDiffSql<Row extends RowShape>(schema: RowTableSchema<Row>, n
     readBack: (id) => [`DELETE FROM ${changes} WHERE write_id = ? RETURNING unit, rows;`, [id]],
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { RowTable };

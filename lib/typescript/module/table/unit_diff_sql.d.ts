@@ -14,14 +14,19 @@
  */
 import { RowShape, RowTableSchema } from './types';
 import type { BatchCommand } from './connection';
-/** Where a table's writes stage: TEMP tables on the writer, so they are invisible to the reader and to the schema stamps. */
+import type { RowTable } from './types';
+/**
+ * Where a table's writes stage: TEMP tables on the writer, so they are invisible to the reader and to the schema
+ * stamps.
+ */
 export interface StageNames {
     stage: string;
     changes: string;
 }
 /**
- * The staging tables for one row table. The sync path gets a stage of its own, since `overwrite` runs without waiting
- * for the async write queue and must not empty a stage an async write has filled.
+ * The staging tables for one row table. The sync path gets a stage of its own, since
+ * {@linkcode RowTable.overwrite | overwrite} runs without waiting for the async write queue and must not empty a stage
+ * an async write has filled.
  *
  * The stage is named for the schema's fingerprint, so a schema that changes within a session — a Fast Refresh — stages
  * into a table with its new columns rather than one left over with the old, and nothing ever has to be dropped.
@@ -45,4 +50,5 @@ export interface UnitDiffSql {
 }
 /** The SQL for staging, diffing and applying writes to one table, built once per table. */
 export declare function unitDiffSql<Row extends RowShape>(schema: RowTableSchema<Row>, names: StageNames, maxBinds: number): UnitDiffSql;
+export type { RowTable };
 //# sourceMappingURL=unit_diff_sql.d.ts.map

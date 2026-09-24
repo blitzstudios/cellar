@@ -2,8 +2,10 @@
 
 import { createOnceGuard } from './diagnostics/once_guard';
 import { cacheKey, cacheKeyOf, KEY_SEP } from './key';
+import type { CommonDef, ReadDef } from './read/surface';
+import type { Partitions } from './define_partitions';
 
-export { cacheKey, cacheKeyOf, KEY_SEP } from './key';
+export { cacheKey, cacheKeyOf, KEY_SEP };
 
 /**
  * A `Map`, a `Set` or a class instance keys as `{}`, since none of what it holds is an own enumerable property — so two
@@ -37,9 +39,9 @@ export function stableKey(value: unknown): string {
 }
 
 /**
- * Freezes what {@link stableKey} walked, so a part whose identity is remembered cannot drift from it. Mirrors that
+ * Freezes what {@linkcode stableKey} walked, so a part whose identity is remembered cannot drift from it. Mirrors that
  * walk rather than freezing everything reachable: a `Map`, a `Set` or a class instance is not content-addressed —
- * `stableKey` warns about it instead — and freezing one would break invariants it maintains for its owner.
+ * {@linkcode stableKey} warns about it instead — and freezing one would break invariants it maintains for its owner.
  */
 function freezeKeyPart(value: unknown): void {
   if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
@@ -59,7 +61,7 @@ function freezeKeyPart(value: unknown): void {
  * page of rows re-keys the same shape object once per row -- otherwise re-serialize an unchanged object every time,
  * and the part carrying a whole metric config makes that the most expensive thing on the read path.
  *
- * Shared across keyers because {@link stableKey} is a pure function of the part. Only the serialization is skipped:
+ * Shared across keyers because {@linkcode stableKey} is a pure function of the part. Only the serialization is skipped:
  * the id still comes from the content, so an equal part built fresh keys the same as one held, and a reference whose
  * id was evicted re-mints exactly as it would have.
  */
@@ -77,22 +79,26 @@ export function identityOf(part: object): string {
 }
 
 /**
- * A value a read varies by: anything `select` reads beyond the partition itself. An object or an array keys by its
- * content, so a read can vary by a config or an options object without the caller serializing one — but it must be
- * plain data, since only own enumerable properties count towards the key (see {@link stableKey}).
+ * A value a read varies by: anything {@linkcode ReadDef.select | select} reads beyond the partition itself. An object
+ * or an array keys by its content, so a read can vary by a config or an options object without the caller serializing
+ * one — but it must be plain data, since only own enumerable properties count towards the key (see
+ * {@linkcode stableKey}).
  */
 export type VaryValue = string | number | boolean | null | undefined | readonly unknown[] | object;
 
-/** The vary list of a read that declares no `varyBy`, and of one called with no args: one shared array, not a fresh one per call. */
+/**
+ * The vary list of a read that declares no {@linkcode CommonDef.varyBy | varyBy}, and of one called with no args: one
+ * shared array, not a fresh one per call.
+ */
 export const EMPTY_VARY: readonly VaryValue[] = Object.freeze([]);
 
-/** Separator between groups of parts, one level above {@link KEY_SEP}, so the grouping is part of the key. */
+/** Separator between groups of parts, one level above {@linkcode KEY_SEP}, so the grouping is part of the key. */
 export const GROUP_SEP = '\u0001';
 
 /**
- * The identity of a whole set of partitions, for something keyed by the set rather than by one member — a `readMany`'s
- * cache entry, a fetch over several partitions at once. Order and grouping are both
- * part of the key, so the same partitions named differently are a different set.
+ * The identity of a whole set of partitions, for something keyed by the set rather than by one member — a
+ * {@linkcode Partitions.readMany | readMany}'s cache entry, a fetch over several partitions at once. Order and grouping
+ * are both part of the key, so the same partitions named differently are a different set.
  */
 export function partitionsKey(partitions: readonly (readonly string[])[]): string {
   return partitions.map(cacheKeyOf).join(GROUP_SEP);
@@ -112,13 +118,13 @@ export function isVaryPresent(value: VaryValue): boolean {
 
 /**
  * A read's own cache key: its partition, then everything it varies by, so two calls share a memoized value only when
- * the partition and every vary value match. Vary values go through {@link stableKey}, so an object or array arg keys
- * by its content and a caller rebuilding one per render still hits.
+ * the partition and every vary value match. Vary values go through {@linkcode stableKey}, so an object or array arg
+ * keys by its content and a caller rebuilding one per render still hits.
  */
 export function varyKey(parts: readonly string[], vary: readonly VaryValue[]): string {
   if (!vary.length) return cacheKeyOf(parts);
   // One array rather than three: `cacheKey(...parts, ...vary.map(stableKey))` allocates the mapped list and a
-  // spread of both. Structured values go through {@link identityOf}, so a caller holding an options object across
+  // spread of both. Structured values go through {@linkcode identityOf}, so a caller holding an options object across
   // a list serializes it once instead of once per row.
   const joined = new Array<string>(parts.length + vary.length);
   for (let index = 0; index < parts.length; index++) joined[index] = parts[index];
@@ -128,3 +134,7 @@ export function varyKey(parts: readonly string[], vary: readonly VaryValue[]): s
   }
   return cacheKeyOf(joined);
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { CommonDef, Partitions, ReadDef };

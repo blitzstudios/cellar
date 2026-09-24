@@ -1,15 +1,18 @@
 /**
  * Dependency tracking: how a computation learns what store data it used, so it can re-run when that data changes.
  *
- * A tracking scope is code run through `runTracked` (which `useValue` reads, `useTrackedStores` and tracked selectors
- * all use). Every time code inside it reads a version number (a partition's, a unit's, or a partition's presence), the
- * read reports a dependency to the scope; the scope then subscribes to exactly those, and re-runs when one changes. A
- * getter must report its dependencies on every call, cache hits included, or a computation using it won't update.
+ * A tracking scope is code run through {@linkcode runTracked} (which {@linkcode Read.useValue | useValue} reads,
+ * `useTrackedStores` and tracked selectors all use). Every time code inside it reads a version number (a partition's, a
+ * unit's, or a partition's presence), the read reports a dependency to the scope; the scope then subscribes to exactly
+ * those, and re-runs when one changes. A getter must report its dependencies on every call, cache hits included, or a
+ * computation using it won't update.
  */
 
 import { GROUP_SEP, KEY_SEP, partitionLabel } from '../args_key';
 import { createOnceGuard } from '../diagnostics/once_guard';
 import { renderPhaseOwnerStack } from './render_phase';
+import type { Read } from '../read/surface';
+import type { VersionAtom } from './version_atom';
 
 /**
  * One thing a computation in a tracking scope read, which the scope subscribes to: a partition's version, one unit's
@@ -51,10 +54,11 @@ export function runSubscribed<T>(fn: () => T): T {
 }
 
 /**
- * Reports a dependency to the innermost enclosing tracking scope, which will subscribe to it; this is how `version.get`
- * and the other version reads make themselves visible to {@link runTracked}. A tracking scope is code run through
- * `runTracked` (which `useValue` reads, `useTrackedStores` and tracked selectors all use): every version number read
- * inside it is recorded as a dependency, and the scope re-runs when one of them changes.
+ * Reports a dependency to the innermost enclosing tracking scope, which will subscribe to it; this is how
+ * {@linkcode VersionAtom.get | version.get} and the other version reads make themselves visible to
+ * {@linkcode runTracked}. A tracking scope is code run through {@linkcode runTracked} (which
+ * {@linkcode Read.useValue | useValue} reads, `useTrackedStores` and tracked selectors all use): every version number
+ * read inside it is recorded as a dependency, and the scope re-runs when one of them changes.
  *
  * Outside any scope it records nothing; in dev, if that happens during a component's render and nothing marked the read
  * as subscribed, it logs a warning naming the partition and the component, since the component won't re-render when the
@@ -89,11 +93,11 @@ function warnIfUnsubscribedRenderRead(dep: Dep): void {
 }
 /**
  * Runs `fn` as a tracking scope and returns its result together with its dependencies: every version number `fn` read
- * (partitions, units, presence), each once. It doesn't subscribe to anything itself; the caller does, as `useValue`,
- * `useTrackedStores` and tracked selectors do.
+ * (partitions, units, presence), each once. It doesn't subscribe to anything itself; the caller does, as
+ * {@linkcode Read.useValue | useValue}, `useTrackedStores` and tracked selectors do.
  *
  * Scopes nest, and the dependencies of an inner scope aren't passed to the outer one automatically: to make the outer
- * scope depend on them too, call `trackDependency` with each.
+ * scope depend on them too, call {@linkcode trackDependency} with each.
  */
 export function runTracked<T>(fn: () => T): {
   /** What `fn` returned. */
@@ -119,3 +123,7 @@ export function runTracked<T>(fn: () => T): {
 export function isTracking(): boolean {
   return sinkStack.length > 0;
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { Read, VersionAtom };

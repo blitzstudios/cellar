@@ -7,9 +7,9 @@
  * read after every write would build new view models and re-render every component showing one, changed or not.
  *
  * Every write reports which units it changed, so a projection rebuilds only those. A read that asks for particular
- * units (`one`, `byIds`) depends on just those units, so a write to other units doesn't re-run it. A store declares one
- * projection per view-model shape, and every read of that shape shares it, so each unit is built once however many
- * reads ask for it.
+ * units ({@linkcode RowProjection.one | one}, {@linkcode RowProjection.byIds | byIds}) depends on just those units, so
+ * a write to other units doesn't re-run it. A store declares one projection per view-model shape, and every read of
+ * that shape shares it, so each unit is built once however many reads ask for it.
  */
 
 import { BoundUnitMemo, byUnit, Memo, MemoDeclaration } from '../caches';
@@ -17,6 +17,7 @@ import { stableKey } from '../args_key';
 import { createOnceGuard } from '../diagnostics/once_guard';
 import { covered } from '../table/read_coverage';
 import { RowShape, RowTable } from '../table/types';
+import type { ReadDef } from './surface';
 
 /**
  * The definition of a projection: how to build a view model from one unit's rows, and how many built view models to
@@ -28,7 +29,8 @@ export interface RowProjectionDef<Row extends RowShape, Vm> {
   /**
    * How many built view models to keep, across all partitions; beyond that, the least recently used are discarded and
    * rebuilt when asked for again. Set it above the most units one screen reads at once: a read asking for more than
-   * `max` units discards what it just built, rebuilding every one after every write, and warns in dev.
+   * {@linkcode RowProjectionDef.max | max} units discards what it just built, rebuilding every one after every write,
+   * and warns in dev.
    */
   max: number;
   /**
@@ -38,8 +40,9 @@ export interface RowProjectionDef<Row extends RowShape, Vm> {
    */
   of: (rows: readonly Row[]) => Vm | undefined;
   /**
-   * Text added to the dev warning shown when a read asks for more units than `max`, for a projection where raising
-   * `max` is the wrong fix, such as a detailed shape meant for one unit at a time, which should point to the lean one.
+   * Text added to the dev warning shown when a read asks for more units than {@linkcode RowProjectionDef.max | max},
+   * for a projection where raising {@linkcode RowProjectionDef.max | max} is the wrong fix, such as a detailed shape
+   * meant for one unit at a time, which should point to the lean one.
    */
   advice?: string;
 }
@@ -47,8 +50,9 @@ export interface RowProjectionDef<Row extends RowShape, Vm> {
 /**
  * A declared projection: view models built from a unit's rows, one per unit, cached and returned as the same object
  * until a write changes that unit's rows. A unit is all the rows sharing one value of the table's unit column, such as
- * one player's rows. Reads use these methods in their `select`. Every method takes the partition key first (a
- * partition is the set of rows one fetch returns and replaces), and reads only that partition's rows.
+ * one player's rows. Reads use these methods in their {@linkcode ReadDef.select | select}. Every method takes the
+ * partition key first (a partition is the set of rows one fetch returns and replaces), and reads only that partition's
+ * rows.
  */
 export interface RowProjection<Key, Row extends RowShape, Vm> {
   /**
@@ -64,8 +68,9 @@ export interface RowProjection<Key, Row extends RowShape, Vm> {
    */
   byIds(key: Key, ids: readonly string[]): Vm[];
   /**
-   * The same view models as `byIds`, as an object keyed by id instead of a list, for a caller that looks them up.
-   * An id with no rows in the partition is left out. A read that calls it depends on those units only.
+   * The same view models as {@linkcode RowProjection.byIds | byIds}, as an object keyed by id instead of a list, for a
+   * caller that looks them up. An id with no rows in the partition is left out. A read that calls it depends on those
+   * units only.
    */
   mapByIds(key: Key, ids: readonly string[]): Record<string, Vm>;
   /**
@@ -209,3 +214,7 @@ export function createRowProjection<Row extends RowShape, Key, Vm>(
     all: (key) => overFilter(key),
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { ReadDef };

@@ -24,6 +24,7 @@ import {
 import { NativeShredSpec, ShredSpec } from '../write/shred_spec';
 import { BatchCommand, readRows, runBatch, runBatchAsync, SqliteConnection } from './connection';
 import { reportStoreDegradation } from '../diagnostics/telemetry';
+import type { defineSqliteStore } from '../define_sqlite_store';
 
 const MAX_BIND_VARIABLES = 999; // SQLite's pre-3.32 default
 const DEFAULT_IN_CHUNK = 900;
@@ -42,7 +43,10 @@ function yieldToEventLoop(): Promise<void> {
 /** A shred spec whose wiring is wrong: a bug, and the one shred failure that propagates past the fallback. */
 class ShredSpecMisconfigured extends Error {}
 
-/** Files a write whose diff never ran, once per table: the first says the connection is failing, and the rest say the same. */
+/**
+ * Files a write whose diff never ran, once per table: the first says the connection is failing, and the rest say the
+ * same.
+ */
 function createDiffLostReporter(table: string): () => void {
   let reported = false;
   return () => {
@@ -56,7 +60,10 @@ function createDiffLostReporter(table: string): () => void {
   };
 }
 
-/** Dev-only: `deleteWhere` must name exactly the filter's columns, so the native and JS paths replace the same rows. */
+/**
+ * Dev-only: {@linkcode ShredSpec.deleteWhere | deleteWhere} must name exactly the filter's columns, so the native and
+ * JS paths replace the same rows.
+ */
 function assertDeleteWhereMatches(table: string, variant: string, spec: { deleteWhere: ReadonlyArray<{ column: string }> }, where: Partial<RowShape>): void {
   const deleteColumns = new Set(spec.deleteWhere.map((clause) => clause.column));
   const whereColumns = Object.keys(where);
@@ -86,7 +93,7 @@ function assertDeleteWhereMatches(table: string, variant: string, spec: { delete
   );
 }
 
-/** Options for {@link createSqliteRowTable}. */
+/** Options for {@linkcode createSqliteRowTable}. */
 export interface SqliteRowTableOptions {
   /**
    * Creates the table, its indexes and its ETag table as `TEMP` tables, held in memory and starting empty each
@@ -96,9 +103,9 @@ export interface SqliteRowTableOptions {
 }
 
 /**
- * Creates a {@link RowTable} backed by a SQLite table. Rows stay in SQLite, and only the ones a read selects become JS
- * objects. `defineSqliteStore` creates one when a store is bound. Call its `init` before anything else, which creates
- * the table or rebuilds an outdated one.
+ * Creates a {@linkcode RowTable} backed by a SQLite table. Rows stay in SQLite, and only the ones a read selects become
+ * JS objects. {@linkcode defineSqliteStore} creates one when a store is bound. Call its
+ * {@linkcode RowTable.init | init} before anything else, which creates the table or rebuilds an outdated one.
  */
 export function createSqliteRowTable<Row extends RowShape>(
   schema: RowTableSchema<Row>,
@@ -458,3 +465,7 @@ export function createSqliteRowTable<Row extends RowShape>(
     },
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { RowTable, ShredSpec, defineSqliteStore };

@@ -13,7 +13,7 @@ export const ALL_UNITS = 'all' as const;
 
 /**
  * What a write changed: the unit value (such as a `player_id`) of each row it added, changed or removed, or
- * {@link ALL_UNITS} when every unit counts as changed. An empty set means the write changed nothing.
+ * {@linkcode ALL_UNITS} when every unit counts as changed. An empty set means the write changed nothing.
  */
 export type ChangeSet = typeof ALL_UNITS | ReadonlySet<string>;
 
@@ -38,7 +38,7 @@ export function isUnchanged(changes: ChangeSet): boolean {
 
 /**
  * Combines the change sets of two writes into one (every unit either changed), such as the chunks of one push. If
- * either is {@link ALL_UNITS}, so is the result.
+ * either is {@linkcode ALL_UNITS}, so is the result.
  */
 export function unionChanges(left: ChangeSet, right: ChangeSet): ChangeSet {
   if (left === ALL_UNITS || right === ALL_UNITS) return ALL_UNITS;

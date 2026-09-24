@@ -1,13 +1,14 @@
 /**
- * The {@link SqliteConnection} for devices, over `react-native-nitro-sqlite`. It opens a store's database file, sets
- * the pragmas stores rely on, and passes native shreds to our fork's C++. A store whose file won't open is reported
- * rather than throwing, and runs on an in-memory database instead.
+ * The {@linkcode SqliteConnection} for devices, over `react-native-nitro-sqlite`. It opens a store's database file,
+ * sets the pragmas stores rely on, and passes native shreds to our fork's C++. A store whose file won't open is
+ * reported rather than throwing, and runs on an in-memory database instead.
  */
 
 import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
 import { PinnedConnection, reportStoreDegradation, ShredSpec, SqliteConnection } from '../index';
 import type { BindOptions, SqliteRecovery } from '../define_sqlite_store';
+import type { readRows } from '../table/connection';
 
 /** Matched verbatim by `sqliteExecute` in our `react-native-nitro-sqlite` fork (`cpp/shred.cpp`). */
 const NITRO_SHRED_SENTINEL = '-- nitro_shred_v1';
@@ -133,17 +134,17 @@ function isHandleInUse(error: unknown): boolean {
 /**
  * Opens `name`'s dedicated reader, reclaiming the handle if a previous JS runtime left it open.
  *
- * {@link closeNitroConnection} can only hand back handles this module's own map knows about, and that map lives in the
- * JS heap. An iOS CodePush reload replaces the JS runtime in the same native process, so the new runtime starts with an
- * empty map while nitro's registry still holds every handle the old one opened. The writer survives that, because
- * `open` addresses a database by name and re-registers it; a secondary handle's name is exclusive, so the reader is the
- * one that collides.
+ * {@linkcode closeNitroConnection} can only hand back handles this module's own map knows about, and that map lives in
+ * the JS heap. An iOS CodePush reload replaces the JS runtime in the same native process, so the new runtime starts
+ * with an empty map while nitro's registry still holds every handle the old one opened. The writer survives that,
+ * because `open` addresses a database by name and re-registers it; a secondary handle's name is exclusive, so the
+ * reader is the one that collides.
  *
- * Losing it is not the small thing it reads as. `readRows` falls back to the writer handle, so the ranker's multi
- * statement `TEMP` work starts interleaving with an ingest's savepoint on one connection, SQLite refuses the nested
- * transaction, and each refusal sends the store through recovery: a reopen and a refetch of everything it holds. So
- * this tries hard: close the stale handle by name and retry, and failing that take a unique name,
- * which cannot collide with anything.
+ * Losing it is not the small thing it reads as. {@linkcode readRows} falls back to the writer handle, so the ranker's
+ * multi statement `TEMP` work starts interleaving with an ingest's savepoint on one connection, SQLite refuses the
+ * nested transaction, and each refusal sends the store through recovery: a reopen and a refetch of everything it holds.
+ * So this tries hard: close the stale handle by name and retry, and failing that take a unique name, which cannot
+ * collide with anything.
  */
 function openReader(name: string): ReturnType<typeof openSecondary> | undefined {
   const preferred = `${name}:reader`;
@@ -165,9 +166,9 @@ function openReader(name: string): ReturnType<typeof openSecondary> | undefined 
   return openSecondary({ name, handle: `${preferred}:${Date.now().toString(36)}` });
 }
 
-/** Options for {@link openNitroConnection}. */
+/** Options for {@linkcode openNitroConnection}. */
 export interface NitroConnectionOptions {
-    /**
+  /**
    * Also opens a second, read-only handle to the same database file, and runs reads on it, so a read doesn't wait for
    * a write in progress on the main handle (such as a large fetch being written).
    */
@@ -180,7 +181,8 @@ export interface NitroConnectionOptions {
 }
 
 /**
- * Opens a database file on the device as a {@link SqliteConnection}, closing any connection already open under `name`.
+ * Opens a database file on the device as a {@linkcode SqliteConnection}, closing any connection already open under
+ * `name`.
  */
 export function openNitroConnection(name: string, opts?: NitroConnectionOptions): SqliteConnection {
   // Reopening a database this process already holds — a Fast Refresh re-running init, or a store rebound after a
@@ -308,7 +310,7 @@ function recoveryFor(binding: StoreBinding): SqliteRecovery {
 
 const messageOf = (error: unknown): string => String((error as { message?: unknown })?.message ?? error);
 
-/** Options for {@link bindSqliteStore}. */
+/** Options for {@linkcode bindSqliteStore}. */
 export interface BindSqliteStoreOptions extends NitroConnectionOptions {
   /** Runs the store on an in-memory database without opening its file, as a kill switch. */
   inMemory?: boolean;
@@ -317,8 +319,8 @@ export interface BindSqliteStoreOptions extends NitroConnectionOptions {
 /**
  * Opens the database file `dbName` and binds `store` to it, at app startup; `label` names the store in reports. If the
  * file won't open, it is deleted and opened again from empty, since it only caches server data. If that fails too, the
- * store runs on an in-memory database until {@link retrySqliteStores} gets it back on the file. A failure later in the
- * session reopens the database, and otherwise moves the store to the in-memory database.
+ * store runs on an in-memory database until {@linkcode retrySqliteStores} gets it back on the file. A failure later in
+ * the session reopens the database, and otherwise moves the store to the in-memory database.
  */
 export function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts: BindSqliteStoreOptions = {}): void {
   const binding: StoreBinding = { label, dbName, store, opts: { dedicatedReader: opts.dedicatedReader, shredInJs: opts.shredInJs } };
@@ -389,3 +391,7 @@ export function retrySqliteStores(): void {
     });
   }
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { SqliteConnection, readRows };

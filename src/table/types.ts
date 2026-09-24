@@ -5,6 +5,9 @@
  */
 
 import type { WriteResult } from './change_set';
+import type { PartitionKeySpec } from '../define_partitions';
+import type { RowProjection } from '../read/projection';
+import type { byUnit } from '../caches';
 
 /** A value one SQLite column can hold in a row table: a string, a number, or null. Booleans are stored as 0 or 1. */
 export type SqlValue = string | number | null;
@@ -63,8 +66,9 @@ export interface MetaDef<Row extends RowShape> {
   table: string;
   /**
    * The row table's columns that identify a partition, which are the side table's key: one ETag is stored per
-   * combination of their values. These must be the columns the store's partition `where` sets, such as `['league']` for
-   * a store whose partition is every player in one league.
+   * combination of their values. These must be the columns the store's partition
+   * {@linkcode PartitionKeySpec.where | where} sets, such as `['league']` for a store whose partition is every player
+   * in one league.
    */
   keyColumns: ReadonlyArray<keyof Row & string>;
   /** The side table's column that holds the ETag string. */
@@ -73,7 +77,7 @@ export interface MetaDef<Row extends RowShape> {
 
 /**
  * The declaration of a row table: the SQLite table a store keeps its rows in, its columns, its primary key, the column
- * its changes are tracked by (`unit`), its indexes, and where it keeps ETags.
+ * its changes are tracked by ({@linkcode RowTableSchema.unit | unit}), its indexes, and where it keeps ETags.
  *
  * The table is created from this on the first launch, and each launch compares it with the table on disk. A change
  * that only adds nullable columns adds them in place and keeps the rows. Any other change (a column removed, retyped
@@ -92,9 +96,9 @@ export interface RowTableSchema<Row extends RowShape> {
    * The columns whose values together identify one row, such as `['league', 'player_id']`. A table holds at most one
    * row per combination, and writing a row whose key already exists replaces that row.
    *
-   * A write that replaces a partition matches each incoming row to the stored row with the same key, to find which
-   * rows were added, changed or removed. `upsert`, which merges rows in without replacing the partition, needs a
-   * primary key to match on.
+   * A write that replaces a partition matches each incoming row to the stored row with the same key, to find which rows
+   * were added, changed or removed. {@linkcode RowTable.upsert | upsert}, which merges rows in without replacing the
+   * partition, needs a primary key to match on.
    *
    * Use `[]` for a table whose rows have no identity of their own and can repeat, such as one a fetch refills whole;
    * its writes compare each unit's rows as a set instead of row by row, and it can't be upserted into.
@@ -111,11 +115,13 @@ export interface RowTableSchema<Row extends RowShape> {
    * replaces the rows of each unit in the set with the unit's new rows, deleting a unit that's no longer there, and
    * then bumps the partition's version and the version of each changed unit.
    *
-   * Reads use the same division. A read that asks for particular units (through a projection's `one` or `byIds`, or a
-   * `byUnit` memo) depends on just those units, and recomputes only when a write changes one of them. A read that looks
-   * at the whole partition (scanning the table, or a projection's `all` or `where`) depends on the partition, and
-   * recomputes after any write that changes it. Either way, the component re-renders only if the recomputed value
-   * differs. Projections likewise build one view model per unit, and rebuild only the units a write changed.
+   * Reads use the same division. A read that asks for particular units (through a projection's
+   * {@linkcode RowProjection.one | one} or {@linkcode RowProjection.byIds | byIds}, or a {@linkcode byUnit} memo)
+   * depends on just those units, and recomputes only when a write changes one of them. A read that looks at the whole
+   * partition (scanning the table, or a projection's {@linkcode RowProjection.all | all} or
+   * {@linkcode RowProjection.where | where}) depends on the partition, and recomputes after any write that changes it.
+   * Either way, the component re-renders only if the recomputed value differs. Projections likewise build one view
+   * model per unit, and rebuild only the units a write changed.
    */
   unit: keyof Row & string;
   /**
@@ -144,7 +150,7 @@ export interface RowTableSchema<Row extends RowShape> {
   rebuildVersion?: number;
 }
 
-/** Options for {@link RowTable.find} beyond which rows to read. */
+/** Options for {@linkcode RowTable.find} beyond which rows to read. */
 export interface FindOpts<Row extends RowShape> {
   /**
    * A column to sort the returned rows by, ascending. The sort runs in JS after the rows are read, the same on every
@@ -156,14 +162,15 @@ export interface FindOpts<Row extends RowShape> {
 
 /**
  * A store's rows in one SQLite table, and the only way the store reads and writes them. The table is divided into
- * partitions: a partition is the set of rows one fetch returns and replaces, picked out by column values (a `where`,
- * such as `{ league: 'nfl' }`). Each partition is divided into units: a unit is all the rows in the partition that
- * share a value in the schema's `unit` column, such as one player's rows.
+ * partitions: a partition is the set of rows one fetch returns and replaces, picked out by column values (a
+ * {@linkcode PartitionKeySpec.where | where}, such as `{ league: 'nfl' }`). Each partition is divided into units: a
+ * unit is all the rows in the partition that share a value in the schema's {@linkcode RowTableSchema.unit | unit}
+ * column, such as one player's rows.
  *
  * Every write compares its rows with the stored ones and returns its change set: the unit value of each row that was
  * added, changed or removed. A write whose rows match what the table holds returns an empty set. The table doesn't
- * notify readers itself: the code that calls the write bumps the partition's version with the change set, which is
- * what re-renders the readers of those units.
+ * notify readers itself: the code that calls the write bumps the partition's version with the change set, which is what
+ * re-renders the readers of those units.
  */
 export interface RowTable<Row extends RowShape> {
   /**
@@ -194,16 +201,16 @@ export interface RowTable<Row extends RowShape> {
     },
   ): Promise<WriteResult>;
   /**
-   *    * Replaces the rows matching `where` with exactly `rows`, synchronously, so 300 rows can become 3, or none. Every
+   * * Replaces the rows matching `where` with exactly `rows`, synchronously, so 300 rows can become 3, or none. Every
    * row in `rows` must itself match `where` (checked in dev), or the next replace of that partition wouldn't delete it.
    *
    * Returns the unit values that were added, removed or changed, and the number of rows given.
    */
   overwrite(where: Partial<Row>, rows: readonly Row[]): WriteResult;
   /**
-   * Replaces the rows matching `where` with the rows in a JSON response body, the same way {@link RowTable.overwrite}
-   * does. When the connection and the store support it, the native shredder parses the body and writes the rows in
-   * C++, so no JS objects are built for them; otherwise `parseRows` builds them in JS.
+   * Replaces the rows matching `where` with the rows in a JSON response body, the same way
+   * {@linkcode RowTable.overwrite} does. When the connection and the store support it, the native shredder parses the
+   * body and writes the rows in C++, so no JS objects are built for them; otherwise `parseRows` builds them in JS.
    *
    * Returns the unit values that were added, removed or changed, and the number of rows written.
    */
@@ -212,7 +219,7 @@ export interface RowTable<Row extends RowShape> {
   getOne(where: Partial<Row>): Row | undefined;
   /**
    * Every stored row whose columns equal the values in `where` (a `null` value matches a null column), in storage order
-   * unless `opts.orderBy` names a column to sort by.
+   * unless {@linkcode FindOpts.orderBy | opts.orderBy} names a column to sort by.
    */
   find(where: Partial<Row>, opts?: FindOpts<Row>): Row[];
   /**
@@ -240,13 +247,15 @@ export interface RowTable<Row extends RowShape> {
    */
   unitsWhere(where: Partial<Row>): string[];
   /**
-   * The ETag stored for the partition that `where` names (by the schema's `meta.keyColumns`), or `undefined` if none is
-   * stored or the schema declares no `meta`.
+   * The ETag stored for the partition that `where` names (by the schema's
+   * {@linkcode MetaDef.keyColumns | meta.keyColumns}), or `undefined` if none is stored or the schema declares no
+   * {@linkcode RowTableSchema.meta | meta}.
    */
   getMeta(where: Partial<Row>): string | undefined;
   /**
-   * Stores the ETag for the partition that `where` names (by the schema's `meta.keyColumns`), or clears it when `value`
-   * is `undefined`. Does nothing if the schema declares no `meta`.
+   * Stores the ETag for the partition that `where` names (by the schema's
+   * {@linkcode MetaDef.keyColumns | meta.keyColumns}), or clears it when `value` is `undefined`. Does nothing if the
+   * schema declares no {@linkcode RowTableSchema.meta | meta}.
    */
   setMeta(where: Partial<Row>, value: string | undefined): void;
 }
@@ -255,3 +264,7 @@ export interface RowTable<Row extends RowShape> {
 export function columnNames<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string> {
   return Object.keys(schema.columns) as Array<keyof Row & string>;
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { PartitionKeySpec, RowProjection, byUnit };

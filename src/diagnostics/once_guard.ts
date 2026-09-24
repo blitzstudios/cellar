@@ -1,4 +1,4 @@
-/** Keys that can each be marked once, for firing a warning once. {@link resetOnceGuards} clears every guard. */
+/** Keys that can each be marked once, for firing a warning once. {@linkcode resetOnceGuards} clears every guard. */
 
 import { cacheKey } from '../key';
 
@@ -30,7 +30,9 @@ export function createOnceGuard(): OnceGuard {
   };
 }
 
-/** Runs `reset` whenever {@link resetOnceGuards} does, for other state a warning keeps, such as a batch it collects. */
+/**
+ * Runs `reset` whenever {@linkcode resetOnceGuards} does, for other state a warning keeps, such as a batch it collects.
+ */
 export function onGuardReset(reset: () => void): void {
   resets.push(reset);
 }

@@ -1,6 +1,6 @@
 /**
- * `useTrackedValue`, the hook behind every `useValue` read: it runs a computation, subscribes to exactly the store data
- * it read, and runs it again when that data changes.
+ * {@linkcode useTrackedValue}, the hook behind every {@linkcode Read.useValue | useValue} read: it runs a computation,
+ * subscribes to exactly the store data it read, and runs it again when that data changes.
  *
  * Dependencies are found by running the computation, not declared: every partition version, unit version and presence
  * it reads is subscribed to. A read of three players subscribes to those three, so a write to a fourth doesn't re-run
@@ -12,17 +12,24 @@ import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/w
 
 import { readGateRuntime } from '../runtime';
 import { Dep, runTracked } from './tracking';
+import type { Read } from '../read/surface';
 
-/** Options for {@link useTrackedValue}. */
+/** Options for {@linkcode useTrackedValue}. */
 export interface TrackedValueOptions<T> {
-  /** Whether to run the computation; while false, the hook returns `empty`, runs nothing and subscribes to nothing. */
+  /**
+   * Whether to run the computation; while false, the hook returns {@linkcode TrackedValueOptions.empty | empty}, runs
+   * nothing and subscribes to nothing.
+   */
   enabled: boolean;
   /**
    * Compares a recomputed value with the previous one. When they're equal, the hook keeps returning the previous object
    * and the component doesn't re-render.
    */
   isEqual: (left: T, right: T) => boolean;
-  /** What the hook returns while `enabled` is false. Use a constant, so it is the same object on every render. */
+  /**
+   * What the hook returns while {@linkcode TrackedValueOptions.enabled | enabled} is false. Use a constant, so it is
+   * the same object on every render.
+   */
   empty: T;
   /**
    * Subscribes to another source of changes the computation depends on, such as the Redux store for a computation that
@@ -78,8 +85,9 @@ function subscribeTo(inst: Instance, deps: readonly Dep[]): void {
 /**
  * A hook that runs `compute` as a tracking scope (recording every store version number it reads), subscribes to what it
  * read, and returns its value. When any of that data changes, it runs `compute` again, and re-renders the component
- * only if the new value isn't equal (by `isEqual`) to the previous one. `inputs` are the values `compute` closes over,
- * such as the read's args, as a React dependency list; a change in them also re-runs it.
+ * only if the new value isn't equal (by {@linkcode TrackedValueOptions.isEqual | isEqual}) to the previous one.
+ * `inputs` are the values `compute` closes over, such as the read's args, as a React dependency list; a change in them
+ * also re-runs it.
  *
  * It follows the app's read gate: while the component's gate isn't live (its screen is hidden, say), it unsubscribes
  * and keeps returning its last value, so a hidden screen doesn't re-render. When the gate is live again, it re-runs and
@@ -151,3 +159,7 @@ export function useTrackedValue<T>(compute: () => T, inputs: DependencyList, opt
 
   return tracked.value;
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { Read };

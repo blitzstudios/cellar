@@ -10,7 +10,8 @@ export interface PrimeState {
      * Whether a fetch of the partition is in flight, including a refetch of rows already fetched. Correct whenever the
      * component renders, but a change in it doesn't cause a render by itself: a refetch starting and finishing would
      * otherwise re-render every reader of the partition twice. A spinner shown only before anything has loaded should use
-     * `isInitialLoading`; one that must track a background refetch needs its own trigger.
+     * {@linkcode PrimeState.isInitialLoading | isInitialLoading}; one that must track a background refetch needs its own
+     * trigger.
      */
     isFetching: boolean;
     /** Whether the partition's last fetch failed. */
@@ -23,7 +24,7 @@ export interface PrimeState {
 export declare const PRIME_IDLE: PrimeState;
 /**
  * The fetch hook used in place of a real one by a store fed only by pushes: fetches nothing and returns
- * {@link PRIME_IDLE}. Chosen once when the store is built, so every render calls the same hook.
+ * {@linkcode PRIME_IDLE}. Chosen once when the store is built, so every render calls the same hook.
  */
 export declare const NO_PRIMING: () => PrimeState;
 //# sourceMappingURL=prime_state.d.ts.map

@@ -1,10 +1,12 @@
 /**
- * Reads: how a store turns a read definition into a hook (`useValue`) and a getter (`getValue`).
+ * Reads: how a store turns a read definition into a hook ({@linkcode Read.useValue | useValue}) and a getter
+ * ({@linkcode Read.getValue | getValue}).
  *
  * A read names a partition with its args (a partition is the set of rows one fetch returns and replaces), fetches the
- * partition if it has never been fetched, and runs the read's `select` over the partition's rows to compute its
- * value. The value is cached by partition and args, shared by every caller with the same ones, and recomputed only
- * when rows it depended on change; the hook re-renders its component only when the recomputed value differs.
+ * partition if it has never been fetched, and runs the read's {@linkcode ReadDef.select | select} over the partition's
+ * rows to compute its value. The value is cached by partition and args, shared by every caller with the same ones, and
+ * recomputed only when rows it depended on change; the hook re-renders its component only when the recomputed value
+ * differs.
  */
 
 import { useCallback, useMemo } from 'react';
@@ -21,6 +23,10 @@ import { DataResult, DataStatus, makeResult, offHeapStatus } from '../store_resu
 import { runSubscribed, runTracked, trackDependency } from '../reactivity/tracking';
 import { useTrackedValue } from '../reactivity/tracked_value';
 import { covered, uncoveredReads } from '../table/read_coverage';
+import type { PartitionLifecycle, Partitions, definePartitions } from '../define_partitions';
+import type { pairRead } from './facade';
+import type { shallowEqualStruct } from '../caches';
+import type { StoreSurface } from '../define_sqlite_store';
 
 /**
  * The parts of a store's fetch ingest that its reads use: the hooks that fetch partitions, and imperative fetch starts.
@@ -31,7 +37,8 @@ export interface FetchOwner<Key> {
   /** A hook that fetches each of several partitions that isn't fresh, and returns their combined state. */
   usePrimeMany: (keys: readonly Key[], enabled: boolean, opts?: { slice?: boolean }) => PrimeState;
   /**
-   * Starts fetching a partition, outside a component; used by `getValue` for a partition that has never been fetched.
+   * Starts fetching a partition, outside a component; used by {@linkcode Read.getValue | getValue} for a partition that
+   * has never been fetched.
    */
   ensure: (key: Key) => void;
   /** Fetches a partition again now, however recently it was fetched. */
@@ -40,7 +47,8 @@ export interface FetchOwner<Key> {
 
 /**
  * What a store's reads need from the store: its version atom, how a partition key becomes its version key, whether a
- * partition has rows or has been fetched, and the fetch ingest. `definePartitions` builds this for each store.
+ * partition has rows or has been fetched, and the fetch ingest. {@linkcode definePartitions} builds this for each
+ * store.
  */
 export interface ReadSurfaceKernel<Key> {
   /** The store's version atom: the per-partition and per-unit version numbers reads depend on and re-render from. */
@@ -49,7 +57,10 @@ export interface ReadSurfaceKernel<Key> {
   name?: string;
   /** A partition key's parts: its values as a list of strings, which identify the partition in the version atom. */
   toParts: (key: Key) => readonly string[];
-  /** Whether a partition holds any rows. A read runs its `select` only when the partition has rows. */
+  /**
+   * Whether a partition holds any rows. A read runs its {@linkcode ReadDef.select | select} only when the partition has
+   * rows.
+   */
   has: (key: Key) => boolean;
   /**
    * Whether a partition has been written by a fetch this session. Having rows doesn't answer that: a socket push can
@@ -57,8 +68,8 @@ export interface ReadSurfaceKernel<Key> {
    */
   hasFetched?: (key: Key) => boolean;
   /**
-   * How a read that declares no `partition` gets its partition from its args: the store's key fields, or a function
-   * for a store whose key is computed from the args.
+   * How a read that declares no {@linkcode ReadDef.partition | partition} gets its partition from its args: the store's
+   * key fields, or a function for a store whose key is computed from the args.
    */
   defaultPartition?: readonly string[] | ((args: never) => Key);
   /**
@@ -68,17 +79,19 @@ export interface ReadSurfaceKernel<Key> {
 }
 
 /**
- * A read's `varyBy`: the args, beyond the partition, that its value depends on. Either a list of args field names,
- * such as `['playerId']`, or a function that computes the values from the args.
+ * A read's {@linkcode CommonDef.varyBy | varyBy}: the args, beyond the partition, that its value depends on. Either a
+ * list of args field names, such as `['playerId']`, or a function that computes the values from the args.
  */
 export type VarySpec<Args> = readonly VaryField<Args>[] | ((args: Args) => readonly VaryValue[]);
 
 
 /**
- * The args a read's `select` receives: only the fields its `varyBy` lists, each typed as non-null, since `select` only
- * runs once all of them have values. Reading any other arg in `select` is a type error, because the read's cached value
- * is shared by every caller whose partition and `varyBy` values match; a value computed from an unlisted arg would be
- * served to callers that passed a different one. A read whose `varyBy` is a function lists no fields, so its `select`
+ * The args a read's {@linkcode ReadDef.select | select} receives: only the fields its
+ * {@linkcode CommonDef.varyBy | varyBy} lists, each typed as non-null, since {@linkcode ReadDef.select | select} only
+ * runs once all of them have values. Reading any other arg in {@linkcode ReadDef.select | select} is a type error,
+ * because the read's cached value is shared by every caller whose partition and {@linkcode CommonDef.varyBy | varyBy}
+ * values match; a value computed from an unlisted arg would be served to callers that passed a different one. A read
+ * whose {@linkcode CommonDef.varyBy | varyBy} is a function lists no fields, so its {@linkcode ReadDef.select | select}
  * receives the whole args.
  */
 export type SelectArgs<Args, V> = V extends readonly (keyof Args)[] ? { [K in V[number]]: NonNullable<Args[K & keyof Args]> } : Args;
@@ -91,12 +104,16 @@ function overArgs<Args, Named, T, V>(select: (args: SelectArgs<Args, V>, named: 
   return select as unknown as (args: Args, named: Named) => T;
 }
 
-/** The fields every kind of read definition shares (`read`, `readMany` and `readGrouped`). */
-interface CommonDef<Args, T, V extends VarySpec<Args>> {
+/**
+ * The fields every kind of read definition shares ({@linkcode Partitions.read | read},
+ * {@linkcode Partitions.readMany | readMany} and {@linkcode Partitions.readGrouped | readGrouped}).
+ */
+export interface CommonDef<Args, T, V extends VarySpec<Args>> {
   /**
-   * Turns the read off for some args: while it returns false, the read returns `empty` and doesn't run `select`. For
-   * args that name something that can't exist, such as a placeholder id. It doesn't stop the fetch; use `prime` or the
-   * caller's `enabled` option for that.
+   * Turns the read off for some args: while it returns false, the read returns {@linkcode CommonDef.empty | empty} and
+   * doesn't run {@linkcode ReadDef.select | select}. For args that name something that can't exist, such as a
+   * placeholder id. It doesn't stop the fetch; use {@linkcode CommonDef.prime | prime} or the caller's
+   * {@linkcode CommonDef.enabled | enabled} option for that.
    */
   enabled?: (args: Args) => boolean;
   /**
@@ -105,17 +122,19 @@ interface CommonDef<Args, T, V extends VarySpec<Args>> {
    * from the args.
    *
    * These values, with the partition, are the read's cache key: every caller with the same partition and the same
-   * values shares one cached value. So list every arg `select` uses; `select` can only see the listed ones (a type
-   * error otherwise). While any of them is missing (`undefined`, `null`, `''` or an empty array; `0` and `false` count
-   * as values), the read returns `empty` without running `select`, but still fetches the partition, so the rows are
-   * there when the value arrives. Arrays and objects are compared by content, so a caller that rebuilds one each render
-   * still hits the cache.
+   * values shares one cached value. So list every arg {@linkcode ReadDef.select | select} uses;
+   * {@linkcode ReadDef.select | select} can only see the listed ones (a type error otherwise). While any of them is
+   * missing (`undefined`, `null`, `''` or an empty array; `0` and `false` count as values), the read returns
+   * {@linkcode CommonDef.empty | empty} without running {@linkcode ReadDef.select | select}, but still fetches the
+   * partition, so the rows are there when the value arrives. Arrays and objects are compared by content, so a caller
+   * that rebuilds one each render still hits the cache.
    */
   varyBy?: V;
   /**
-   * The args fields a caller must have before the read runs, for a read whose partition or `varyBy` is a function (a
-   * field list is read off automatically). It becomes the read's {@link Read.requires}, which {@link pairRead} needs to
-   * publish the read: the published hook and getter return `empty` until every one of these fields has a value.
+   * The args fields a caller must have before the read runs, for a read whose partition or
+   * {@linkcode CommonDef.varyBy | varyBy} is a function (a field list is read off automatically). It becomes the read's
+   * {@linkcode Read.requires}, which {@linkcode pairRead} needs to publish the read: the published hook and getter
+   * return {@linkcode CommonDef.empty | empty} until every one of these fields has a value.
    */
   requires?: readonly string[];
   /**
@@ -126,14 +145,15 @@ interface CommonDef<Args, T, V extends VarySpec<Args>> {
   empty: T;
   /**
    * Compares the read's previous value with a newly computed one. When they're equal, the read keeps returning the
-   * previous object, so callers don't re-render. Defaults to {@link shallowEqualValue}, which compares arrays by their
-   * elements and plain objects by their values, one level deep; pass one built with {@link shallowEqualStruct} when
-   * equality depends on a level deeper.
+   * previous object, so callers don't re-render. Defaults to {@linkcode shallowEqualValue}, which compares arrays by
+   * their elements and plain objects by their values, one level deep; pass one built with
+   * {@linkcode shallowEqualStruct} when equality depends on a level deeper.
    */
   isEqual?: (left: T, right: T) => boolean;
   /**
-   * How many values the read caches: one per combination of partition and `varyBy` values, shared by every caller.
-   * 256 by default. When a screen asks for more combinations than this, older ones are recomputed when asked again.
+   * How many values the read caches: one per combination of partition and {@linkcode CommonDef.varyBy | varyBy} values,
+   * shared by every caller. 256 by default. When a screen asks for more combinations than this, older ones are
+   * recomputed when asked again.
    */
   getCacheMax?: number;
   /**
@@ -148,10 +168,11 @@ interface CommonDef<Args, T, V extends VarySpec<Args>> {
 }
 
 /**
- * The definition of a read of one partition. The args name one partition (through `partition`, or the store's key
- * fields by default); the read fetches it if it has never been fetched, and `select` computes the value from its rows.
- * Nearly every read is this kind. For a read across several partitions, use `ReadManyDef`; for several lookups at once,
- * each with its own candidate partitions, use `ReadGroupedDef`.
+ * The definition of a read of one partition. The args name one partition (through
+ * {@linkcode ReadDef.partition | partition}, or the store's key fields by default); the read fetches it if it has never
+ * been fetched, and {@linkcode ReadDef.select | select} computes the value from its rows. Nearly every read is this
+ * kind. For a read across several partitions, use {@linkcode ReadManyDef}; for several lookups at once, each with its
+ * own candidate partitions, use {@linkcode ReadGroupedDef}.
  */
 export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> extends CommonDef<Args, T, V> {
   /**
@@ -161,21 +182,24 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
    */
   partition?: readonly PartitionField<Args>[] | ((args: Args) => Key);
   /**
-   * Computes the read's value from the partition's rows. `args` holds only the fields listed in `varyBy`, and `key` is
-   * the partition's key. It runs only when the partition has rows and every `varyBy` value is present; otherwise the
-   * read returns `empty`.
+   * Computes the read's value from the partition's rows. `args` holds only the fields listed in
+   * {@linkcode CommonDef.varyBy | varyBy}, and `key` is the partition's key. It runs only when the partition has rows
+   * and every {@linkcode CommonDef.varyBy | varyBy} value is present; otherwise the read returns
+   * {@linkcode CommonDef.empty | empty}.
    *
-   * The result is cached until the rows it depended on change. If `select` reads through projections or unit memos,
-   * it depends on just the units (such as the players) it read, and a write to other units doesn't recompute it. If it
-   * reads the table directly, it depends on the whole partition and is recomputed after any write to it.
+   * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
+   * projections or unit memos, it depends on just the units (such as the players) it read, and a write to other units
+   * doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed after any
+   * write to it.
    */
   select: (args: SelectArgs<Args, V>, key: Key) => T;
 }
 
 /**
  * The definition of a read across several partitions, fetched and subscribed to together and computed into one value,
- * such as one player's stat rows across several weeks, one partition per week. `select` gets the partition keys as one
- * flat list. For several lookups at once, each with its own candidate partitions, use `ReadGroupedDef`.
+ * such as one player's stat rows across several weeks, one partition per week. {@linkcode ReadManyDef.select | select}
+ * gets the partition keys as one flat list. For several lookups at once, each with its own candidate partitions, use
+ * {@linkcode ReadGroupedDef}.
  */
 export interface ReadManyDef<Args, Key, T, V extends VarySpec<Args> = readonly []> extends CommonDef<Args, T, V> {
   /**
@@ -185,8 +209,9 @@ export interface ReadManyDef<Args, Key, T, V extends VarySpec<Args> = readonly [
    */
   partitions: (args: Args) => readonly Key[];
   /**
-   * Computes the read's value from the partitions' rows, given their keys in the order `partitions` returned them.
-   * `args` holds only the fields listed in `varyBy`. Runs once at least one of the partitions has rows.
+   * Computes the read's value from the partitions' rows, given their keys in the order
+   * {@linkcode ReadManyDef.partitions | partitions} returned them. `args` holds only the fields listed in
+   * {@linkcode CommonDef.varyBy | varyBy}. Runs once at least one of the partitions has rows.
    */
   select: (args: SelectArgs<Args, V>, keys: readonly Key[]) => T;
 }
@@ -194,8 +219,9 @@ export interface ReadManyDef<Args, Key, T, V extends VarySpec<Args> = readonly [
 /**
  * The definition of a read that answers several lookups at once, where each lookup's rows could be in any of several
  * candidate partitions, such as a stat row for each of several stat keys, where each key could be in more than one
- * partition. `groups` gives each lookup's candidate partitions; all of them are fetched and subscribed to; `select`
- * gets the groups back in the same order, so it can answer each lookup from its own candidates.
+ * partition. {@linkcode ReadGroupedDef.groups | groups} gives each lookup's candidate partitions; all of them are
+ * fetched and subscribed to; {@linkcode ReadGroupedDef.select | select} gets the groups back in the same order, so it
+ * can answer each lookup from its own candidates.
  */
 export interface ReadGroupedDef<Args, Key, T, V extends VarySpec<Args> = readonly []> extends CommonDef<Args, T, V> {
   /**
@@ -205,19 +231,20 @@ export interface ReadGroupedDef<Args, Key, T, V extends VarySpec<Args> = readonl
   groups: (args: Args) => readonly (readonly Key[])[];
   /**
    * Computes the read's value, given the groups of partition keys in the order `groups` returned them. `args` holds
-   * only the fields listed in `varyBy`. Runs once at least one of the partitions has rows.
+   * only the fields listed in {@linkcode CommonDef.varyBy | varyBy}. Runs once at least one of the partitions has rows.
    */
   select: (args: SelectArgs<Args, V>, groups: readonly (readonly Key[])[]) => T;
 }
 
 /**
- * Options one caller passes to a read's `useValue` hook, on top of what the read's definition fixes. They apply to
- * that call only.
+ * Options one caller passes to a read's {@linkcode Read.useValue | useValue} hook, on top of what the read's definition
+ * fixes. They apply to that call only.
  */
 export interface ReadCallOptions {
   /**
-   * Set false to turn this call off: it returns `empty`, fetches nothing, and doesn't subscribe, while the hook stays
-   * in place among the component's hooks. True by default. For a component holding args it shouldn't read with yet.
+   * Set false to turn this call off: it returns {@linkcode CommonDef.empty | empty}, fetches nothing, and doesn't
+   * subscribe, while the hook stays in place among the component's hooks. True by default. For a component holding args
+   * it shouldn't read with yet.
    */
   enabled?: boolean;
   /**
@@ -233,25 +260,29 @@ export interface ReadCallOptions {
 }
 
 /**
- * A declared read, as a store's `reads` hold it: a hook (`useValue`) and a getter (`getValue`) that return the same
- * value. Both take the read's args, or `undefined` when the caller doesn't have them yet, which returns `empty`.
+ * A declared read, as a store's {@linkcode StoreSurface.reads | reads} hold it: a hook
+ * ({@linkcode Read.useValue | useValue}) and a getter ({@linkcode Read.getValue | getValue}) that return the same
+ * value. Both take the read's args, or `undefined` when the caller doesn't have them yet, which returns
+ * {@linkcode CommonDef.empty | empty}.
  */
 export interface Read<Args, T> {
   /**
-   * The read's current value, for code outside a component. Starts a fetch if the partition has never been fetched
-   * (but doesn't refetch a stale one), and returns `empty` until it has rows. Tracked: inside a tracking scope (a
-   * `useValue` read, `useTrackedStores`, a tracked selector), the scope re-runs when the value changes.
+   * The read's current value, for code outside a component. Starts a fetch if the partition has never been fetched (but
+   * doesn't refetch a stale one), and returns {@linkcode CommonDef.empty | empty} until it has rows. Tracked: inside a
+   * tracking scope (a {@linkcode Read.useValue | useValue} read, `useTrackedStores`, a tracked selector), the scope
+   * re-runs when the value changes.
    */
   getValue: (args: Args | undefined) => T;
   /**
    * The read as a hook: fetches the partition if it hasn't been fetched or is stale, returns the value with the
-   * fetch's state as a `DataResult`, and re-renders the component when the value changes.
+   * fetch's state as a {@linkcode DataResult}, and re-renders the component when the value changes.
    */
   useValue: (args: Args | undefined, options?: ReadCallOptions) => DataResult<T>;
   /**
-   * The args fields a caller must have before the read runs: the partition's fields, then its `varyBy` fields. Present
-   * when both are field lists, or when the definition gives `requires`. {@link pairRead} uses it to publish the read:
-   * the published hook and getter return `empty` until every one of these fields has a value.
+   * The args fields a caller must have before the read runs: the partition's fields, then its
+   * {@linkcode CommonDef.varyBy | varyBy} fields. Present when both are field lists, or when the definition gives
+   * {@linkcode Read.requires | requires}. {@linkcode pairRead} uses it to publish the read: the published hook and
+   * getter return {@linkcode CommonDef.empty | empty} until every one of these fields has a value.
    */
   requires?: readonly string[];
 }
@@ -321,7 +352,7 @@ function batchSizeOf(vary: readonly VaryValue[]): number {
   return widest;
 }
 
-/** Returns a {@link DataResult} whose identity is stable across renders while its parts hold. */
+/** Returns a {@linkcode DataResult} whose identity is stable across renders while its parts hold. */
 export function useResult<T>(data: T, status: DataStatus, isFetching: boolean, doRefetch: () => void): DataResult<T> {
   return useMemo(() => makeResult(data, status, { isFetching, refetch: doRefetch }), [data, status, isFetching, doRefetch]);
 }
@@ -332,8 +363,9 @@ function varyResolver<Args>(def: { varyBy?: VarySpec<Args> }): (args: Args) => r
 }
 
 /**
- * What a read wants of the partitions it primes. A `varyBy` is the read saying it selects part of one, which is
- * the only shape where an oversized ingest is worth reporting; a read without one is asking for the partition.
+ * What a read wants of the partitions it primes. A {@linkcode CommonDef.varyBy | varyBy} is the read saying it selects
+ * part of one, which is the only shape where an oversized ingest is worth reporting; a read without one is asking for
+ * the partition.
  */
 function intentOf(def: { varyBy?: unknown }): { slice: boolean } | undefined {
   return def.varyBy ? SELECTS_SLICE : undefined;
@@ -342,8 +374,8 @@ function intentOf(def: { varyBy?: unknown }): { slice: boolean } | undefined {
 const SELECTS_SLICE = { slice: true } as const;
 
 /**
- * Whether a read may prime its partitions and whether its `select` may run. Priming asks strictly less: a read
- * still waiting on a vary value primes anyway, so the rows are there when the value arrives.
+ * Whether a read may prime its partitions and whether its {@linkcode ReadDef.select | select} may run. Priming asks
+ * strictly less: a read still waiting on a vary value primes anyway, so the rows are there when the value arrives.
  */
 function readGates<Args>(
   def: { enabled?: (args: Args) => boolean; prime?: boolean },
@@ -360,16 +392,21 @@ function readGates<Args>(
   };
 }
 
-/** The status and `DataResult` every read ends with; `hasData` is a thunk, called once the read is known enabled. */
+/**
+ * The status and {@linkcode DataResult} every read ends with; `hasData` is a thunk, called once the read is known
+ * enabled.
+ */
 function useReadTail<T>(data: T, enabled: boolean, hasData: () => boolean, prime: PrimeState, doRefetch: () => void): DataResult<T> {
   const status = runSubscribed(() => offHeapStatus(enabled, enabled && hasData(), prime));
   return useResult(data, status, prime.isFetching, doRefetch);
 }
 
 /**
- * Builds the read engine over one store's partitions: `read` / `readMany` / `readGrouped` each take a descriptor and
- * hand back its `useValue` / `getValue` pair, with the priming, the version subscription, the presence gate and the
- * value cache already wrapped around `select`. `definePartitions` builds one per store, so stores declare reads.
+ * Builds the read engine over one store's partitions: {@linkcode Partitions.read | read} /
+ * {@linkcode Partitions.readMany | readMany} / {@linkcode Partitions.readGrouped | readGrouped} each take a descriptor
+ * and hand back its {@linkcode Read.useValue | useValue} / {@linkcode Read.getValue | getValue} pair, with the priming,
+ * the version subscription, the presence gate and the value cache already wrapped around
+ * {@linkcode ReadDef.select | select}. {@linkcode definePartitions} builds one per store, so stores declare reads.
  */
 export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   const { ingest, toParts } = kernel;
@@ -387,9 +424,10 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   const hasAny = (entries: readonly PartitionEntry<Key>[]): boolean => entries.some((entry) => addressesPartition(entry.parts) && hasOne(entry.key, entry.parts));
 
   /**
-   * Starts an unfetched partition's fetch. Only `getValue` needs it; a reactive read primes through `usePrime`.
-   * Cold means never fetched, not empty: a partition holding rows a socket pushed into it has never had its body,
-   * and gating on rows would leave it on that one row for the session.
+   * Starts an unfetched partition's fetch. Only {@linkcode Read.getValue | getValue} needs it; a reactive read primes
+   * through {@linkcode PartitionLifecycle.usePrime | usePrime}. Cold means never fetched, not empty: a partition
+   * holding rows a socket pushed into it has never had its body, and gating on rows would leave it on that one row for
+   * the session.
    */
   const primeIfCold = (key: Key, parts: readonly string[]): void => {
     if (!ingest) return;
@@ -470,8 +508,9 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   }
 
   /**
-   * The engine behind `readMany` and `readGrouped`, which differ only in what `select` is handed back: the flat
-   * keys, or the groups they were named in. `resolve` runs once per call because naming a partition may intern it.
+   * The engine behind {@linkcode Partitions.readMany | readMany} and {@linkcode Partitions.readGrouped | readGrouped},
+   * which differ only in what `select` is handed back: the flat keys, or the groups they were named in. `resolve` runs
+   * once per call because naming a partition may intern it.
    */
   function manyRead<Args, T, Named>(
     def: CommonDef<Args, T, VarySpec<Args>>,
@@ -485,7 +524,10 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     const cacheKeyOf = (partitions: readonly (readonly string[])[], vary: readonly VaryValue[]): string => varyKey([partitionsKey(partitions)], vary);
     const resolveOr = (args: Args | undefined) => (args === undefined ? { keys: NO_KEYS as readonly Key[], named: noneNamed } : resolve(args));
 
-    /** `read`'s gates over a set: addressable when at least one partition is, since the rest are gaps. */
+    /**
+     * {@linkcode Partitions.read | read}'s gates over a set: addressable when at least one partition is, since the rest
+     * are gaps.
+     */
     const gatesFor = (args: Args, partitions: readonly (readonly string[])[], vary: readonly VaryValue[], wanted: boolean, primeWanted = true) =>
       readGates(def, args, wanted && partitions.some(addressesPartition), vary, primeWanted);
 
@@ -560,8 +602,9 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   return {
     /**
      * Declares a read, in two calls: `read<Args, Value>()({ … })`. The first names what the read takes and returns, the
-     * second takes the read itself — separately, because that is what leaves TypeScript free to infer `varyBy` from the
-     * list a read spells, which is how `select` comes to see those fields and no others.
+     * second takes the read itself — separately, because that is what leaves TypeScript free to infer
+     * {@linkcode CommonDef.varyBy | varyBy} from the list a read spells, which is how
+     * {@linkcode ReadDef.select | select} comes to see those fields and no others.
      */
     read: <Args, T>() => defineRead as <const V extends VarySpec<Args> = readonly []>(def: ReadDef<Args, Key, T, V>) => Read<Args, T>,
     readMany: <Args, T>() => defineReadMany as <const V extends VarySpec<Args> = readonly []>(def: ReadManyDef<Args, Key, T, V>) => Read<Args, T>,
@@ -569,3 +612,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     has,
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };

@@ -1,11 +1,12 @@
 /**
- * `createTrackedSelector`, a replacement for Reselect's `createSelector` for a Redux selector that reads store data,
- * usually by calling a service getter in its `resultFn`. Reselect caches on its inputs only, so such a selector would
- * keep returning its old result after a store write. This one also records every store version `resultFn` read, and
- * recomputes when one of those changes.
+ * {@linkcode createTrackedSelector}, a replacement for Reselect's `createSelector` for a Redux selector that reads
+ * store data, usually by calling a service getter in its `resultFn`. Reselect caches on its inputs only, so such a
+ * selector would keep returning its old result after a store write. This one also records every store version
+ * `resultFn` read, and recomputes when one of those changes.
  */
 
 import { Dep, isTracking, runTracked, trackDependency } from './tracking';
+import type { Read } from '../read/surface';
 
 /**
  * One entry in a tracked selector's `inputs`: a function called with the selector's own arguments (such as Redux state
@@ -16,7 +17,7 @@ export type InputSelector<Args extends readonly unknown[], T = unknown> = (...ar
 /** Compares an input's previous and new value; when every input is equal, the selector can return its cached result. */
 export type EqualityFn = (left: unknown, right: unknown) => boolean;
 
-/** Options for {@link createTrackedSelector}. */
+/** Options for {@linkcode createTrackedSelector}. */
 export interface TrackedSelectorOptions {
   /**
    * How an input's previous and new values are compared; `Object.is` by default. Pass a shallow or deep comparison for
@@ -47,8 +48,9 @@ interface CacheEntry<R> {
  * `resultFn` read changes (a partition or unit it looked at was written).
  *
  * Each call also reports the store data `resultFn` read to the enclosing tracking scope, so a component calling it
- * inside `useTrackedStores` or a `useValue` computation re-renders when that data changes. Called outside any tracking
- * scope, its results are still correct, but nothing re-renders on a write; dev logs a warning.
+ * inside `useTrackedStores` or a {@linkcode Read.useValue | useValue} computation re-renders when that data changes.
+ * Called outside any tracking scope, its results are still correct, but nothing re-renders on a write; dev logs a
+ * warning.
  */
 export function createTrackedSelector<Args extends readonly unknown[], V1, R>(
   inputs: readonly [InputSelector<Args, V1>],
@@ -241,3 +243,7 @@ export function createTrackedSelector<Args extends readonly unknown[], R>(
     return value;
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { Read };

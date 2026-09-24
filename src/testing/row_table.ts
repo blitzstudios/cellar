@@ -13,7 +13,7 @@ export function createTestRowTable<Row extends RowShape>(schema: RowTableSchema<
   return createTestRowTableWithConnection(schema, nativeShredSpec).table;
 }
 
-/** Like {@link createTestRowTable}, also returning the connection, for a test that inspects the SQL run. */
+/** Like {@linkcode createTestRowTable}, also returning the connection, for a test that inspects the SQL run. */
 export function createTestRowTableWithConnection<Row extends RowShape>(
   schema: RowTableSchema<Row>,
   nativeShredSpec?: NativeShredSpec,

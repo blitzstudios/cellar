@@ -16,6 +16,8 @@ import { getOrCreate } from '../collections';
 import { readGateRuntime } from '../runtime';
 import { Dep, trackDependency } from './tracking';
 import { ALL_UNITS, ChangeSet, isUnchanged } from '../table/change_set';
+import type { Read } from '../read/surface';
+import type { defineSqliteStore } from '../define_sqlite_store';
 
 /**
  * Whether a partition key's parts name an actual partition: at least one part, and none of them empty. A key built from
@@ -47,16 +49,16 @@ export function partitionEntries<Key>(keys: readonly Key[], toParts: (key: Key) 
  * partition key's values as a list of strings). A partition is the set of rows one fetch returns and replaces; a unit
  * is all the rows sharing one value of the table's unit column, such as one player's rows.
  *
- * Each partition has three numbers, and reading one inside a tracking scope (a `useValue` read, `useTrackedStores`, a
- * tracked selector) makes the scope depend on it, so the scope re-runs when it changes:
+ * Each partition has three numbers, and reading one inside a tracking scope (a {@linkcode Read.useValue | useValue}
+ * read, `useTrackedStores`, a tracked selector) makes the scope depend on it, so the scope re-runs when it changes:
  *
- * - `get`: the partition's version, which goes up on every write that changes anything in it. A read of the whole
- *   partition depends on this.
- * - `getUnit`: the version at which one unit last changed. A read of particular units depends on just those, so a
- *   write to other units doesn't re-run it.
- * - `getPresence`: goes up only when the partition may have gone from empty to having rows, or back: on its first
- *   write, and on any write that couldn't say which units it changed. A read checks it to know whether there is
- *   anything to select from, without depending on every unit.
+ * - {@linkcode VersionAtom.get | get}: the partition's version, which goes up on every write that changes anything in
+ *   it. A read of the whole partition depends on this.
+ * - {@linkcode VersionAtom.getUnit | getUnit}: the version at which one unit last changed. A read of particular units
+ *   depends on just those, so a write to other units doesn't re-run it.
+ * - {@linkcode VersionAtom.getPresence | getPresence}: goes up only when the partition may have gone from empty to
+ *   having rows, or back: on its first write, and on any write that couldn't say which units it changed. A read checks
+ *   it to know whether there is anything to select from, without depending on every unit.
  */
 export interface VersionAtom {
   /**
@@ -83,8 +85,8 @@ export interface VersionAtom {
   /**
    * Records a write to the partition and notifies the readers it concerns, returning the partition's new version.
    * `changes` is the units the write changed (values of the unit column): readers of the whole partition and readers of
-   * those units are notified, and readers of other units aren't. Omitted, or `ALL_UNITS`, means every unit changed. An
-   * empty set means nothing changed, and bumps nothing.
+   * those units are notified, and readers of other units aren't. Omitted, or {@linkcode ALL_UNITS}, means every unit
+   * changed. An empty set means nothing changed, and bumps nothing.
    */
   bump(parts: readonly string[], changes?: ChangeSet): number;
   /**
@@ -125,9 +127,9 @@ interface VersionEntry {
 const UNIT_MEMORY = 8192;
 
 /**
- * Creates a store's {@link VersionAtom}: the version numbers, per partition and per unit, that its reads depend on and
- * its writes bump. `root` names the store in each partition's dependency identity. `defineSqliteStore` creates one per
- * store.
+ * Creates a store's {@linkcode VersionAtom}: the version numbers, per partition and per unit, that its reads depend on
+ * and its writes bump. `root` names the store in each partition's dependency identity. {@linkcode defineSqliteStore}
+ * creates one per store.
  */
 export function createVersionAtom(root: string): VersionAtom {
   const specifier = (parts: readonly string[]): string => cacheKeyOf(parts);
@@ -190,10 +192,10 @@ export function createVersionAtom(root: string): VersionAtom {
   };
 
   /**
-   * One descriptor per partition, per unit and per presence, rather than one per read: `trackDependency` dedupes by
-   * id and only ever reads the descriptor, so a shared instance behaves the same as a fresh one and costs nothing to
-   * report again. Held apart from `entries`, since reading must not create an entry: that would widen what `bumpAll`
-   * bumps.
+   * One descriptor per partition, per unit and per presence, rather than one per read: {@linkcode trackDependency}
+   * dedupes by id and only ever reads the descriptor, so a shared instance behaves the same as a fresh one and costs
+   * nothing to report again. Held apart from `entries`, since reading must not create an entry: that would widen what
+   * {@linkcode VersionAtom.bumpAll | bumpAll} bumps.
    */
   const partitionDeps = new Map<string, Dep>();
   const unitDeps = new Map<string, Map<string, Dep>>();
@@ -338,3 +340,7 @@ export function createVersionAtom(root: string): VersionAtom {
 
   return { key, get, getUnit, getPresence, bump, bumpAll, subscribe, useVersion };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { ALL_UNITS, Read, defineSqliteStore, trackDependency };

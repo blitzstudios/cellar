@@ -1,8 +1,11 @@
 /** The `where` and ordering predicates a row table reads with: the SQL a filter becomes, and the JS a read sorts by. */
 
 import { RowShape, RowTableSchema, SqlValue } from './types';
+import type { FindOpts, RowTable } from './types';
 
-/** Builds a row filter's `WHERE` clause and its binds; an absent value becomes `IS NULL`, the spelling SQL matches on. */
+/**
+ * Builds a row filter's `WHERE` clause and its binds; an absent value becomes `IS NULL`, the spelling SQL matches on.
+ */
 export function whereClause(where: Partial<RowShape>): { sql: string; params: SqlValue[] } {
   const keys = Object.keys(where);
   if (!keys.length) return { sql: '', params: [] };
@@ -20,7 +23,9 @@ export function whereClause(where: Partial<RowShape>): { sql: string; params: Sq
   return { sql: ` WHERE ${clauses.join(' AND ')}`, params };
 }
 
-/** Whether one row satisfies `where`, by the rule {@link whereClause} writes in SQL; the dev check below uses it. */
+/**
+ * Whether one row satisfies `where`, by the rule {@linkcode whereClause} writes in SQL; the dev check below uses it.
+ */
 export function matchesWhere<Row extends RowShape>(row: Row, where: Partial<Row>): boolean {
   for (const key of Object.keys(where)) {
     const wanted = where[key as keyof Row];
@@ -38,8 +43,9 @@ export function assertUnitColumn<Row extends RowShape>(schema: RowTableSchema<Ro
 }
 
 /**
- * Dev-only: every row written under a filter must satisfy it. A row that doesn't lands outside the slice its own
- * write just cleared, where the next write to that slice cannot reach it and no `find` for it expects it.
+ * Dev-only: every row written under a filter must satisfy it. A row that doesn't lands outside the slice its own write
+ * just cleared, where the next write to that slice cannot reach it and no {@linkcode RowTable.find | find} for it
+ * expects it.
  */
 export function assertRowsMatchWhere<Row extends RowShape>(table: string, where: Partial<Row>, rows: readonly Row[]): void {
   for (const row of rows) {
@@ -53,8 +59,8 @@ export function assertRowsMatchWhere<Row extends RowShape>(table: string, where:
 }
 
 /**
- * The ordering behind `FindOpts.orderBy`, run in JS after the read so the order does not depend on the SQLite build
- * that served it. A column holding numbers sorts numerically, and everything else compares as a string.
+ * The ordering behind {@linkcode FindOpts.orderBy}, run in JS after the read so the order does not depend on the SQLite
+ * build that served it. A column holding numbers sorts numerically, and everything else compares as a string.
  */
 export function comparator<Row extends RowShape>(orderBy: keyof Row & string): (left: Row, right: Row) => number {
   return (left, right) => {
@@ -69,3 +75,7 @@ export function comparator<Row extends RowShape>(orderBy: keyof Row & string): (
     return leftText < rightText ? -1 : 1;
   };
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { FindOpts, RowTable };

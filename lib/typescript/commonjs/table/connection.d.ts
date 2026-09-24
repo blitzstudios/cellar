@@ -1,8 +1,8 @@
 /** The interface between the stores and the platform's SQLite driver. */
 import { ShredSpec } from '../write/shred_spec';
 /**
- * What a driver returns for one statement. Reading rows should go through {@link readRows}, which unwraps the rows and
- * calls `dispose`.
+ * What a driver returns for one statement. Reading rows should go through {@linkcode readRows}, which unwraps the rows
+ * and calls {@linkcode QueryExecResult.dispose | dispose}.
  */
 export interface QueryExecResult {
     /** The result rows. */
@@ -14,8 +14,9 @@ export interface QueryExecResult {
     dispose?: () => void;
 }
 /**
- * A SQLite database handle, as the kernel uses it; a driver adapter implements this. Only `execute` is required: each
- * optional method is a faster path the kernel falls back from when it's missing.
+ * A SQLite database handle, as the kernel uses it; a driver adapter implements this. Only
+ * {@linkcode SqliteConnection.execute | execute} is required: each optional method is a faster path the kernel falls
+ * back from when it's missing.
  */
 export interface SqliteConnection {
     /** Runs one statement synchronously. */
@@ -41,11 +42,11 @@ export type PinnedConnection = SqliteConnection & {
 };
 /** The one handle to run reads on: the connection's reader if it has one, otherwise the connection itself. */
 export declare function pinnedReader(conn: SqliteConnection): PinnedConnection;
-/** One SQL statement and its parameters, as {@link runBatch} takes them. */
+/** One SQL statement and its parameters, as {@linkcode runBatch} takes them. */
 export type BatchCommand = [string, ReadonlyArray<string | number | null>];
 /**
  * Runs `commands` as one transaction, which is what makes a delete-then-insert replacement all-or-nothing. It holds
- * the JS thread for the length of the write, so anything ingest-sized wants {@link runBatchAsync} instead.
+ * the JS thread for the length of the write, so anything ingest-sized wants {@linkcode runBatchAsync} instead.
  */
 export declare function runBatch(conn: SqliteConnection, commands: ReadonlyArray<BatchCommand>): void;
 /**
@@ -56,8 +57,8 @@ export declare function runBatchAsync(conn: SqliteConnection, commands: Readonly
 /** Wraps `conn` so every statement returns: the first failure calls `onFatal`, and later calls answer empty. */
 export declare function guardedConnection(conn: SqliteConnection, onFatal: (error: unknown, op: string) => void, onContended?: (error: unknown, op: string) => void): SqliteConnection;
 /**
- * Runs a `SELECT` and returns its rows as plain objects. It runs on the connection's reader if it has one, so a query of
- * a `TEMP` table the caller just created must be passed a {@link PinnedConnection}.
+ * Runs a `SELECT` and returns its rows as plain objects. It runs on the connection's reader if it has one, so a query
+ * of a `TEMP` table the caller just created must be passed a {@linkcode PinnedConnection}.
  */
 export declare function readRows<T>(conn: SqliteConnection, sql: string, params?: ReadonlyArray<string | number | null>): T[];
 //# sourceMappingURL=connection.d.ts.map

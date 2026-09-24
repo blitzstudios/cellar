@@ -1,6 +1,7 @@
 /** Which of a read's args name the partition it reads, and which it varies by. */
 
 import { VaryValue } from '../args_key';
+import type { CommonDef } from './surface';
 
 /** Args fields that can name a partition: every field of a partition key is one string. */
 export type PartitionField<Args> = { [K in keyof Args]: Args[K] extends string ? K : never }[keyof Args];
@@ -35,8 +36,9 @@ export function requiredFieldsOf<Args, Key>(
 }
 
 /**
- * The mapper from a read's args to its vary values: a field list picks those fields out, and a computed vary arrives
- * as a function of its own. The read surface resolves a `varyBy` through this once, then calls it on every read.
+ * The mapper from a read's args to its vary values: a field list picks those fields out, and a computed vary arrives as
+ * a function of its own. The read surface resolves a {@linkcode CommonDef.varyBy | varyBy} through this once, then
+ * calls it on every read.
  */
 export function varyValuesOf<Args>(spec: readonly VaryField<Args>[] | ((args: Args) => readonly VaryValue[])): (args: Args) => readonly VaryValue[] {
   if (typeof spec === 'function') return spec;
@@ -48,3 +50,7 @@ export function varyValuesOf<Args>(spec: readonly VaryField<Args>[] | ((args: Ar
   }
   return (args) => fields.map((field) => (args as Record<string, VaryValue>)[field]);
 }
+
+// Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
+// doc comment uses is dropped from them.
+export type { CommonDef };

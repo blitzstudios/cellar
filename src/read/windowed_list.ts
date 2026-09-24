@@ -12,7 +12,7 @@ import { DataResult } from '../store_result';
 
 const EMPTY_IDS: readonly string[] = [];
 
-/** The reads and functions a {@link createWindowedList} is built from. */
+/** The reads and functions a {@linkcode createWindowedList} is built from. */
 export interface WindowedListSpec<Params, Row extends object, Detail> {
   /** The hook that reads the whole list, such as a ranked list of players. */
   useList: (args: {
@@ -37,8 +37,9 @@ export interface WindowedListSpec<Params, Row extends object, Detail> {
 }
 
 /**
- * A block: consecutive rows of the list whose detail is read together, as `useBlocks` returns it. Every row in the
- * block gets the same object, and passes it to `useItem`.
+ * A block: consecutive rows of the list whose detail is read together, as
+ * {@linkcode WindowedList.useBlocks | useBlocks} returns it. Every row in the block gets the same object, and passes it
+ * to {@linkcode WindowedList.useItem | useItem}.
  */
 export interface WindowedBlock<Params> {
   /** The list's params, passed to the detail read. */
@@ -49,21 +50,23 @@ export interface WindowedBlock<Params> {
 
 /**
  * A long list whose rows need detail the list read doesn't carry, with that detail read in blocks of rows. Use
- * `useList` to read the list, call `useBlocks` once where the list renders, and call `useItem` in each row with the
- * block `useBlocks` gave it. A block's rows share one detail read, so a screen showing 50 rows makes about one read
- * instead of 50.
+ * {@linkcode WindowedList.useList | useList} to read the list, call {@linkcode WindowedList.useBlocks | useBlocks} once
+ * where the list renders, and call {@linkcode WindowedList.useItem | useItem} in each row with the block
+ * {@linkcode WindowedList.useBlocks | useBlocks} gave it. A block's rows share one detail read, so a screen showing 50
+ * rows makes about one read instead of 50.
  */
 export interface WindowedList<Params, Row extends object, Detail> {
-  /** The hook that reads the whole list: the spec's `useList`. */
+  /** The hook that reads the whole list: the spec's {@linkcode WindowedList.useList | useList}. */
   useList: (args: {
     /** The list read's args. */
     params: Params;
   } & ReadOptions) => DataResult<Row[]>;
-    /**
-   * A hook that divides the list's rows into blocks of `blockSize` consecutive rows, and returns a function giving a row
-   * its block. Call it once where the list renders, with the rows the list shows, and call the returned function with
-   * each row and its index in `rows`. Blocks are built only as rows ask for them. A row that isn't at the index given
-   * (or is given no index) gets a block of its own, and reads its detail alone.
+  /**
+   * A hook that divides the list's rows into blocks of {@linkcode WindowedListSpec.blockSize | blockSize} consecutive
+   * rows, and returns a function giving a row its block. Call it once where the list renders, with the rows the list
+   * shows, and call the returned function with each row and its index in `rows`. Blocks are built only as rows ask for
+   * them. A row that isn't at the index given (or is given no index) gets a block of its own, and reads its detail
+   * alone.
    */
   useBlocks: (
     args: {
@@ -73,9 +76,10 @@ export interface WindowedList<Params, Row extends object, Detail> {
       rows: readonly Row[];
     },
   ) => (row: Row, index?: number) => WindowedBlock<Params>;
-    /**
-   * A hook that returns one row's detail: what the row itself carries (`prehydrated`), or else its entry in the detail
-   * read for its block, `undefined` while that loads.
+  /**
+   * A hook that returns one row's detail: what the row itself carries
+   * ({@linkcode WindowedListSpec.prehydrated | prehydrated}), or else its entry in the detail read for its block,
+   * `undefined` while that loads.
    */
   useItem: (
     args: {
@@ -83,7 +87,7 @@ export interface WindowedList<Params, Row extends object, Detail> {
       params: {
         /** The row. */
         row: Row;
-        /** The block `useBlocks` gave the row. */
+        /** The block {@linkcode WindowedList.useBlocks | useBlocks} gave the row. */
         block: WindowedBlock<Params>;
       };
     },
@@ -109,7 +113,7 @@ export function useWindowedDetail<D>(
 }
 
 /**
- * Creates a {@link WindowedList}: a list read plus a per-row detail read done in blocks of consecutive rows, for a
+ * Creates a {@linkcode WindowedList}: a list read plus a per-row detail read done in blocks of consecutive rows, for a
  * virtualized list too long to load every row's detail, such as a ranking of thousands of players with a few dozen on
  * screen. Without blocks, every visible row would make its own detail read, with its own subscription and cache entry.
  */
