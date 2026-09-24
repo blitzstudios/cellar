@@ -1,5 +1,5 @@
 /**
- * What a store's `useValue` subscribes to, end to end: a read built from a projection wakes only for the units it
+ * What a store's `useValue` subscribes to, end to end: a read built from derived values wakes only for the units it
  * names, and a read that takes rows straight off the table wakes for its whole partition, since it could have read
  * anything in it.
  */
@@ -34,7 +34,7 @@ function store() {
     version,
     key: { fields: ['sport'], where: ({ sport }) => ({ sport }) },
   });
-  const names = players.project<string>()({ name: 'name', max: 64, of: ([row]) => row.name });
+  const names = players.derive<string>()({ name: 'name', max: 64, fromRows: ([row]) => row.name });
   const PlayerNames = players.read<{ sport: string; ids: string[] }, string[]>()({
     varyBy: ['ids'],
     select: ({ ids }, key) => names.byIds(key, ids),
@@ -68,7 +68,7 @@ function renderCounting<T>(useHook: () => T) {
 const nfl = (id: string, name: string): Row => ({ sport: 'nfl', player_id: id, name });
 const IDS = ['p1'];
 
-describe('a read built from a projection', () => {
+describe('a read built from derived values', () => {
   it('sleeps through a write to another unit and wakes for its own', () => {
     const { PlayerNames, write } = store();
     write([nfl('p1', 'Alice'), nfl('p2', 'Bob')]);

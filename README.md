@@ -24,7 +24,7 @@ A store's table is divided into partitions, and each partition into units.
 | **partition** | the set of rows one fetch returns and replaces, picked out by column values (`{ group_id: 'g1' }`). Each has its own fetch, ETag and version |
 | **unit** | the rows in one partition that share a value in the schema's `unit` column: with `unit: 'item_id'`, one item's rows, whether one row or several. The unit is how finely change is tracked |
 | **change set** | what a write changed: the unit value of every row it added, changed or removed. The write replaces those units' rows, then bumps the partition's version and the version of each changed unit |
-| **read** | a query declared on a store, used as a hook or a getter. It fetches its partition if needed, and recomputes when what it depends on changes: a read that asks for particular units (through a projection or a unit memo) depends on those units; one that looks at the whole partition depends on the partition. The component re-renders only if the recomputed value differs |
+| **read** | a query declared on a store, used as a hook or a getter. It fetches its partition if needed, and recomputes when what it depends on changes: a read that asks for particular units (through derived values or a unit memo) depends on those units; one that looks at the whole partition depends on the partition. The component re-renders only if the recomputed value differs |
 | **shred** | turning a JSON response into rows: in C++ from a `NativeShredSpec`, so no JS object is built per row, or in JS with each column's `js` builder |
 
 ## Why
@@ -47,7 +47,7 @@ same engine compiled to WebAssembly, through `./sqljs`. Tests use sql.js too, th
 
 ```jsonc
 // package.json
-"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.4-gitpkg"
+"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.5-gitpkg"
 ```
 
 ## Quick start
@@ -279,12 +279,12 @@ avoids. Configure no gate and every read stays live.
   change set: the units with a row added, changed or removed. A refetch that brings back what the table already holds
   changes nothing and wakes nobody; a live poll where four players moved wakes the readers of those four.
 - **Reactivity per unit, found by reading.** A read subscribes to exactly what it read, discovered by running it: a
-  read of named units through a projection or a unit memo depends on those units, and a read over the whole slice
+  read of named units through derived values or a unit memo depends on those units, and a read over the whole slice
   depends on the slice. Nothing is declared, and a read that takes rows straight off the table falls back to its
   whole slice, so precision is never bought with correctness.
 - **Stable references for free.** Rows come back from SQLite as fresh objects, so a read rebuilding view models
-  would repaint every subscriber. Declare the shape with `project` and the kernel keeps each unit's view model until
-  that unit changes, handing back the same reference until then.
+  would repaint every subscriber. Declare the shape with `derive` and the kernel keeps each unit's value (usually a view
+  model) until that unit changes, handing back the same reference until then.
 - **One query engine.** Every environment runs SQLite — the device's, sql.js on the web, sql.js in tests — so a store
   writes each query once, in SQL, and a test runs the SQL a device runs. A store whose database file keeps failing
   moves to an in-memory database on the same engine, so a disk error costs persistence, not speed.
@@ -335,7 +335,7 @@ with nothing to compare against, its rows go straight in and every unit counts a
 | export | what it gives you |
 | --- | --- |
 | `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about. A `varyBy` value that is an object or an array keys by its content, and its identity is remembered per reference so a caller holding one across a list serializes it once — which is why `__DEV__` freezes it: a key remembered for a reference is only sound while the content holds still |
-| `partitions.project()` | a view-model shape built one unit at a time: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply the unit's-rows-to-view-model function; a write rebuilds only the units it changed and hands back the previous reference for the rest. `.one`, `.byIds` and `.mapByIds` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Reads of the same shape share one projection, so a unit is built once however many ask |
+| `partitions.derive()` | a value derived from each unit's rows, usually a view model, cached per unit: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply `fromRows`, which turns one unit's rows into its value; a write rebuilds only the units it changed and hands back the previous reference for the rest. `.one`, `.byIds` and `.mapByIds` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Reads of the same shape share one set of derived values, so a unit's value is built once however many ask |
 | `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares. They return the same value but do not fetch alike: `useValue` refetches on React Query's staleness, `getValue` fetches a partition that has never been fetched and otherwise leaves it |
 | `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
 | `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |

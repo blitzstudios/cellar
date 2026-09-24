@@ -170,9 +170,9 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
      * {@linkcode CommonDef.empty | empty}.
      *
      * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
-     * projections or unit memos, it depends on just the units (such as the players) it read, and a write to other units
-     * doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed after any
-     * write to it.
+     * derived values or unit memos, it depends on just the units (such as the players) it read, and a write to other
+     * units doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
+     * after any write to it.
      */
     select: (args: SelectArgs<Args, V>, key: Key) => T;
 }

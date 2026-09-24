@@ -12,7 +12,7 @@ import { Read, ReadDef, ReadGroupedDef, ReadManyDef, VarySpec } from './read/sur
 import { RowShape, RowTable } from './table/types';
 import { BoundMemos, createMemos, MemoDeclaration } from './caches';
 import { addressesPartition, VersionAtom } from './reactivity/version_atom';
-import { createRowProjection, RowProjection, RowProjectionDef } from './read/projection';
+import { createDerivedValues, DerivedValues, DerivedValuesDef } from './read/derived_values';
 import { PrimeState } from './prime_state';
 import { DataResult } from './store_result';
 import type { Loose } from './read/facade';
@@ -316,12 +316,13 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
      */
     memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
     /**
-     * Declares a view model built from one unit's rows (a unit is all the rows sharing one value of the table's unit
-     * column, such as one player's rows), and cached per unit. A read that returns view models gets them from here: each
-     * unit's view model is built once however many reads ask for it, kept as the same object, and rebuilt only when a
-     * write changes that unit's rows. Called in two steps, `project<Vm>()({ ... })`. See {@linkcode createRowProjection}.
+     * * Declares values derived from each unit's rows, usually view models, cached per unit (a unit is all the rows
+     * sharing one value of the table's unit column, such as one player's rows). A read that returns them gets them from
+     * here: each unit's value is built once however many reads ask for it, kept as the same object, and rebuilt only when
+     * a write changes that unit's rows. Called in two steps, `derive<V>()({ name, max, fromRows })`. See
+     * {@linkcode createDerivedValues}.
      */
-    project: <Vm>() => (def: RowProjectionDef<Row, Vm>) => RowProjection<Key, Row, Vm>;
+    derive: <V>() => (def: DerivedValuesDef<Row, V>) => DerivedValues<Key, Row, V>;
     /**
      * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`: the store's
      * {@linkcode PartitionKeySpec.where | key.where}.
@@ -378,5 +379,5 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
  * {@linkcode SqliteStoreConfig.build | build}, after {@linkcode RowTable.init | table.init()}.
  */
 export declare function definePartitions<Row extends RowShape, Key, Args = Key, Descriptor = Args>(config: PartitionsConfig<Row, Key, Args, Descriptor>): Partitions<Row, Key, Args, Descriptor>;
-export type { CommonDef, DataResult, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion, createMemos, createRowProjection };
+export type { CommonDef, DataResult, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion, createMemos, createDerivedValues };
 //# sourceMappingURL=define_partitions.d.ts.map

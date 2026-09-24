@@ -17,7 +17,7 @@ import { RowShape, RowTable } from './table/types';
 import { BoundMemos, createBoundedLru, createMemos, MemoDeclaration } from './caches';
 import { addressesPartition, NO_PARTS, VersionAtom } from './reactivity/version_atom';
 import { PartitionField, partitionKeyOf } from './read/partition_fields';
-import { createRowProjection, RowProjection, RowProjectionDef, rowVmMemo, RowVmMemo } from './read/projection';
+import { createDerivedValues, DerivedValues, DerivedValuesDef, derivedValueMemo, DerivedValueMemo } from './read/derived_values';
 import { NO_PRIMING, PrimeState } from './prime_state';
 import { DataResult, offHeapStatus } from './store_result';
 import { reportStoreDegradation } from './diagnostics/telemetry';
@@ -333,12 +333,13 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
    */
   memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
   /**
-   * Declares a view model built from one unit's rows (a unit is all the rows sharing one value of the table's unit
-   * column, such as one player's rows), and cached per unit. A read that returns view models gets them from here: each
-   * unit's view model is built once however many reads ask for it, kept as the same object, and rebuilt only when a
-   * write changes that unit's rows. Called in two steps, `project<Vm>()({ ... })`. See {@linkcode createRowProjection}.
+   * * Declares values derived from each unit's rows, usually view models, cached per unit (a unit is all the rows
+   * sharing one value of the table's unit column, such as one player's rows). A read that returns them gets them from
+   * here: each unit's value is built once however many reads ask for it, kept as the same object, and rebuilt only when
+   * a write changes that unit's rows. Called in two steps, `derive<V>()({ name, max, fromRows })`. See
+   * {@linkcode createDerivedValues}.
    */
-  project: <Vm>() => (def: RowProjectionDef<Row, Vm>) => RowProjection<Key, Row, Vm>;
+  derive: <V>() => (def: DerivedValuesDef<Row, V>) => DerivedValues<Key, Row, V>;
   /**
    * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`: the store's
    * {@linkcode PartitionKeySpec.where | key.where}.
@@ -579,12 +580,12 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     readMany: readManyOf,
     readGrouped: readGroupedOf,
     memos: (decls) => createMemos(name, memoBinding, decls),
-    project:
-      <Vm,>() =>
-      (def: RowProjectionDef<Row, Vm>) => {
-        const bound = createMemos(name, memoBinding, { [def.name]: rowVmMemo<Vm>(def.max) });
-        return createRowProjection<Row, Key, Vm>(
-          { store: name, table, filter: where, memo: bound[def.name] as RowVmMemo<Key, Vm>, trackPartition: versionOf },
+    derive:
+      <V,>() =>
+      (def: DerivedValuesDef<Row, V>) => {
+        const bound = createMemos(name, memoBinding, { [def.name]: derivedValueMemo<V>(def.max) });
+        return createDerivedValues<Row, Key, V>(
+          { store: name, table, filter: where, memo: bound[def.name] as DerivedValueMemo<Key, V>, trackPartition: versionOf },
           def,
         );
       },
@@ -617,4 +618,4 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { CommonDef, DataResult, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion, createMemos, createRowProjection };
+export type { CommonDef, DataResult, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion, createMemos, createDerivedValues };

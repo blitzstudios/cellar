@@ -39,7 +39,7 @@ function row(id: string, region: string, cohort: string | null, num: number | nu
 }
 
 describe('row_table — reads and writes', () => {
-  it('overwrite replaces a scope, and reads project by equality', () => {
+  it('overwrite replaces a scope, and reads filter by equality', () => {
     const db = createTestRowTable(schema);
     db.overwrite({ region: 'us' }, [row('a', 'us', 'NE', 2), row('b', 'us', 'NE', 1), row('c', 'us', 'KC', 3)]);
     db.overwrite({ region: 'eu' }, [row('x', 'eu', 'BOS', 9)]);
@@ -163,7 +163,9 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     return [];
   };
 
-  /** The reader for a database holding exactly what `built` declares, which is the upgrade case every plan starts from. */
+  /**
+   * The reader for a database holding exactly what `built` declares, which is the upgrade case every plan starts from.
+   */
   const reader = (built: RowTableSchema<any> | undefined, spec?: NativeShredSpec) =>
     built ? readerFor(built, schemaFingerprint(built, spec), schemaStructureStamp(built, spec)) : readerFor(undefined, 0);
 
@@ -289,7 +291,9 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   });
 
   describe('a widening (PRAGMA application_id)', () => {
-    /** The routine edit: a generated column set gains one, which is what a region publishing a new metric looks like. */
+    /**
+     * The routine edit: a generated column set gains one, which is what a region publishing a new metric looks like.
+     */
     const widened: RowTableSchema<TestRow & { extra: string | null }> = { ...schema, columns: { ...schema.columns, extra: { type: 'TEXT' } } };
 
     it('is planned where only the columns grew, and the structure stamp agrees the rest is untouched', () => {

@@ -420,7 +420,7 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `surface.ts`                                     | the read engine — `read({ … })` → `{ getValue, useValue }`               |
 | `partition_fields.ts`                            | the field specs a read names its partition and its vary key with          |
 | `row_shaping.ts`                                 | `rowsOf`: a query, then rows → list / ordered list / record / groups, each with the stable empty |
-| `projection.ts`                                  | `project`: one view model per row, revalidated against that row's digest, so a partition's bump rebuilds only the rows that moved and every other reader bails out on an unchanged reference |
+| `derived_values.ts`                              | `derive`: a value per unit, built from the unit's rows by `fromRows` (usually a view model), kept until a write changes that unit, so a bump rebuilds only the units that moved and every other reader gets the same reference back |
 | `facade.ts`                                      | what a service is written against: `pairRead`, so it exposes the hook and the imperative read together, plus the types its methods are spelled in (`ReadOptions`, `MaybeId`, `Loose`) |
 | `windowed_list.ts`                               | windowed list reads (fetch a page, keep the rest off-heap), and the per-row `useWindowedDetail` that indexes back into one |
 
@@ -449,6 +449,6 @@ handful of internals that only a test reaches for — a real `createVersionAtom`
 to check a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
 
 Bespoke per store, and staying in the app: the schema, the payload types, the row builders and the shred spec
-beside them, the view models and the row-to-view-model functions a projection is declared with, and the backend
+beside them, the view models and the `fromRows` functions their derived values are declared with, and the backend
 that composes all of the above out of the pieces here. A native-compute store adds the SQL engine behind its whole-collection read, which is
 advanced, opt-in, and no part of this package.

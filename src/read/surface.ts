@@ -188,9 +188,9 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
    * {@linkcode CommonDef.empty | empty}.
    *
    * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
-   * projections or unit memos, it depends on just the units (such as the players) it read, and a write to other units
-   * doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed after any
-   * write to it.
+   * derived values or unit memos, it depends on just the units (such as the players) it read, and a write to other
+   * units doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
+   * after any write to it.
    */
   select: (args: SelectArgs<Args, V>, key: Key) => T;
 }
@@ -439,7 +439,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     createTrackedCache<T>(def.getCacheMax ?? 256, def.isEqual ?? shallowEqualValue);
 
   /**
-   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from projections and unit
+   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from derived values and unit
    * memos reports the units it read and depends on those alone. One that read rows straight off the table, or reported
    * nothing at all, is made to depend on every partition it named: it could have read anything in them.
    */

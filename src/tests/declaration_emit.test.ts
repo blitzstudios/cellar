@@ -76,7 +76,7 @@ export const itemStore = defineSqliteStore({
       version,
       key: { fields: ['league'], where: (key) => ({ league: key.league }) },
     });
-    const card = items.project<{ id: string }>()({ name: 'card', max: 64, of: ([row]) => ({ id: row.id }) });
+    const card = items.derive<{ id: string }>()({ name: 'card', max: 64, fromRows: ([row]) => ({ id: row.id }) });
     const memos = items.memos({
       byTeam: byVersion<Map<string, ItemRow[]>>()({ max: 4 }),
       total: byUnit<number>()({ max: 64, by: ['scale'] }),

@@ -34,13 +34,15 @@ function player(id: string, name: string, team: string | null = 'NE', rank: numb
   return { sport: 'nfl', player_id: id, name, team, rank };
 }
 
-/** The view model a projection builds, deliberately carrying only part of the row so a change outside it still counts. */
+/**
+ * The value these derived values build, deliberately carrying only part of the row so a change outside it still counts.
+ */
 type NameVm = { id: string; label: string };
 
-function harness(over: { table?: RowTable<PlayerRow>; max?: number; of?: (rows: readonly PlayerRow[]) => NameVm | undefined } = {}) {
+function harness(over: { table?: RowTable<PlayerRow>; max?: number; fromRows?: (rows: readonly PlayerRow[]) => NameVm | undefined } = {}) {
   const table = over.table ?? createTestRowTable(SCHEMA);
   table.init();
-  const version = createVersionAtom('projection_test');
+  const version = createVersionAtom('derived_values_test');
 
   const players = definePartitions<PlayerRow, PlayerKey>({
     name: 'player',
@@ -50,8 +52,8 @@ function harness(over: { table?: RowTable<PlayerRow>; max?: number; of?: (rows: 
     fetch: { query: () => ({ queryFn: async () => ({ data: '[]' }) }), parse: () => [] },
   });
 
-  const of = jest.fn(over.of ?? (([row]: readonly PlayerRow[]): NameVm | undefined => ({ id: row.player_id, label: row.name })));
-  const projection = players.project<NameVm>()({ name: 'name', max: over.max ?? 64, of });
+  const fromRows = jest.fn(over.fromRows ?? (([row]: readonly PlayerRow[]): NameVm | undefined => ({ id: row.player_id, label: row.name })));
+  const derived = players.derive<NameVm>()({ name: 'name', max: over.max ?? 64, fromRows });
 
   /** Writes the partition the way an ingest does: the table says what changed, and the bump carries it. */
   const seed = (rows: readonly PlayerRow[]): void => {
@@ -59,88 +61,88 @@ function harness(over: { table?: RowTable<PlayerRow>; max?: number; of?: (rows: 
     players.bump(NFL, changes);
   };
 
-  return { players, table, projection, of, seed };
+  return { players, table, derived, fromRows, seed };
 }
 
 const idsOf = (deps: readonly { id: string }[]): string[] => deps.map((dep) => dep.id);
 
-describe('row projection — a write rebuilds only the units it changed', () => {
+describe('derived values — a write rebuilds only the units it changed', () => {
   it('builds one view model per unit, and answers a repeat without rebuilding', () => {
-    const { projection, of, seed } = harness();
+    const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
-    const first = projection.byIds(NFL, ['p1', 'p2']);
+    const first = derived.byIds(NFL, ['p1', 'p2']);
     expect(first.map((vm) => vm.label)).toEqual(['Alice', 'Bob']);
-    expect(of).toHaveBeenCalledTimes(2);
+    expect(fromRows).toHaveBeenCalledTimes(2);
 
-    const second = projection.byIds(NFL, ['p1', 'p2']);
+    const second = derived.byIds(NFL, ['p1', 'p2']);
     expect(second[0]).toBe(first[0]);
     expect(second[1]).toBe(first[1]);
-    expect(of).toHaveBeenCalledTimes(2);
+    expect(fromRows).toHaveBeenCalledTimes(2);
   });
 
   it('rebuilds nothing for a write that changed nothing, which bumps nothing at all', () => {
-    const { projection, of, players, seed } = harness();
+    const { derived, fromRows, players, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    const before = projection.byIds(NFL, ['p1', 'p2']);
+    const before = derived.byIds(NFL, ['p1', 'p2']);
     const version = players.versionOf(NFL);
-    of.mockClear();
+    fromRows.mockClear();
 
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
     expect(players.versionOf(NFL)).toBe(version);
-    expect(projection.byIds(NFL, ['p1', 'p2'])).toEqual(before);
-    expect(of).not.toHaveBeenCalled();
+    expect(derived.byIds(NFL, ['p1', 'p2'])).toEqual(before);
+    expect(fromRows).not.toHaveBeenCalled();
   });
 
   it('rebuilds the one unit that moved and holds the reference of every unit that did not', () => {
-    const { projection, of, seed } = harness();
+    const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob'), player('p3', 'Cara')]);
-    const before = projection.byIds(NFL, ['p1', 'p2', 'p3']);
-    of.mockClear();
+    const before = derived.byIds(NFL, ['p1', 'p2', 'p3']);
+    fromRows.mockClear();
 
     seed([player('p1', 'Alice'), player('p2', 'Robert'), player('p3', 'Cara')]);
-    const after = projection.byIds(NFL, ['p1', 'p2', 'p3']);
+    const after = derived.byIds(NFL, ['p1', 'p2', 'p3']);
 
     expect(after[0]).toBe(before[0]);
     expect(after[2]).toBe(before[2]);
     expect(after[1]).not.toBe(before[1]);
     expect(after[1].label).toBe('Robert');
-    expect(of).toHaveBeenCalledTimes(1);
+    expect(fromRows).toHaveBeenCalledTimes(1);
   });
 
   it('counts a change the view model does not show, since the write, not the view model, decides what changed', () => {
-    const { projection, of, seed } = harness();
+    const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice', 'NE', 1)]);
-    projection.one(NFL, 'p1');
-    of.mockClear();
+    derived.one(NFL, 'p1');
+    fromRows.mockClear();
 
     seed([player('p1', 'Alice', 'NE', 2)]);
-    projection.one(NFL, 'p1');
+    derived.one(NFL, 'p1');
 
-    expect(of).toHaveBeenCalledTimes(1);
+    expect(fromRows).toHaveBeenCalledTimes(1);
   });
 
   it('shares one memo across every read of the shape, so a unit asked for three ways is built once', () => {
-    const { projection, of, seed } = harness();
+    const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
-    const viaOne = projection.one(NFL, 'p1');
-    const viaIds = projection.byIds(NFL, ['p1'])[0];
-    const viaTeam = projection.where(NFL, { team: 'NE' }).find((vm) => vm.id === 'p1');
+    const viaOne = derived.one(NFL, 'p1');
+    const viaIds = derived.byIds(NFL, ['p1'])[0];
+    const viaTeam = derived.where(NFL, { team: 'NE' }).find((vm) => vm.id === 'p1');
 
     expect(viaIds).toBe(viaOne);
     expect(viaTeam).toBe(viaOne);
-    expect(of).toHaveBeenCalledTimes(2);
+    expect(fromRows).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('row projection — what a read depends on', () => {
+describe('derived values — what a read depends on', () => {
   it('a read of named units depends on those units and not the partition, so a write to another leaves it asleep', () => {
-    const { projection, players, seed } = harness();
+    const { derived, players, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
-    const { deps } = runTracked(() => projection.byIds(NFL, ['p1']));
+    const { deps } = runTracked(() => derived.byIds(NFL, ['p1']));
     expect(idsOf(deps)).toEqual([expect.stringMatching(/\u0001p1$/)]);
 
     const [dep] = deps;
@@ -154,79 +156,79 @@ describe('row projection — what a read depends on', () => {
   });
 
   it('a read over a filter depends on the partition, since which units match can move with any write', () => {
-    const { projection, seed } = harness();
+    const { derived, seed } = harness();
     seed([player('p1', 'Alice')]);
 
-    const { deps } = runTracked(() => projection.where(NFL, { team: 'NE' }));
+    const { deps } = runTracked(() => derived.where(NFL, { team: 'NE' }));
 
-    expect(idsOf(deps)).toContainEqual('projection_test\u0000nfl');
+    expect(idsOf(deps)).toContainEqual('derived_values_test\u0000nfl');
   });
 });
 
-describe('row projection — what it hands back', () => {
+describe('derived values — what it hands back', () => {
   it('orders by the ids asked for, not by storage order, and drops an id with no rows', () => {
-    const { projection, seed } = harness();
+    const { derived, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    expect(projection.byIds(NFL, ['p2', 'missing', 'p1']).map((vm) => vm.id)).toEqual(['p2', 'p1']);
+    expect(derived.byIds(NFL, ['p2', 'missing', 'p1']).map((vm) => vm.id)).toEqual(['p2', 'p1']);
   });
 
   it('remembers that a unit is absent, so a write to another unit does not send it asking again', () => {
-    const { projection, table, seed } = harness();
+    const { derived, table, seed } = harness();
     seed([player('p1', 'Alice')]);
-    projection.byIds(NFL, ['missing']);
+    derived.byIds(NFL, ['missing']);
     const findIn = jest.spyOn(table, 'findIn');
 
     seed([player('p1', 'Alicia')]);
-    projection.byIds(NFL, ['missing']);
+    derived.byIds(NFL, ['missing']);
 
     expect(findIn).not.toHaveBeenCalled();
   });
 
   it('notices a unit that arrives where there was none', () => {
-    const { projection, seed } = harness();
+    const { derived, seed } = harness();
     seed([player('p1', 'Alice')]);
-    expect(projection.one(NFL, 'p2')).toBeUndefined();
+    expect(derived.one(NFL, 'p2')).toBeUndefined();
 
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    expect(projection.one(NFL, 'p2')?.label).toBe('Bob');
+    expect(derived.one(NFL, 'p2')?.label).toBe('Bob');
   });
 
   it('keys by id when asked for a map, and leaves out what it has no rows for', () => {
-    const { projection, seed } = harness();
+    const { derived, seed } = harness();
     seed([player('p1', 'Alice')]);
-    expect(Object.keys(projection.mapByIds(NFL, ['p1', 'missing']))).toEqual(['p1']);
+    expect(Object.keys(derived.mapByIds(NFL, ['p1', 'missing']))).toEqual(['p1']);
   });
 
   it('narrows to a filter within the partition, and reflects a unit leaving that filter', () => {
-    const { projection, seed } = harness();
+    const { derived, seed } = harness();
     seed([player('p1', 'Alice', 'NE'), player('p2', 'Bob', 'KC')]);
-    expect(projection.where(NFL, { team: 'NE' }).map((vm) => vm.id)).toEqual(['p1']);
+    expect(derived.where(NFL, { team: 'NE' }).map((vm) => vm.id)).toEqual(['p1']);
 
     seed([player('p1', 'Alice', 'KC'), player('p2', 'Bob', 'KC')]);
-    expect(projection.where(NFL, { team: 'NE' })).toEqual([]);
-    expect(projection.all(NFL).map((vm) => vm.id).sort()).toEqual(['p1', 'p2']);
+    expect(derived.where(NFL, { team: 'NE' })).toEqual([]);
+    expect(derived.all(NFL).map((vm) => vm.id).sort()).toEqual(['p1', 'p2']);
   });
 
   it('answers an empty ask without touching the rows', () => {
-    const { projection, table, seed } = harness();
+    const { derived, table, seed } = harness();
     seed([player('p1', 'Alice')]);
     const findIn = jest.spyOn(table, 'findIn');
 
-    expect(projection.byIds(NFL, [])).toEqual([]);
-    expect(projection.mapByIds(NFL, [])).toEqual({});
+    expect(derived.byIds(NFL, [])).toEqual([]);
+    expect(derived.mapByIds(NFL, [])).toEqual({});
     expect(findIn).not.toHaveBeenCalled();
   });
 
   it('keeps a unit out of the view models where the store says it makes none', () => {
-    const { projection, seed } = harness({ of: ([row]) => (row.team ? { id: row.player_id, label: row.name } : undefined) });
+    const { derived, seed } = harness({ fromRows: ([row]) => (row.team ? { id: row.player_id, label: row.name } : undefined) });
     seed([player('p1', 'Alice', null), player('p2', 'Bob', 'NE')]);
 
-    expect(projection.byIds(NFL, ['p1', 'p2']).map((vm) => vm.id)).toEqual(['p2']);
-    expect(projection.all(NFL).map((vm) => vm.id)).toEqual(['p2']);
+    expect(derived.byIds(NFL, ['p1', 'p2']).map((vm) => vm.id)).toEqual(['p2']);
+    expect(derived.all(NFL).map((vm) => vm.id)).toEqual(['p2']);
   });
 });
 
-describe('row projection — a unit of several rows', () => {
+describe('derived values — a unit of several rows', () => {
   type GameRow = { week: string; game_id: string; player_id: string; team: string; pts: number };
   const GAMES: RowTableSchema<GameRow> = {
     table: 'games',
@@ -238,12 +240,12 @@ describe('row projection — a unit of several rows', () => {
 
   function games() {
     const table = createTestRowTable(GAMES);
-    const version = createVersionAtom('projection_games_test');
+    const version = createVersionAtom('derived_values_games_test');
     const weeks = definePartitions<GameRow, string>({ name: 'games', table, version, key: { where: (week) => ({ week }) } });
-    const of = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));
-    const totals = weeks.project<TotalVm>()({ name: 'totals', max: 64, of });
+    const fromRows = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));
+    const totals = weeks.derive<TotalVm>()({ name: 'totals', max: 64, fromRows });
     const seed = (rows: GameRow[]) => weeks.bump('w1', table.overwrite({ week: 'w1' }, rows).changes);
-    return { totals, of, seed };
+    return { totals, fromRows, seed };
   }
   const game = (id: string, playerId: string, team: string, pts: number): GameRow => ({ week: 'w1', game_id: id, player_id: playerId, team, pts });
 
@@ -271,31 +273,31 @@ describe('row projection — a unit of several rows', () => {
   });
 });
 
-describe('row projection — the memo bound is a bound, not a promise', () => {
+describe('derived values — the memo bound is a bound, not a promise', () => {
   it('stays correct when the ask exceeds what it holds, even though the references cannot survive', () => {
-    const { projection, seed } = harness({ max: 2 });
+    const { derived, seed } = harness({ max: 2 });
     const rows = [player('p1', 'A'), player('p2', 'B'), player('p3', 'C'), player('p4', 'D')];
     seed(rows);
     const ids = rows.map((row) => row.player_id);
 
-    expect(projection.byIds(NFL, ids).map((vm) => vm.label)).toEqual(['A', 'B', 'C', 'D']);
-    expect(projection.byIds(NFL, ids).map((vm) => vm.label)).toEqual(['A', 'B', 'C', 'D']);
+    expect(derived.byIds(NFL, ids).map((vm) => vm.label)).toEqual(['A', 'B', 'C', 'D']);
+    expect(derived.byIds(NFL, ids).map((vm) => vm.label)).toEqual(['A', 'B', 'C', 'D']);
   });
 
-  itDev('says so in dev, naming the projection and the bound to raise', () => {
+  itDev('says so in dev, naming the derived values and the bound to raise', () => {
     resetOnceGuards();
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const { projection, seed } = harness({ max: 2 });
+    const { derived, seed } = harness({ max: 2 });
     seed([player('p1', 'A'), player('p2', 'B'), player('p3', 'C')]);
 
-    projection.byIds(NFL, ['p1', 'p2', 'p3']);
+    derived.byIds(NFL, ['p1', 'p2', 'p3']);
 
-    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' projection was asked for 3 units but holds 2/);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' derived values were asked for 3 units but hold 2/);
     warn.mockRestore();
   });
 });
 
-describe('row projection — over real SQLite', () => {
+describe('derived values — over real SQLite', () => {
   beforeAll(async () => {
     await initSqlJs();
   });
@@ -303,25 +305,25 @@ describe('row projection — over real SQLite', () => {
   const onSqlite = () => harness({ table: createSqliteRowTable(SCHEMA, createSqlJsConnection({ capabilities: 'full' })) });
 
   it('rebuilds exactly as the Map backend does', () => {
-    const { projection, seed } = onSqlite();
+    const { derived, seed } = onSqlite();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    const before = projection.byIds(NFL, ['p1', 'p2']);
+    const before = derived.byIds(NFL, ['p1', 'p2']);
 
     seed([player('p1', 'Alice'), player('p2', 'Robert')]);
-    const after = projection.byIds(NFL, ['p1', 'p2']);
+    const after = derived.byIds(NFL, ['p1', 'p2']);
 
     expect(after[0]).toBe(before[0]);
     expect(after[1].label).toBe('Robert');
   });
 
   it('reads no rows at all for a partition whose write changed nothing', () => {
-    const { projection, table, seed } = onSqlite();
+    const { derived, table, seed } = onSqlite();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    projection.byIds(NFL, ['p1', 'p2']);
+    derived.byIds(NFL, ['p1', 'p2']);
     const findIn = jest.spyOn(table, 'findIn');
 
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
-    projection.byIds(NFL, ['p1', 'p2']);
+    derived.byIds(NFL, ['p1', 'p2']);
 
     expect(findIn).not.toHaveBeenCalled();
   });

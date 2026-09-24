@@ -5,7 +5,7 @@
  */
 import type { WriteResult } from './change_set';
 import type { PartitionKeySpec } from '../define_partitions';
-import type { RowProjection } from '../read/projection';
+import type { DerivedValues } from '../read/derived_values';
 import type { byUnit } from '../caches';
 /** A value one SQLite column can hold in a row table: a string, a number, or null. Booleans are stored as 0 or 1. */
 export type SqlValue = string | number | null;
@@ -109,18 +109,21 @@ export interface RowTableSchema<Row extends RowShape> {
      * replaces the rows of each unit in the set with the unit's new rows, deleting a unit that's no longer there, and
      * then bumps the partition's version and the version of each changed unit.
      *
-     * Reads use the same division. A read that asks for particular units (through a projection's
-     * {@linkcode RowProjection.one | one} or {@linkcode RowProjection.byIds | byIds}, or a {@linkcode byUnit} memo)
+     * Reads use the same division. A read that asks for particular units (through derived values'
+     * {@linkcode DerivedValues.one | one} or {@linkcode DerivedValues.byIds | byIds}, or a {@linkcode byUnit} memo)
      * depends on just those units, and recomputes only when a write changes one of them. A read that looks at the whole
-     * partition (scanning the table, or a projection's {@linkcode RowProjection.all | all} or
-     * {@linkcode RowProjection.where | where}) depends on the partition, and recomputes after any write that changes it.
-     * Either way, the component re-renders only if the recomputed value differs. Projections likewise build one view
-     * model per unit, and rebuild only the units a write changed.
+     * partition (scanning the table, or derived values' {@linkcode DerivedValues.all | all} or
+     * {@linkcode DerivedValues.where | where}) depends on the partition, and recomputes after any write that changes it.
+     * Either way, the component re-renders only if the recomputed value differs. Derived values likewise build one
+     * value per unit, and rebuild only the units a write changed.
      */
     unit: keyof Row & string;
     /**
-     * The table's secondary indexes: SQLite indexes over the column combinations reads filter on, beyond the primary key.
-     * Adding, removing or changing one drops and rebuilds the table on the next launch.
+     * Secondary indexes: SQLite indexes that let reads filtering on these columns find their rows without scanning the
+     * whole table. Optional, and only for speed: without one, a read returns the same rows, but a filter no index covers
+     * reads every row of the table. The primary key is already indexed, so declare one only for a filter the key doesn't
+     * start with, such as `['league', 'team']` when the key is `['league', 'player_id']`. Each index also slows writes
+     * slightly. Adding, removing or changing one drops and rebuilds the table on the next launch.
      */
     indexes?: ReadonlyArray<IndexDef<Row>>;
     /**
@@ -175,7 +178,7 @@ export interface RowTable<Row extends RowShape> {
     readonly primaryKey: ReadonlyArray<keyof Row & string>;
     /**
      * The schema's unit column: the column whose value says which thing a row belongs to, such as `player_id`. Writes
-     * report their changes as the values of this column they changed, and view models are built one per value.
+     * report their changes as the values of this column they changed, and derived values are built one per value.
      */
     readonly unit: keyof Row & string;
     /**
@@ -226,8 +229,8 @@ export interface RowTable<Row extends RowShape> {
     has(where: Partial<Row>): boolean;
     /**
      * The distinct values of the unit column among the rows matching `where`, such as every `player_id` in a league,
-     * without reading the rows themselves. A projection uses it to learn which units exist before building view models
-     * only for the ones it hasn't built yet.
+     * without reading the rows themselves. Derived values use it to learn which units exist before building values
+     * only for the ones they haven't built yet.
      */
     unitsWhere(where: Partial<Row>): string[];
     /**
@@ -245,5 +248,5 @@ export interface RowTable<Row extends RowShape> {
 }
 /** A schema's column names in the order they are declared, which is the column order of every `INSERT`. */
 export declare function columnNames<Row extends RowShape>(schema: RowTableSchema<Row>): Array<keyof Row & string>;
-export type { PartitionKeySpec, RowProjection, byUnit };
+export type { PartitionKeySpec, DerivedValues, byUnit };
 //# sourceMappingURL=types.d.ts.map

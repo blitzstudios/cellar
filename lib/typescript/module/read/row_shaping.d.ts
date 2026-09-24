@@ -6,7 +6,7 @@
  *
  * These read the table directly, so a read whose {@linkcode ReadDef.select | select} uses them depends on the whole
  * partition (a partition is the set of rows one fetch returns and replaces) and recomputes after any write that changes
- * it. To depend on particular units instead, use a projection or a {@linkcode byUnit} memo.
+ * it. To depend on particular units instead, use derived values or a {@linkcode byUnit} memo.
  */
 import { FindOpts, RowShape, RowTable } from '../table/types';
 import type { ReadDef } from './surface';
