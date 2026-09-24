@@ -1,7 +1,11 @@
 /**
- * A store's rows divided into partitions: the addressable slice a fetch replaces, a version tracks, and an ETag
- * belongs to. From `key.where` alone this derives presence, what a fetch replaces, where the ETag lives, and what
- * a write bumps.
+ * Divides a store's table into partitions and builds the store's fetching and reads on them.
+ *
+ * A partition is the set of rows one fetch returns and replaces, such as every player in one league, or one week of
+ * one sport's stats. It is picked out by column values (its `where`, such as `{ league: 'nfl' }`), and it is the unit
+ * of everything fetch-related: one React Query query per partition, one ETag per partition, one version number per
+ * partition that re-renders its readers. A read names the partition it reads with its args, and reading a partition
+ * that has never been fetched fetches it.
  */
 
 import { useCallback } from 'react';
@@ -25,125 +29,207 @@ import { ALL_UNITS, ChangeSet, isUnchanged, WriteResult } from './table/change_s
 type MaybePartition<Descriptor> = Descriptor | null | undefined;
 
 /**
- * How a store gets from a read's args to the partition they name. Either `fields` lists the args fields that make the
- * key, or `of` and `id` turn the args into a partition record and the record into a key — for a record too big to be
- * a key itself, which the kernel remembers so a fetch can get it back.
+ * How a store gets from a read's args to the partition they name, and from the partition to its rows.
+ *
+ * A partition is the set of rows one fetch returns and replaces. Each has a key, which identifies it everywhere: its
+ * React Query query key, its version, its ETag and its fetch state all derive from the key. There are two ways to make
+ * the key from a read's args:
+ *
+ * - `fields`: the key is those args fields, such as `['league']`, and two args with the same values in them name the
+ *   same partition. Use this whenever the fields are small values.
+ * - `of` and `id`: `of` turns the args into a partition record (an object describing what to fetch), and `id` turns
+ *   the record into a string key. For a partition described by more than a few small fields. The kernel remembers each
+ *   record by its key, so the fetch can get the record back from the key.
+ *
+ * Either way, `where` turns the key into the column values that pick out the partition's rows in the table.
  */
 export interface PartitionKeySpec<Row extends RowShape, Key, Args, Descriptor> {
   /**
-   * The args fields that make up the key, in order. Two args with the same values in these fields name one partition.
+   * The args fields that make up a partition's key, in order, such as `['sport', 'season', 'week']`. Two args with the
+   * same values in these fields name the same partition. A read's args must carry them, and a read whose args are
+   * missing one of them (undefined, null or `''`) reads nothing and fetches nothing until it has a value.
    */
   fields?: readonly (keyof Key & string)[];
   /**
-   * The partition record a read's args name, used with `id` instead of `fields`. Args arrive as loosely as a screen
-   * holds them, so return nothing while one is still missing a value: that reads and fetches nothing, the same as a
-   * missing field.
+   * Turns a read's args into the record describing the partition to read, for use with `id` instead of `fields`. It
+   * gets the args as loosely as a screen holds them, so any field can be missing: return `null` or `undefined` until
+   * the args are complete, and the read reads nothing and fetches nothing until then, the same as a missing field.
    */
   of?: (args: Loose<Args>) => MaybePartition<Descriptor>;
-  /** The key for a partition record. Must be stable, and different records must never share one. */
+  /**
+   * Turns a partition record (from `of`) into the partition's string key. The key identifies the partition everywhere,
+   * so it must be the same every time for equal records, and different for different ones.
+   */
   id?: (descriptor: Descriptor) => Key;
   /**
-   * The partition record for a key, the reverse of {@link id}, for a store whose keys can be parsed. Worth supplying:
-   * the kernel remembers only so many record⇄key pairs, and without this a partition it forgot cannot be fetched again
-   * for the life of the process. With it, forgetting costs a parse.
+   * Turns a partition key back into its record: the reverse of `id`, for a store whose keys can be parsed. The kernel
+   * remembers the record for each key it has seen, but only for the most recent `internMax` partitions. Without
+   * `from`, a partition whose record was forgotten can't be fetched again for the rest of the session, which is
+   * reported; with it, the record is parsed back from the key.
    */
   from?: (key: Key) => MaybePartition<Descriptor>;
-  /** The table rows one partition holds, as column values to match. */
+  /**
+   * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`. Everything that works
+   * on a partition's rows uses it: a fetch deletes the rows that match it and writes the response's rows in their
+   * place, and the partition's ETag is stored against it. Every row a fetch writes must match it, or it would sit
+   * outside the partition the next fetch replaces (checked in dev).
+   */
   where: (key: Key) => Partial<Row>;
 }
 
-/** How a partition's rows are fetched. Omit it for a store fed only by pushes. */
+/**
+ * How a store fetches one partition: the request to make, and how the response becomes the partition's rows. A fetch
+ * replaces the partition: afterwards the rows matching its `where` are exactly the response's rows. Omit it for a
+ * store fed only by socket pushes.
+ */
 export interface PartitionFetchSpec<Row extends RowShape, Key, Descriptor> {
-  /** The request that fetches one partition, sending `etag` as `If-None-Match` when the kernel has one. */
+  /**
+   * Describes the request for one partition, without running it: returns a `RawQuery` whose `queryFn` makes the
+   * request, and whose `staleTime` and `cacheTime` are the partition's React Query timings. `etag` is the partition's
+   * stored ETag, if it has one; send it as `If-None-Match`, and a 304 response keeps the partition's rows as they are.
+   * `partition` is the partition's key, or its record for a store keyed with `of` and `id`.
+   */
   query: (partition: Descriptor, etag?: string) => RawQuery;
-  /** Turns a response body into the partition's rows. They replace everything the partition held. */
+  /**
+   * Turns a response body, as unparsed JSON text, into the partition's rows, in JS. The rows replace everything the
+   * partition held. It runs on web, in tests, and on a device whenever the native shred isn't used for this partition
+   * (no native program, `canShredNatively` returns false, or the native shred failed). Every row must match the
+   * partition's `where`.
+   */
   parse: (partition: Descriptor, rawJson: string, key: Key) => readonly Row[];
   /**
-   * Whether this partition's body can go through the native shred, which needs a top-level JSON array. True by default.
+   * Whether this partition's response can be written by the native C++ shredder instead of `parse`; true by default.
+   * Return false for a partition whose body the store's native programs can't read, such as one that isn't a JSON
+   * array or object of elements.
    */
   canShredNatively?: (partition: Descriptor) => boolean;
   /**
-   * Holds pushed writes to the partition while its fetch is in flight, and returns the function that releases them,
-   * so a push landing mid-fetch is not wiped out by the replace.
+   * Called when a fetch of the partition starts, and returns a function the kernel calls when the fetch has finished.
+   * For a store that also receives socket pushes: hold the partition's pushes until the release is called. A fetch
+   * replaces the whole partition, so a push written while the request was in flight would otherwise be overwritten by
+   * the older response.
    */
   holdWrites?: (key: Key) => () => void;
 }
 
 /**
- * A store's partitions: the table they divide, the version they bump, how to find a partition's rows, and how to fetch
- * them.
+ * The configuration of a store's partitions: the table they divide, the version they bump, how read args name a
+ * partition and which rows it holds, and how a partition is fetched. A partition is the set of rows one fetch returns
+ * and replaces.
  */
 export interface PartitionsConfig<Row extends RowShape, Key, Args, Descriptor> {
-  /** The store's name, used in cache keys, logs and error reports. */
+  /** The store's name, such as `player`. It prefixes the store's React Query keys and names it in logs and reports. */
   name: string;
-  /** The row table the partitions divide. */
+  /** The row table the partitions divide: the store's SQLite table. */
   table: RowTable<Row>;
-  /** The version store the partitions bump when their rows change, which is what re-renders their readers. */
+  /**
+   * The store's version atom: the version numbers, per partition and per unit, that the store's reads depend on. A
+   * write that changes a partition bumps its version with the units it changed, which re-renders the readers of those
+   * units.
+   */
   version: VersionAtom;
-  /** How a read's args name a partition, and which rows it holds. */
+  /** How read args name a partition (by `fields`, or by `of` and `id`), and which rows a partition holds (`where`). */
   key: PartitionKeySpec<Row, Key, Args, Descriptor>;
-  /** How a partition is fetched; omit it for a store fed only by pushes. */
+  /**
+   * How a partition is fetched: its request, and how its response becomes rows. Omit it for a store fed only by pushes.
+   */
   fetch?: PartitionFetchSpec<Row, Key, Descriptor>;
   /**
-   * Runs after a write changes a partition, with its new version and the units that changed; never for a write that
-   * changed nothing. For a store holding something derived from a partition, such as a ranking, that new rows make
-   * stale.
+   * Called after a write changes a partition's rows, with the partition's key, its new version, and the units the write
+   * changed (the values of the table's unit column whose rows were added, changed or removed). Not called for a write
+   * that changed nothing. For a store that keeps something computed from a partition, such as a ranking, and needs to
+   * discard it when the rows change.
    */
   onChanged?: (key: Key, version: number, changes: ChangeSet) => void;
-  /** How many partitions to remember record⇄key pairs and fetch times for; 512 by default. */
+  /**
+   * How many partitions to remember details for: each partition's record (for a store keyed with `of` and `id`) and
+   * when it was last fetched. 512 by default. A forgotten fetch time makes the partition read as never fetched.
+   */
   internMax?: number;
 }
 
-/** Options for a priming hook. */
+/** Options for a store's `usePrime` and `usePrimeMany` hooks, which start fetching partitions without reading them. */
 export interface PrimeHookOptions {
-  /** Set false to fetch nothing while keeping the hook's position; true by default. */
+  /**
+   * Set false to fetch nothing, while the hook keeps its place among the component's hooks; true by default. For a
+   * component that shouldn't fetch yet, such as one whose screen isn't visible.
+   */
   enabled?: boolean;
 }
 
-/** Options for `usePrimeAndVersion`. */
+/** Options for a store's `usePrimeAndVersion` hook, which fetches a partition and re-renders when it changes. */
 export interface PrimeAndVersionOptions extends PrimeHookOptions {
-  /** Set false to keep subscribing to the version without fetching the partition. */
+  /**
+   * Set false to only subscribe: the hook still re-renders when the partition changes, but never starts a fetch. For a
+   * component whose parent already fetches the partition.
+   */
   prime?: false;
 }
 
-/** Options for an imperative fetch. */
+/** Options for a store's imperative `fetch`. */
 export interface FetchOptions {
   /**
-   * How old, in ms, the partition's rows may be before this fetches them again; the partition query's own by default.
+   * How old the partition's last fetch may be, in ms, for this call to skip fetching: a partition fetched more recently
+   * is left as it is. Defaults to the `staleTime` of the partition's query.
    */
   staleTime?: number;
 }
 
 /**
- * The partition operations a store publishes for callers outside the read path. Each takes the same args a read does.
- * The hooks take them loosely, as a screen holds them, and can be called unconditionally: args still missing the
- * value that names a partition fetch nothing.
+ * The partition operations a store publishes for code outside its reads, grouped as `lifecycle`: starting fetches,
+ * checking whether a partition has rows, and refetching or discarding it. A partition is the set of rows one fetch
+ * returns and replaces. Every member takes the same args a read does, and works out the partition from them.
  */
 interface PartitionLifecycle<Args> {
-  /** Starts fetching the partition if it is not fresh. `undefined` args keep the hook's position and fetch nothing. */
+  /**
+   * A hook that fetches the partition the args name, if it hasn't been fetched or is older than its `staleTime`, and
+   * returns the fetch's state. It reads nothing: the rows land in the table for reads to use. Args with a field still
+   * missing, or `undefined` args, fetch nothing, so it can be called unconditionally.
+   */
   usePrime: (args: Loose<Args> | undefined, options?: PrimeHookOptions) => PrimeState;
-  /** Starts fetching each partition that is not fresh, in one hook. */
+  /**
+   * A hook that fetches each partition the list of args names, if it hasn't been fetched or is older than its
+   * `staleTime`, and returns their combined state: loading or fetching if any is, failed only if all failed.
+   */
   usePrimeMany: (args: readonly Args[], options?: PrimeHookOptions) => PrimeState;
   /**
-   * The partition's version as a `DataResult`, fetching the partition as a read would. For a derivation that reads the
-   * store imperatively and needs something to re-render on.
+   * A hook that fetches the partition the args name (as `usePrime` does) and returns its version number as a
+   * `DataResult`, re-rendering the component on every write that changes the partition. For a component that reads the
+   * store with getters rather than hooks and needs something that re-renders it when the rows change.
    */
   usePrimeAndVersion: (args: Loose<Args> | undefined, options?: PrimeAndVersionOptions) => DataResult<number>;
-  /** Whether the partition holds any rows. Tracked: a derivation that calls it re-runs when that changes. */
+  /**
+   * Whether the partition the args name holds any rows. Tracked: inside a tracking scope (a `useValue` read,
+   * `useTrackedStores`, a tracked selector), the scope re-runs when the partition goes from empty to having rows or
+   * back.
+   */
   has: (args: Args) => boolean;
-  /** The partition's version, which goes up on every write that changes it; 0 if never written. Tracked. */
+  /**
+   * The version number of the partition the args name: 0 before its first write, and bumped by every write that
+   * changes its rows. Tracked: inside a tracking scope, the scope re-runs whenever it changes.
+   */
   getVersion: (args: Args) => number;
-  /** When a fetch last brought the partition rows, in epoch ms; 0 if never. Tracked. */
+  /**
+   * When a fetch last wrote the partition the args name, in epoch ms, or 0 if it hasn't been fetched this session.
+   * Tracked: inside a tracking scope, the scope re-runs when the partition changes.
+   */
   getFetchedAt: (args: Args) => number;
-  /** Fetches the partition unless it is fresh or already in flight, resolving once its rows have landed. */
+  /**
+   * Fetches the partition the args name, outside a component, unless it was fetched within `staleTime` or a fetch is
+   * already in flight (then it waits for that one). Resolves once the rows are written.
+   */
   fetch: (args: Args, options?: FetchOptions) => Promise<void>;
-  /** Fetches the partition again, however fresh it is. */
+  /** Fetches the partition the args name again now, however recently it was fetched. Its ETag is still sent. */
   refetch: (args: Args) => void;
-  /** Marks the partition stale: fetched again at once if a screen is reading it, otherwise by its next reader. */
+  /**
+   * Marks the partition the args name as stale, keeping its rows: if a mounted component is reading it, it is fetched
+   * again now; otherwise the next reader fetches it. Its ETag is still sent, so an unchanged partition costs a 304.
+   */
   invalidate: (args: Args) => void;
   /**
-   * Forgets every partition's fetch history, so each reads as never fetched. Used when a store moves to another
-   * database.
+   * Discards React Query's state for every partition's fetch, so the next component that reads a partition fetches it
+   * again, however recently it was fetched. The rows stay in the table. Used when the store moves to a different
+   * database, whose rows the old fetches didn't write.
    */
   forget: () => void;
 }
@@ -162,58 +248,95 @@ type PartitionReadManyDef<Args, Key, T, Descriptor, V extends VarySpec<Args>> = 
 
 /** `readGrouped`, likewise: one group of candidate records per thing the caller is asking about. */
 interface PartitionReadGroupedDef<Args, Key, T, Descriptor, V extends VarySpec<Args>> extends Omit<ReadGroupedDef<Args, Key, T, V>, 'groups'> {
-  /** One group of candidate partitions per thing the caller asks about, such as each stat key's possible partitions. */
+  /**
+   * The candidate partitions for each lookup the read answers, one group per lookup, such as the partitions each of
+   * several stat keys could live in. Every partition in every group is fetched and subscribed to, and `select` gets the
+   * groups back in the same order.
+   */
   groups: (args: Args) => readonly (readonly MaybePartition<Descriptor>[])[];
 }
 
 /**
- * What `definePartitions` gives a store's `build`: functions to declare reads and view models with, lower-level access
- * to rows and versions for the store's own code, and a `lifecycle` group to publish.
+ * What `definePartitions` returns to a store's `build`: the functions that declare the store's reads, memos and view
+ * models, lower-level access to its partitions for the store's own code, and the `lifecycle` group to publish. A
+ * partition is the set of rows one fetch returns and replaces.
  */
 export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
   /**
-   * Declares a read over one partition, in two calls: `read<Args, Value>()({ … })`. The first names what the read takes
-   * and returns; the second takes the read's definition. It is split so TypeScript can infer `varyBy` from the list the
-   * read spells, which is what limits `select` to exactly those fields.
+   * Declares a read of one partition: the args name the partition, and `select` computes the value from its rows. The
+   * read fetches the partition when it hasn't been fetched, caches its value, and re-renders its callers when the rows
+   * it used change. It returns `empty` until the partition has rows.
+   *
+   * Called in two steps, `read<Args, Value>()({ ... })`: the first sets the args and value types, the second takes the
+   * definition. The split lets TypeScript infer the exact `varyBy` list, which is what restricts `select`'s args to
+   * those fields.
    */
   read: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V>) => Read<A, T>;
-  /** Declares a read over several partitions at once, one result per partition, in the same two calls as `read`. */
+  /**
+   * Declares a read across several partitions, such as one player's stats across several weeks: the args name a list of
+   * partitions (by default their `partitions` field), all of them are fetched and subscribed to, and `select` computes
+   * one value from all of them. Called in the same two steps as `read`.
+   */
   readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>) => Read<A, T>;
   /**
-   * Declares a read over groups of candidate partitions, one group per thing the caller asks about; `select` gets them
-   * back in those groups. For a lookup that could live in any of several partitions.
+   * Declares a read that answers several lookups at once, where each lookup's rows could be in any of several candidate
+   * partitions: the args give one group of candidate partitions per lookup, every candidate is fetched and subscribed
+   * to, and `select` gets the groups back in order to answer each lookup. Called in the same two steps as `read`.
    */
   readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
   /**
-   * Declares the store's memoized values in one block, each cached per partition and dropped when the partition
-   * changes. A memo takes a partition key and the thing it wants; it works out its own cache key and version. See
-   * {@link createMemos}.
+   * Declares the store's memos: caches of values the store computes from a partition's rows, declared together in one
+   * object. Each entry is a `byVersion` memo (discarded by any write to the partition) or a `byUnit` memo (one value
+   * per unit, discarded only when that unit's rows change). Using one takes a partition key and the memo's own key
+   * parts; the partition's version is looked up for it. See {@link createMemos}.
    */
   memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
   /**
-   * Declares a view model built from one unit's rows, in two calls like the reads: `project<Vm>()({ … })`. Every read
-   * returning that shape goes through it, so a unit is built once however many reads ask, and a write rebuilds only the
-   * units it changed. See {@link createRowProjection}.
+   * Declares a view model built from one unit's rows (a unit is all the rows sharing one value of the table's unit
+   * column, such as one player's rows), and cached per unit. A read that returns view models gets them from here:
+   * each unit's view model is built once however many reads ask for it, kept as the same object, and rebuilt only when
+   * a write changes that unit's rows. Called in two steps, `project<Vm>()({ ... })`. See {@link createRowProjection}.
    */
   project: <Vm>() => (def: RowProjectionDef<Row, Vm>) => RowProjection<Key, Row, Vm>;
-  /** The table rows one partition holds, as column values to match: the store's own `key.where`. */
+  /**
+   * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`: the store's
+   * `key.where`.
+   */
   where: (key: Key) => Partial<Row>;
-  /** The key for a partition record, remembering the pair so a fetch can get the record back. */
+  /**
+   * The key for a partition record, for a store keyed with `of` and `id`: runs `id`, and remembers the record under the
+   * key, so the partition's fetch can get the record back.
+   */
   keyOf: (partition: Descriptor) => Key;
-  /** Every remembered key, least- to most-recently used. */
+  /** Every partition key whose record is still remembered, from least to most recently used. */
   internedKeys: () => IterableIterator<Key>;
-  /** Whether the partition holds any rows. Tracked: a derivation that calls it re-runs when that changes. */
+  /**
+   * Whether the partition holds any rows. Tracked: inside a tracking scope, the scope re-runs when the partition goes
+   * from empty to having rows or back.
+   */
   has: (key: Key) => boolean;
-  /** The partition's version, which goes up on every write that changes it; 0 if never written. Tracked. */
+  /**
+   * The partition's version number: 0 before its first write, and bumped by every write that changes its rows.
+   * Tracked: inside a tracking scope, the scope re-runs whenever it changes.
+   */
   versionOf: (key: Key) => number;
   /**
-   * Raises the partition's version and runs `onChanged`, for a store that wrote rows itself. Pass the units its write
-   * changed; without them every unit counts as changed, and a write that changed nothing bumps nothing.
+   * Tells the partition's readers about a write the store made itself, such as a `table.upsert` of a socket push: bumps
+   * the partition's version, calls `onChanged`, and returns the new version. Table writes never notify anyone on their
+   * own; fetches call this for you, and anything else that writes rows must.
+   *
+   * Pass the units the write changed (the values of the table's unit column in its change set), and only readers of
+   * those units re-render; without them, every unit counts as changed. An empty set changes nothing and bumps nothing.
    */
   bump: (key: Key, changes?: ChangeSet) => number;
-  /** Drops the partition's stored ETag, so its next fetch returns a full body rather than a 304. */
+  /**
+   * Deletes the partition's stored ETag, so its next fetch downloads the full body instead of possibly getting a 304.
+   */
   clearEtag: (key: Key) => void;
-  /** The partition operations for callers outside the read path, ready to publish as-is. */
+  /**
+   * The partition operations for code outside the store's reads (fetching, checking and refetching partitions), ready
+   * to publish as-is.
+   */
   lifecycle: PartitionLifecycle<Args>;
 }
 
@@ -223,10 +346,14 @@ const NO_INTERNED: readonly never[] = Object.freeze([]);
 const NO_DESCRIPTORS: readonly never[] = Object.freeze([]);
 
 /**
- * Divides a store's table into partitions — the slice one fetch replaces, one version tracks, and one ETag belongs to —
- * and returns the reads, view models, fetching and version bumps built on them. The store supplies where a
- * partition's rows are (`key.where`) and how a response becomes them (`fetch`). Call it from a store's `build`, after
- * `table.init()`.
+ * Divides a store's table into partitions and builds the store's fetching and reads on them. A partition is the set of
+ * rows one fetch returns and replaces, picked out by column values (its `where`), such as every player in one league.
+ *
+ * From the config it builds one React Query query per partition that fetches the partition (sending its stored ETag,
+ * and writing the response with the native shredder or `parse`), and bumps the partition's version with the units the
+ * write changed, which re-renders the readers of those units. It returns the functions that declare the store's reads,
+ * memos and view models on those partitions, and the `lifecycle` operations to publish. Call it from a store's
+ * `build`, after `table.init()`.
  */
 export function definePartitions<Row extends RowShape, Key, Args = Key, Descriptor = Args>(
   config: PartitionsConfig<Row, Key, Args, Descriptor>,
@@ -251,7 +378,10 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     interned.set(key as unknown as string, partition);
     return key;
   };
-  /** The key an absent partition maps to: all-empty parts, which `addressesPartition` rejects, so nothing is read or primed. */
+  /**
+   * The key an absent partition maps to: all-empty parts, which `addressesPartition` rejects, so nothing is read or
+   * primed.
+   */
   const GAP_KEY = (fields ? Object.freeze({}) : '') as unknown as Key;
   const keyOfMaybe = (partition: MaybePartition<Descriptor>): Key => (partition == null ? GAP_KEY : keyOf(partition));
 
@@ -361,7 +491,8 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
 
   /**
    * The key a priming hook's args address. Args short of a value are `keyOfArgs`' business as usual: a missing field
-   * becomes an empty part and `key.of` answers `null`, and either way `addressesPartition` rejects the key, so nothing is primed.
+   * becomes an empty part and `key.of` answers `null`, and either way `addressesPartition` rejects the key, so nothing
+   * is primed.
    */
   const keyOfHookArgs = (args: Loose<Args>): Key => keyOfArgs(args as Args);
 

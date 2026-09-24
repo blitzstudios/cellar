@@ -1,49 +1,75 @@
 /**
- * Turns table rows into a read's value: a list, a list in id order, a record keyed by id, or groups.
+ * Queries a store's table and turns the rows into a read's value in one expression: a list, a list in the order of
+ * some ids, a record keyed by id, or groups. The shapes are methods on the query's result, because the query already
+ * knows what they need, such as which column holds the id and which ids were asked for. Each shape returns the caller's
+ * `empty` when there are no rows, so an empty result is always the same object.
  *
- * The shapes are methods on the query's result, because the query already knows what they need, such as which column
- * holds the id and which ids were asked for. Each shape returns the caller's `empty` when no rows are left, so an empty
- * result is always the same object.
+ * These read the table directly, so a read whose `select` uses them depends on the whole partition (a partition is the
+ * set of rows one fetch returns and replaces) and recomputes after any write that changes it. To depend on particular
+ * units instead, use a projection or a `byUnit` memo.
  */
 import { FindOpts, RowShape, RowTable } from '../table/types';
 /** Columns whose value is always a string, so they can key a `Map` or `Record` directly. */
 type StringColumn<Row> = {
     [K in keyof Row]-?: Row[K] extends string ? K : never;
 }[keyof Row] & string;
-/** A query's rows, with methods to shape them. */
+/** The rows a query returned, with methods that turn them into a read's value. */
 export interface RowSet<Row extends RowShape> {
-    /** The rows, for a value none of the shapes covers. */
+    /** The rows as the query returned them, for a value none of the shapes covers. */
     readonly rows: readonly Row[];
     /**
-     * Maps each row with `toVm`, dropping rows it returns `undefined` for. Keeps the query's order; to sort, pass an
-     * `orderBy` to the query.
+     * Maps each row with `toVm` into a list, leaving out rows it returns a falsy value (such as `undefined`) for, in the
+     * query's order (pass an `orderBy` to the query to sort). Returns `empty` when the list would be empty.
      */
     map<T>(toVm: (row: Row) => T | undefined, empty: T[]): T[];
-    /** Groups the rows by a column's value, each group in query order. */
+    /** The rows grouped by their value in `column`, as a map from value to rows, each group in the query's order. */
     groupBy(column: StringColumn<Row>): Map<string, Row[]>;
 }
-/** The rows of an `in` query, with extra shapes based on the ids it asked for. */
+/**
+ * The rows an `in` query returned (rows whose column is one of a list of values, such as some player ids), with extra
+ * shapes that use that list.
+ */
 export interface IdRowSet<Row extends RowShape> extends RowSet<Row> {
-    /** Maps the rows with `toVm`, in the order the ids were given, which SQL `IN` doesn't keep. */
+    /**
+   * A list with one entry per value the query was given, in that order (SQL `IN` returns rows in storage order
+   * instead): the value's row mapped with `toVm` (the last row, if several share the value). A value with no row, or
+   * whose row `toVm` returns a falsy value for, is left out. Returns `empty` when the list would be empty.
+   */
     ordered<T>(toVm: (row: Row) => T | undefined, empty: T[]): T[];
-    /** Maps the rows with `toVm` into a record keyed by the query's column. With duplicate keys, the last row wins. */
+    /**
+   * Maps each row with `toVm` into a record keyed by its value in the query's column, leaving out rows `toVm` returns a
+   * falsy value for. When two rows have the same value, the later one wins. Returns `empty` when the record would be
+   * empty.
+   */
     indexed<T>(toVm: (row: Row) => T | undefined, empty: Record<string, T>): Record<string, T>;
-    /** Groups the rows by the query's column, each group in query order. */
+    /**
+     * The rows grouped by their value in the query's column, as a map from value to rows, each group in the query's
+     * order.
+     */
     grouped(): Map<string, Row[]>;
 }
-/** Queries a table and shapes the result in one expression. Created by {@link rowsOf}. */
+/**
+ * Queries one table and returns the rows with methods to shape them, as {@link rowsOf} creates it. A read whose
+ * `select` uses it depends on the whole partition, since it reads the table directly.
+ */
 export interface RowReader<Row extends RowShape> {
-    /** The rows matching `filter`, in storage order unless `opts` sorts them. */
+    /**
+     * The rows whose columns equal the values in `filter`, in storage order unless `opts.orderBy` names a column to sort
+     * by.
+     */
     where(filter: Partial<Row>, opts?: FindOpts<Row>): RowSet<Row>;
     /**
-     * The rows matching `filter` whose `column` is one of `values`, which can be shaped in `values` order or keyed by
-     * `column`.
+     * The rows whose columns equal the values in `filter` and whose `column` is one of `values`, such as the rows for a
+     * list of player ids. The result can be put in the order of `values` (`ordered`) or keyed by `column` (`indexed`).
      */
     in(filter: Partial<Row>, column: StringColumn<Row>, values: readonly string[]): IdRowSet<Row>;
-    /** Rows from elsewhere, such as a SQL query, with the same shapes. */
+    /** Wraps rows that came from somewhere else, such as a SQL query, so they have the same shape methods. */
     given(rows: readonly Row[]): RowSet<Row>;
 }
-/** Creates a {@link RowReader} for a table, which a hydration uses in place of the table itself. */
+/**
+ * Creates a {@link RowReader} for a table: query methods that return the rows with methods to shape them. A store's
+ * read code uses it in place of the table's own `find` and `findIn`.
+ */
 export declare function rowsOf<Row extends RowShape>(table: RowTable<Row>): RowReader<Row>;
 export {};
 //# sourceMappingURL=row_shaping.d.ts.map

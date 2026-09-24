@@ -1,20 +1,33 @@
 /**
- * Dependency tracking: each version read (`version.get` and the like) reports what it read to the enclosing tracking
- * scope, which subscribes to it. A getter must do this on every call, cache hits included, or a derivation using it
- * won't update.
+ * Dependency tracking: how a computation learns what store data it used, so it can re-run when that data changes.
+ *
+ * A tracking scope is code run through `runTracked` (which `useValue` reads, `useTrackedStores` and tracked selectors
+ * all use). Every time code inside it reads a version number (a partition's, a unit's, or a partition's presence), the
+ * read reports a dependency to the scope; the scope then subscribes to exactly those, and re-runs when one changes. A
+ * getter must report its dependencies on every call, cache hits included, or a computation using it won't update.
  */
 
 import { GROUP_SEP, KEY_SEP, partitionLabel } from '../args_key';
 import { createOnceGuard } from '../diagnostics/once_guard';
 import { renderPhaseOwnerStack } from './render_phase';
 
-/** Something a tracked read depended on: a partition, one unit of it, or its presence. */
+/**
+ * One thing a computation in a tracking scope read, which the scope subscribes to: a partition's version, one unit's
+ * version within a partition, or a partition's presence (whether it has rows). A partition is the set of rows one fetch
+ * returns and replaces; a unit is all the rows sharing one value of the table's unit column.
+ */
 export interface Dep {
-  /** Identifies the dependency, so a scope can compare what it read against what it subscribed to last time. */
+  /**
+   * A string identifying the dependency (store, partition, and unit or presence), so a scope can compare what it read
+   * this time with what it subscribed to last time, and change only the subscriptions that differ.
+   */
   id: string;
-  /** Calls `listener` when it changes, returning an unsubscribe. */
+  /** Calls `listener` whenever the dependency's version changes, and returns a function that unsubscribes it. */
   subscribe: (listener: () => void) => () => void;
-  /** Its current version, for noticing a change between the read and the subscribe. */
+  /**
+   * The dependency's current version number. A scope records it when reading and checks it again after subscribing, so
+   * a write that landed in between isn't missed.
+   */
   getVersion: () => number;
 }
 
@@ -23,8 +36,10 @@ const sinkStack: Map<string, Dep>[] = [];
 let subscribedDepth = 0;
 
 /**
- * Runs `fn`, marking its reads as already subscribed to by hand, which silences the dev warning about reading during
- * render without subscribing.
+ * Runs `fn` and returns its result, marking the store reads inside it as already subscribed to by the caller. In dev,
+ * reading store data during render outside any tracking scope logs a warning, since nothing would re-render the
+ * component when that data changes; use this where the component does subscribe another way, such as with a version
+ * hook.
  */
 export function runSubscribed<T>(fn: () => T): T {
   subscribedDepth += 1;
@@ -36,9 +51,14 @@ export function runSubscribed<T>(fn: () => T): T {
 }
 
 /**
- * Reports a dependency to the enclosing tracking scope; this is how `version.get` makes a read visible to
- * {@link runTracked}. Outside any scope, in dev, a read during render that nothing subscribes to logs a warning naming
- * the partition and the component.
+ * Reports a dependency to the innermost enclosing tracking scope, which will subscribe to it; this is how `version.get`
+ * and the other version reads make themselves visible to {@link runTracked}. A tracking scope is code run through
+ * `runTracked` (which `useValue` reads, `useTrackedStores` and tracked selectors all use): every version number read
+ * inside it is recorded as a dependency, and the scope re-runs when one of them changes.
+ *
+ * Outside any scope it records nothing; in dev, if that happens during a component's render and nothing marked the read
+ * as subscribed, it logs a warning naming the partition and the component, since the component won't re-render when the
+ * data changes.
  */
 export function trackDependency(dep: Dep): void {
   const sink = sinkStack[sinkStack.length - 1];
@@ -68,14 +88,17 @@ function warnIfUnsubscribedRenderRead(dep: Dep): void {
   );
 }
 /**
- * Runs `fn` in a tracking scope, returning its value and what it read, for a caller that subscribes to those itself,
- * such as `useTrackedStores`. An inner scope doesn't pass its dependencies to the outer one; call `trackDependency` on
- * each to forward them.
+ * Runs `fn` as a tracking scope and returns its result together with its dependencies: every version number `fn` read
+ * (partitions, units, presence), each once. It doesn't subscribe to anything itself; the caller does, as `useValue`,
+ * `useTrackedStores` and tracked selectors do.
+ *
+ * Scopes nest, and the dependencies of an inner scope aren't passed to the outer one automatically: to make the outer
+ * scope depend on them too, call `trackDependency` with each.
  */
 export function runTracked<T>(fn: () => T): {
   /** What `fn` returned. */
   value: T;
-  /** What `fn` read. */
+  /** Every version number `fn` read, each once, for the caller to subscribe to. */
   deps: Dep[];
 } {
   const sink = new Map<string, Dep>();
@@ -89,8 +112,9 @@ export function runTracked<T>(fn: () => T): {
 }
 
 /**
- * Whether a scope is collecting dependencies right now, for deciding whether a warning is warranted: deps collected
- * with nothing above them reach no subscriber. Not for branching real behaviour on — a read reports itself either way.
+ * Whether code is running inside a tracking scope right now, so a dependency reported now would be subscribed to. For
+ * deciding whether to warn that a read will never re-render anything; not for changing what a read does, since a read
+ * reports its dependencies either way.
  */
 export function isTracking(): boolean {
   return sinkStack.length > 0;

@@ -1,107 +1,182 @@
-/** Declares a store that runs on SQLite everywhere: the device's on mobile, and sql.js on web and in tests. */
+/**
+ * Declares a store: a SQLite table of rows plus the reads, pushes and lifecycle functions built over it. A store runs
+ * on SQLite everywhere (the device's SQLite on mobile, and sql.js, SQLite compiled to WebAssembly, on web and in
+ * tests), and can move between databases during a session without its callers noticing.
+ */
 import { VersionAtom } from './reactivity/version_atom';
 import { RowShape, RowTable, RowTableSchema } from './table/types';
 import { NativeShredSpec } from './write/shred_spec';
 import { SqliteConnection } from './table/connection';
-/** Things a store builds from its database connection besides the row table, such as a ranker that runs its own SQL. */
+/**
+ * Objects a store builds from its database connection besides its row table, such as a ranker that runs its own SQL
+ * queries. They are rebuilt with the rest of the store whenever it moves to another connection, and passed to `build`
+ * as `caps`.
+ */
 export type StoreCapabilities = object;
-/** What a store's `build` returns: its reads, its push functions, and its lifecycle functions. */
+/**
+ * What a store's `build` returns: the store's public functions, in three groups. Callers reach them through the store
+ * (`store.reads.x`), which always points at the surface built over the database the store currently runs on.
+ */
 export interface StoreSurface {
-    /** The store's reads, by name. A facade publishes each as a `use*` hook and a `get*` getter. */
+    /**
+     * The store's reads, by name: each a declared read (from `read`, `readMany` or `readGrouped`) with a `useValue` hook
+     * and a `getValue` getter. A service publishes each one as a `use*` hook and a `get*` getter with `pairRead`.
+     */
     reads: object;
-    /** Functions that write rows handed in from outside a fetch, such as socket frames. */
+    /** Functions that write rows that arrive outside a fetch, such as socket pushes, and tell their readers. */
     push?: object;
-    /** Functions that act on the store as a whole. */
+    /** Functions that act on the store's partitions as a whole, such as fetching, refetching or discarding them. */
     lifecycle?: {
-        /** Forgets what the store has fetched, so every partition reads as never fetched. */
+        /**
+         * Discards the fetch state of every partition, so each is fetched again by its next reader. Called on the old
+         * surface whenever the store moves to another database, since the old fetches wrote rows into the old one.
+         */
         forget?: () => void;
     };
 }
-/** Everything {@link defineSqliteStore} needs to declare a store: its name, its table, and how to build it. */
+/**
+ * Everything {@link defineSqliteStore} needs to declare a store: its name, its table, and how to build its functions.
+ */
 export interface SqliteStoreConfig<Row extends RowShape, Surface extends StoreSurface, Caps extends StoreCapabilities = Record<string, never>> {
-    /** The store's name, used in logs, error reports and its version store. */
+    /** The store's name, such as `player`. It names the store's version atom and appears in logs and error reports. */
     name: string;
-    /** The store's row table. */
+    /**
+     * The declaration of the store's SQLite table: its columns, primary key, unit column, indexes and ETag table. The
+     * table is created, or brought up to date, whenever the store is bound to a database.
+     */
     schema: RowTableSchema<Row>;
     /**
-     * Builds the store's reads, push and lifecycle functions over its row table. Called again each time the store moves
-     * to another connection — bound at startup, reopened after a failure, or moved to its in-memory fallback — so it
-     * must keep nothing outside what it returns.
+     * Builds the store's public functions (reads, push and lifecycle) over its row table, usually by calling
+     * `definePartitions` and declaring reads on the result. `version` is the store's version atom, which is the same one
+     * for the life of the store; `caps` are what `capabilities` built.
+     *
+     * It runs again every time the store moves to another database: at startup, after a failure reopens the database,
+     * and when the store moves to an in-memory database. So it must keep all its state in what it returns, never in
+     * variables outside it, or that state would outlive the database it describes.
      */
     build: (table: RowTable<Row>, version: VersionAtom, caps: Caps) => Surface;
-    /** How the native shred builds this table's rows from a response body; omit it to always build rows in JS. */
+    /**
+     * The store's native shred programs, which let the C++ shredder write a fetched response's rows without building JS
+     * objects for them. Omit it to always build rows in JS with the partition's `parse`.
+     */
     nativeShredSpec?: NativeShredSpec;
-    /** Builds the store's {@link StoreCapabilities} from its connection; `build` receives them as `caps`. */
+    /**
+     * Builds the store's {@link StoreCapabilities} (objects that need the database connection, such as a ranker that runs
+     * its own SQL) each time the store is built over a connection; `build` receives them as `caps`.
+     */
     capabilities?: (conn: SqliteConnection) => Caps;
 }
-/** How a store gets a database back when SQLite fails under it. */
+/**
+ * How a store gets a working database back when a SQLite statement fails during the session. The store first reopens
+ * the database (up to twice per session), then moves to an in-memory database, and only if that fails too runs on
+ * nothing, returning each read's `empty`. Every move rebuilds the store and fetches its partitions again.
+ */
 export interface SqliteRecovery {
-    /** Opens a fresh connection to the same database. */
+    /** Opens a new connection to the same database file, replacing the one that failed. */
     reopen: (options: {
-        /** Deletes the database file first, for one that is corrupt. */
+        /**
+         * Whether to delete the database file first. True when the error says the file is corrupt, so the reopened
+         * database starts empty.
+         */
         discard: boolean;
     }) => SqliteConnection;
-    /** Opens an in-memory database to run the store on when its database file keeps failing. */
+    /** Opens an in-memory database for the store to run on when reopening its file hasn't fixed the failures. */
     fallback?: () => SqliteConnection;
     /**
-     * Called when the store stops using its database file — for the in-memory database, or for nothing — so a later retry
-     * can move it back.
+     * Called when the store stops using its database file, for the in-memory database or for nothing, so the app can
+     * later try to move it back onto the file.
      */
     onLeftFile?: () => void;
 }
 /** Options for {@link SqliteStore.bindSqlite}. */
 export interface BindOptions {
-    /** How to get a working database back if SQLite fails mid-session; without it, a failure leaves the store unbound. */
+    /**
+     * How to get a working database back if a SQLite statement fails later in the session: reopen the file, then move to
+     * an in-memory database. Without it, a failure leaves the store running on nothing, with every read returning its
+     * `empty`.
+     */
     recovery?: SqliteRecovery;
-    /** Builds the store's tables in the connection's temp schema, which `temp_store = MEMORY` keeps in memory. */
+    /**
+     * Creates the store's tables as `TEMP` tables, which live in memory and start empty, instead of in the database file.
+     * Used for the in-memory database a store falls back to.
+     */
     temporary?: boolean;
     /**
-     * Marks the app's startup bind, which should come before the store's first read; one that comes after is reported.
+     * Marks this as the app's startup bind. Startup binds should happen before anything reads the store, since a read
+     * before the bind returns `empty` and paints an empty screen first; a startup bind that comes after a read is
+     * reported.
      */
     startup?: boolean;
 }
 /**
- * A store declared with {@link defineSqliteStore}. `reads`, `push` and `lifecycle` are looked up on the database the
- * store is currently running on at each access, so they follow the store when it moves; keep the store, not a member
- * taken off it.
+ * A store declared with {@link defineSqliteStore}. Until it is bound to a database, it runs on nothing, and every read
+ * returns its `empty`.
+ *
+ * The store can move to a different database during a session (bound at startup, reopened after a failure, moved to an
+ * in-memory database), and each move rebuilds its functions over the new one. `reads`, `push` and `lifecycle` always
+ * point at the current ones, looked up on each access, so code that keeps the store (or `store.reads`) keeps working
+ * across moves.
  */
 export interface SqliteStore<Row extends RowShape, Surface extends StoreSurface> {
-    /** The store's reads, by name. */
+    /**
+     * The store's reads, by name, from the database the store currently runs on: each a declared read with `useValue` and
+     * `getValue`.
+     */
     readonly reads: Surface['reads'];
-    /** The store's functions for writing rows handed in from outside a fetch. */
+    /**
+     * The store's functions that write rows arriving outside a fetch, such as socket pushes, from the current database.
+     */
     readonly push: NonNullable<Surface['push']>;
-    /** The store's functions that act on it as a whole. */
+    /**
+     * The store's functions that act on its partitions as a whole (fetching, refetching, discarding), from the current
+     * database.
+     */
     readonly lifecycle: NonNullable<Surface['lifecycle']>;
     /**
-     * Runs the store on `conn`. What it ran on before forgets what it fetched, and every reader reads again. Throws, and
-     * leaves the store as it was, if the store cannot be built over `conn`.
+     * Moves the store onto the database behind `conn`: creates or updates its table there, builds its functions over it,
+     * discards the fetch state of the database it ran on before, and re-renders every reader so each reads from the new
+     * one (fetching its partitions again). If building over `conn` throws, the store keeps running where it was and the
+     * error is rethrown.
      */
     bindSqlite: (conn: SqliteConnection, options?: BindOptions) => void;
-    /** Functions for tests to run the store over rows they seed. Nothing outside a test calls these. */
+    /** Functions for tests to run the store over rows they write themselves. Nothing outside a test calls these. */
     readonly testing: {
         /**
-         * Builds the store over `conn` without switching to it, returning its surface and the table to seed. Uses the
-         * store's own version store unless `options.version` gives another.
+         * Builds the store's functions over `conn` without switching the store to them, and returns them with the row table
+         * to write test rows into. The functions use the store's own version atom unless `options.version` gives another.
          */
         over: (conn: SqliteConnection, options?: {
-            /** The version store to build over, in place of the store's own. */
+            /**
+             * A version atom for the built functions to use instead of the store's own, such as a test one that records
+             * bumps.
+             */
             version?: VersionAtom;
         }) => {
-            /** The store's reads, push and lifecycle functions over `conn`. */
+            /** The store's reads, push and lifecycle functions, built over `conn`. */
             surface: Surface;
-            /** The row table built over `conn`, to seed rows into. */
+            /** The row table built over `conn`, to write test rows into. */
             table: RowTable<Row>;
         };
-        /** Runs the store on `surface` until the next swap or reset, so the facade reads what the test seeded. */
+        /**
+         * Makes the store's `reads`, `push` and `lifecycle` point at `surface` (from `over`) until the next `swap` or
+         * `reset`, so code under test that reads through the store sees the test's rows.
+         */
         swap: (surface: Surface) => void;
-        /** Returns the store to unbound, so one test's rows don't leak into the next. */
+        /**
+         * Returns the store to its initial state, bound to nothing, so one test's rows and fetches don't leak into the
+         * next.
+         */
         reset: () => void;
     };
 }
 /**
- * Declares a store: a row table plus the reads built over it, run on whatever SQLite database it is bound to. Until a
- * bind, every read returns its declared `empty`. On mobile, a SQLite failure mid-session reopens the database, then
- * moves the store to an in-memory database, and only then leaves it unbound.
+ * Declares a store: a SQLite table of rows (`schema`) plus the reads, pushes and lifecycle functions `build` creates
+ * over it. The store starts bound to nothing, where every read returns its `empty`, until the app binds it to a
+ * database with `bindSqlite` (on a device, through `bindSqliteStore`).
+ *
+ * If a SQLite statement fails later in the session, the store recovers by itself when the bind supplied a
+ * `recovery`: it reopens the database (deleting the file first if it's corrupt), then moves to an in-memory database,
+ * and only then runs on nothing. Each move rebuilds the store and re-renders its readers, which fetch again.
  */
 export declare function defineSqliteStore<Row extends RowShape, Surface extends StoreSurface, Caps extends StoreCapabilities = Record<string, never>>(config: SqliteStoreConfig<Row, Surface, Caps>): SqliteStore<Row, Surface>;
 //# sourceMappingURL=define_sqlite_store.d.ts.map

@@ -1,6 +1,10 @@
 /**
- * Writes rows that arrive by socket push. Pushes are buffered per partition, deduplicated by id, and written in chunks
- * outside the render. A chunk that fails is queued again, unless a newer push with the same id arrived meanwhile.
+ * The push ingest: how a store writes items that arrive by socket push rather than by fetch. Queued items are buffered
+ * per partition (a partition is the set of rows one fetch returns and replaces), with only the latest item kept per id,
+ * and written shortly after, outside the render that received them, with `upsert` in chunks. After a write, the
+ * partitions whose rows changed are bumped with their change sets, so only readers of the changed units re-render. A
+ * chunk that fails to write is queued again and retried after a delay, unless a newer item with the same id arrived
+ * meanwhile.
  */
 
 // The core package, not `@tanstack/react-query`: the same batcher, without pulling React DOM in behind it.
@@ -14,45 +18,66 @@ import { ChangeSet, isUnchanged, NO_CHANGES, unionChanges } from '../table/chang
 const DEFAULT_CHUNK = 250;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
-/** How {@link createPushIngest} writes a store's pushed items. */
+/** How {@link createPushIngest} turns a store's pushed items into rows and tells readers about them. */
 export interface PushIngestConfig<Item, Row extends RowShape, Key> {
-  /** The store's name, shown in warnings. */
+  /** The store's name, used in error reports. */
   name: string;
-  /** The table the rows are written to. */
+  /** The store's row table, which the rows are upserted into. It needs a primary key. */
   table: RowTable<Row>;
-  /** The column values that pick out a partition's rows. */
+  /**
+   * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`: the store's
+   * `key.where`.
+   */
   where: (key: Key) => Partial<Row>;
   /**
-   * The id a pushed item is deduplicated by; of several queued items with one id, only the last is written. It must
-   * differ for any two items that should both be written.
+   * The id a queued item is deduplicated by within its partition: when several items with the same id are queued before
+   * a write, only the latest is written. Two items that should both be written need different ids, such as a stat
+   * line's own id rather than its player's.
    */
   idOf: (item: Item) => string;
-  /** Turns a partition's queued items into rows. */
+  /**
+   * Turns a batch of a partition's queued items into table rows. Every row must belong to that partition; an item can
+   * produce no rows, and is then skipped.
+   */
   toRows: (key: Key, items: readonly Item[]) => Row[];
-  /** Tells the partition's readers which units a write changed. Not called for a write that changed nothing. */
+  /**
+   * Tells the partition's readers about a write, with its change set: the unit value (such as a `player_id`) of each
+   * row that was new or different. Only readers of the whole partition and of those units re-render. Not called for a
+   * write that changed nothing.
+   */
   bump: (key: Key, changes: ChangeSet) => void;
-  /** Called for each partition a write changed, before its readers update, such as to drop the partition's ETag. */
+  /**
+   * Called for each partition whose rows a write changed, before `bump`, such as to delete the partition's ETag so the
+   * next fetch downloads a full body instead of getting a 304 that would miss the pushed rows.
+   */
   onWrite: (key: Key) => void;
-  /** How many rows to write per transaction; 250 by default. */
+  /** How many rows to write per transaction; 250 by default. The JS thread is given back between transactions. */
   chunk?: number;
-  /** How long to wait before retrying a failed write, in ms; 1000 by default. */
+  /** How long to wait before retrying items whose write failed, in ms; 1000 by default. */
   retryDelayMs?: number;
 }
 
-/** A store's buffer for pushed items, created by {@link createPushIngest}. */
+/** A store's buffer for pushed items, as {@link createPushIngest} creates it. */
 export interface PushIngest<Item, Key> {
-  /** Queues one pushed item for the partition; queued items are written together shortly after. */
+  /**
+   * Queues one pushed item for the partition the key names. Queued items are written together, soon after and outside
+   * the current render; an item replaces any queued item with the same id.
+   */
   queue: (key: Key, item: Item) => void;
   /**
-   * Holds the partition's queued items until the returned function is called, then writes them. Used while a fetch
-   * replaces the partition, as `fetch.holdWrites`. Holds can overlap, and calling the release twice is harmless.
+   * Holds the partition's queued items (they stay queued and unwritten) until the returned function is called, which
+   * then writes them. Pass it as the partition's `fetch.holdWrites`: a fetch replaces the whole partition, so an item
+   * written while the request was in flight would be overwritten by the older response. Holds on one partition can
+   * overlap, and the items are written once every hold is released; calling a release twice does nothing.
    */
   hold: (key: Key) => () => void;
 }
 
 /**
- * Creates the buffer for a store whose rows arrive by socket push. A burst of pushes is written once per row rather than
- * once per push, and outside the render that received them, so readers update a frame after the write finishes.
+ * Creates the push ingest for a store whose rows (also) arrive by socket push. Items are queued per partition, with
+ * only the latest kept per id, and written together shortly after with `upsert`, outside the render that received
+ * them: a burst of pushes costs one write per row rather than one per push. Readers of the changed units re-render
+ * once the write finishes.
  */
 export function createPushIngest<Item, Row extends RowShape, Key>(config: PushIngestConfig<Item, Row, Key>): PushIngest<Item, Key> {
   const { name, table, where, idOf, toRows, bump, onWrite } = config;

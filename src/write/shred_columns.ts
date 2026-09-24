@@ -1,23 +1,49 @@
 /**
- * Column lists that a store's SQLite columns, native shred program, and JS row builder are all generated from, so one
- * entry defines a column everywhere.
+ * A table's columns, declared once as a list and turned into everything else that has to agree with them. A store
+ * needs its columns in three places: the table's schema (names and SQLite types), the JS row builder (how each value is
+ * computed from a response element), and the native shred program (the same computation, as an op the C++ shredder
+ * runs). Declaring each column once, with all three, keeps them from drifting apart.
  */
 
 import { ColumnDef, ColumnType, SqlValue } from '../table/types';
 import { ShredOp } from './shred_spec';
 
-/** One column of a table, and how to fill it from an element of a response. */
+/**
+ * One column of a store's table, declared with everything needed to fill it: its name and SQLite type, and how to
+ * compute its value from one element of a response body, both in JS (`js`) and for the native C++ shredder (`op`).
+ * An element is one item of the response: one player in a players response, one stat line in a stats response.
+ */
 export interface ShredColumn<Src, Ctx = void> {
-  /** The column's name. */
+  /** The column's name in the SQLite table, and the field's name on the row object. */
   name: string;
-  /** The column's SQLite type. */
+  /**
+   * The column's SQLite type: `TEXT` for strings and JSON, `INTEGER` for whole numbers and booleans (0 or 1), `REAL`
+   * for other numbers.
+   */
   type: ColumnType;
-  /** Makes the column `NOT NULL`. */
+  /**
+   * Declares the column `NOT NULL`, so SQLite rejects any write of a row that leaves it null, and the write fails. The
+   * same check runs in tests, so a row builder that misses the column fails in a test the way it would on a device.
+   */
   notNull?: boolean;
-  /** Computes the column's value from one element, in JS. Used on web, in tests, and wherever there is no `op`. */
+  /**
+   * Computes this column's value for one element of a response body, in JS. `src` is the element (such as one
+   * player), and `ctx` is whatever the store passes for the whole write (such as the league being fetched). The
+   * returned value is what's stored.
+   *
+   * Rows are built with these functions on web, in tests, and on a device whenever the native shredder can't be used.
+   * The TypeScript row type comes from their return types, so each should declare one.
+   */
   js: (src: Src, ctx: Ctx) => SqlValue;
   /**
-   * How the native shredder computes the same value; a parity test checks the two agree. Only needed to shred natively.
+   * The same computation as `js`, written as an instruction for the native C++ shredder, which can't run JS. An op
+   * names one of a fixed set of extractions and where in the element to read from: `{ op: 'text', path: 'team' }`
+   * stores `element.team` if it's a string, and null otherwise. The shredder runs every column's op on every element
+   * to build each row without creating JS objects.
+   *
+   * It must produce exactly what `js` returns for the same element, including when a field is missing; a parity test
+   * runs both on sample elements. Only needed for a store that shreds natively; the native ops (`namedOps`, `ops`)
+   * exist only when every column has one.
    */
   op?: ShredOp;
 }
@@ -25,7 +51,11 @@ export interface ShredColumn<Src, Ctx = void> {
 /** The type a column resolves to when its `js` builder returns `any`, which would switch off checking for it. */
 type AnnotateTheBuilder = 'this column`s js builder returns any: give it an explicit return type';
 
-/** The row type of a column list: a field per column, typed by what its `js` returns. */
+/**
+ * The TypeScript type of one row built from a column list: an object with one field per column, named by the column's
+ * `name` and typed by what its `js` function returns. A column whose `js` returns `any` gets an error string as its
+ * type instead, so the missing return type gets noticed.
+ */
 export type RowOf<Columns extends readonly ShredColumn<never, never>[]> = {
   [Column in Columns[number] as Column['name']]: 0 extends 1 & ReturnType<Column['js']> ? AnnotateTheBuilder : ReturnType<Column['js']>;
 };
@@ -37,24 +67,37 @@ type ColumnDefsOf<Columns extends readonly ShredColumn<never, never>[]> = {
 
 /** What {@link defineShredColumns} generates from a column list, whether or not every column has an `op`. */
 interface ShredColumnsBase<Columns extends readonly ShredColumn<never, never>[], Src, Ctx> {
-  /** The column list itself, for building a program from these columns and others. */
+  /** The column list as it was declared, for building a native shred program from these columns plus others. */
   columns: Columns;
-  /** The column names in order, for a `ShredSpec`'s `columns`, which must match the order of its `ops`. */
+  /**
+   * The column names, in declared order. Use it as a native shred program's `columns`, alongside `ops`, which comes
+   * from the same list in the same order, so `ops[i]` always computes `names[i]`.
+   */
   names: string[];
-  /** The columns as a `RowTableSchema['columns']` map, for the table's schema. */
+  /**
+   * The columns' SQLite declarations (type, and `NOT NULL` where set), as a map by name: the `columns` of the table's
+   * `RowTableSchema`. The table's columns then come from the same list as the row builder and the shred program.
+   */
   columnDefs: ColumnDefsOf<Columns>;
   /**
-   * Builds one row from one element by running every column's `js`. A store's `parse` uses it, and it is how rows are
-   * built on web and in tests, where nothing shreds natively.
+   * Builds one table row from one element of a response body, in JS: runs every column's `js` function on the element
+   * and `ctx`, and returns an object with each column's value. A store's `parse` uses it for every element, which is
+   * how rows are built on web, in tests, and on a device when the native shred can't run.
    */
   row: (src: Src, ctx: Ctx) => RowOf<Columns>;
 }
 
-/** The ops for a native shred program, present only when every column has an `op`. */
+/** The parts of a native shred program generated from a column list; present only when every column has an `op`. */
 interface NativeShredColumns {
-  /** Each column's name and op, in order, for a program combining these columns with others. */
+  /**
+   * Each column's name and op, in declared order. Use it to build a program from these columns plus others, then split
+   * the combined list into the program's `columns` and `ops`.
+   */
   namedOps: { name: string; op: ShredOp }[];
-  /** Each column's op, in order, for a program using only these columns. */
+  /**
+   * Each column's op, in declared order: a native shred program's `ops`, used with `names` as its `columns`, so
+   * `ops[i]` computes `names[i]`.
+   */
   ops: ShredOp[];
 }
 
@@ -66,15 +109,17 @@ interface NativeShredColumns {
 type EveryColumnShreds<Columns extends readonly ShredColumn<never, never>[]> = Columns[number] extends { op: ShredOp } ? true : false;
 
 /**
- * Everything {@link defineShredColumns} generates from a column list: the schema columns, the row builder and, when
- * every column has an `op`, the native ops.
+ * Everything {@link defineShredColumns} generates from one column list: the table's column declarations
+ * (`columnDefs`), the column names (`names`), the JS row builder (`row`), and, when every column has an `op`, the
+ * ops for a native shred program (`ops`, `namedOps`).
  */
 export type ShredColumns<Columns extends readonly ShredColumn<never, never>[], Src, Ctx> = ShredColumnsBase<Columns, Src, Ctx> &
   (EveryColumnShreds<Columns> extends true ? NativeShredColumns : unknown);
 
 /**
- * Generates a table's schema columns, JS row builder and native shred ops from one column list. Pass the element and
- * context types first, then the columns:
+ * Generates everything that has to agree with a table's columns from one list of {@link ShredColumn}s: the schema's
+ * column declarations, the JS row builder, and the native shred program's names and ops. Call it with the element type
+ * (one item of the response) and the context type (what the store passes per write) first, then the column list:
  *
  * ```ts
  * const itemShred = defineShredColumns<Item, ItemShredCtx>()(ITEM_SHRED_COLUMNS);

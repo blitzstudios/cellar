@@ -1,53 +1,70 @@
-/** The result every store read returns: a subset of React Query's `UseQueryResult`, which an RQ result satisfies. */
+/**
+ * `DataResult`, what every store read's hook returns: its value and the state of the fetch behind it. Its fields are
+ * a subset of React Query's `UseQueryResult`, so a React Query result can be used wherever a `DataResult` is expected.
+ */
 
 import { PrimeState } from './prime_state';
 
-/** A read's status, with React Query's names, so a screen can switch on it the same way for either. */
+/**
+ * A read's status: `loading` while its first fetch is in flight with no rows yet, `error` if that fetch failed, and
+ * otherwise `success`. The same names as React Query's, so a screen handles both the same way.
+ */
 export type DataStatus = 'loading' | 'success' | 'error';
 
 /**
- * What a read's hook returns: the value and the state of the fetch behind it. These are the fields of React Query's
- * result that screens use, so a call site can switch between a `useQuery` and a store read without changes.
+ * What a read's `useValue` hook returns: the read's value, and the state of the fetch of its partitions (a partition
+ * is the set of rows one fetch returns and replaces). These are the fields of React Query's result that screens use, so
+ * a call site can switch between a `useQuery` and a store read without changes.
  */
 export interface DataResult<T> {
-  /** The read's value, or its `empty` while there are no rows yet or the read is disabled. */
+    /**
+   * The read's value: what its `select` computed from the partition's rows, or the read's `empty` while the partition
+   * has no rows yet, the read is disabled, or its args are missing a value.
+   */
   data: T;
-  /**
-   * `loading` while the first fetch is in flight and there are no rows yet, `error` if that fetch failed, and
-   * otherwise `success`, including for a disabled read.
+    /**
+   * `loading` while the partition's first fetch is in flight and it has no rows yet, `error` if that fetch failed and
+   * it still has no rows, and otherwise `success`. Rows already stored count as `success` even while a refetch runs or
+   * fails, and a disabled read is always `success`.
    */
   status: DataStatus;
-  /** Whether `status` is `loading`. */
+    /** Whether `status` is `loading`: the first fetch is in flight and the partition has no rows yet. */
   isLoading: boolean;
-  /**
-   * Whether a fetch is in flight, including a background refetch. Correct when read, but a change in it alone does
-   * not re-render the screen; see {@link PrimeState.isFetching}.
+    /**
+   * Whether a fetch of the partition is in flight, including a refetch of rows already shown. Correct whenever the
+   * component renders, but a change in it doesn't cause a render by itself: a refetch starting and finishing would
+   * otherwise re-render every reader of the partition twice. A spinner that must track a background refetch needs its
+   * own trigger.
    */
   isFetching: boolean;
-  /** Whether `status` is `success`. */
+    /** Whether `status` is `success`: the partition has rows, or the read is disabled, or there is nothing to fetch. */
   isSuccess: boolean;
-  /** Whether `status` is `error`. */
+    /** Whether `status` is `error`: the partition's first fetch failed and it has no rows. */
   isError: boolean;
-  /** Fetches the partition again. */
+    /** Fetches the read's partitions again now, however recently they were fetched. */
   refetch: () => void;
 }
 
-/** The names of every {@link DataResult} field, which the app's lint rule uses to check which fields a screen reads. */
+/**
+ * The names of every {@link DataResult} field. The app's lint rule reads this list to check which fields a screen takes
+ * from a read, so the rule and the type can't drift apart.
+ */
 export const DATA_RESULT_KEYS = ['data', 'status', 'isLoading', 'isFetching', 'isSuccess', 'isError', 'refetch'] as const satisfies readonly (keyof DataResult<unknown>)[];
 
 const NOOP_REFETCH = (): void => {};
 
 /**
- * Builds a {@link DataResult} from a value and a status, deriving the `is*` flags from the status. For a hook the
- * kernel's reads can't express, such as one returning a result per item in a list; declared reads already return one.
+ * Builds a {@link DataResult} from a value and a status, setting `isLoading`, `isSuccess` and `isError` from the
+ * status. For a hook that returns a `DataResult` without being a declared read, such as one that returns a result per
+ * item in a list; declared reads already return one.
  */
 export function makeResult<T>(
   data: T,
   status: DataStatus,
   opts?: {
-    /** Whether a fetch is in flight; defaults to whether `status` is `loading`. */
+        /** The result's `isFetching`: whether a fetch is in flight. Defaults to whether `status` is `loading`. */
     isFetching?: boolean;
-    /** What `refetch` calls; does nothing by default. */
+        /** The function the result's `refetch` calls. Defaults to a function that does nothing. */
     refetch?: () => void;
   },
 ): DataResult<T> {
@@ -63,7 +80,11 @@ export function makeResult<T>(
   };
 }
 
-/** The status a read reports: rows present outrank the fetch, and a push-fed store settles on `success`. */
+/**
+ * A read's status from its state: `success` when it is disabled or has rows (whatever its fetch is doing), otherwise
+ * `error` if the fetch failed, `loading` if the first fetch is in flight, and `success` if there is no fetch (a store
+ * fed only by pushes).
+ */
 export function offHeapStatus(enabled: boolean, hasData: boolean, prime: PrimeState): DataStatus {
   if (!enabled) return 'success';
   if (hasData) return 'success';

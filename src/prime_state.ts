@@ -1,24 +1,30 @@
 /**
- * The state of the fetch behind a read's partitions: whether it is loading for the first time, in flight, or failed.
+ * The state of the fetch of a read's partitions (a partition is the set of rows one fetch returns and replaces),
+ * as the fetch hooks return it: whether the first fetch is in flight, whether any fetch is, and whether it failed. For
+ * several partitions, loading or fetching if any is, and failed only if all failed.
  */
 export interface PrimeState {
-  /** Whether the first fetch is in flight and nothing has loaded yet. */
+  /** Whether the partition's first fetch is in flight, with nothing fetched yet. */
   isInitialLoading: boolean;
   /**
-   * Whether a fetch is in flight, including a background refetch. Correct when read, but a change in it alone does
-   * not re-render the reader; see `NOTIFY_ON_PRIME_STATE`. A spinner for a background refetch needs its own trigger;
-   * one shown only before anything has loaded should use `isInitialLoading`.
+   * Whether a fetch of the partition is in flight, including a refetch of rows already fetched. Correct whenever the
+   * component renders, but a change in it doesn't cause a render by itself: a refetch starting and finishing would
+   * otherwise re-render every reader of the partition twice. A spinner shown only before anything has loaded should use
+   * `isInitialLoading`; one that must track a background refetch needs its own trigger.
    */
   isFetching: boolean;
-  /** Whether the last fetch failed. */
+  /** Whether the partition's last fetch failed. */
   isError: boolean;
 }
 
 /**
- * The state of a partition with no fetch behind it: what `NO_PRIMING` hands a push-fed store's reads, and what a stub
- * ingest returns in a test. A read over one reports `success` rather than `loading`, however empty the partition is.
+ * The fetch state of a partition that nothing fetches (in a store fed only by pushes, or a stub in a test): not
+ * loading, not fetching, not failed. A read of such a partition reports `success`, even while it has no rows.
  */
 export const PRIME_IDLE: PrimeState = { isInitialLoading: false, isFetching: false, isError: false };
 
-/** The prime hook a push-fed store gets. Bind it once in place of the real hook, never branch at call time. */
+/**
+ * The fetch hook used in place of a real one by a store fed only by pushes: fetches nothing and returns
+ * {@link PRIME_IDLE}. Chosen once when the store is built, so every render calls the same hook.
+ */
 export const NO_PRIMING = (): PrimeState => PRIME_IDLE;

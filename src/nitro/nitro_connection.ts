@@ -1,7 +1,7 @@
 /**
- * The {@link SqliteConnection} for devices, over `react-native-nitro-sqlite`. It opens a store's database file, sets the
- * pragmas stores rely on, and passes native shreds to our fork's C++. A store whose file won't open is reported rather
- * than throwing, and runs on an in-memory database instead.
+ * The {@link SqliteConnection} for devices, over `react-native-nitro-sqlite`. It opens a store's database file, sets
+ * the pragmas stores rely on, and passes native shreds to our fork's C++. A store whose file won't open is reported
+ * rather than throwing, and runs on an in-memory database instead.
  */
 
 import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
@@ -22,7 +22,10 @@ function toNativeParams(params?: ReadonlyArray<unknown>): Array<string | number 
   });
 }
 
-/** Every connection this module has open, with the handles to close it by: nitro addresses a handle by name, not by object. */
+/**
+ * Every connection this module has open, with the handles to close it by: nitro addresses a handle by name, not by
+ * object.
+ */
 const openConnections = new Map<string, { conn: SqliteConnection; handles: ReadonlyArray<{ close(): void }> }>();
 
 /** Every database connection this module has open, by name, such as for a dev tool that dumps them. */
@@ -164,7 +167,10 @@ function openReader(name: string): ReturnType<typeof openSecondary> | undefined 
 
 /** Options for {@link openNitroConnection}. */
 export interface NitroConnectionOptions {
-  /** Opens a second, read-only handle, so reads don't wait behind writes. */
+    /**
+   * Also opens a second, read-only handle to the same database file, and runs reads on it, so a read doesn't wait for
+   * a write in progress on the main handle (such as a large fetch being written).
+   */
   dedicatedReader?: boolean;
   /**
    * Builds rows in JS instead of with the native JSON shredder. For a remote switch, since a response the native
@@ -271,7 +277,9 @@ interface StoreBinding {
 /** Stores off their database file — on the in-memory fallback, or unbound — by database name. */
 const offFile = new Map<string, StoreBinding>();
 const retriesByDb = new Map<string, number>();
-/** Each retry that fails again costs a full refetch of the store, so a database that never opens stops being retried. */
+/**
+ * Each retry that fails again costs a full refetch of the store, so a database that never opens stops being retried.
+ */
 const MAX_RETRIES = 3;
 
 /**
@@ -307,10 +315,10 @@ export interface BindSqliteStoreOptions extends NitroConnectionOptions {
 }
 
 /**
- * Opens the database file `dbName` and binds `store` to it, at app startup. If it won't open, the file is deleted
- * and opened again from empty, since it only caches server data. If that fails too, the store runs on an in-memory
- * database until {@link retrySqliteStores} gets it back on the file. A failure later in the session reopens the
- * database, and otherwise moves the store to the in-memory database.
+ * Opens the database file `dbName` and binds `store` to it, at app startup; `label` names the store in reports. If the
+ * file won't open, it is deleted and opened again from empty, since it only caches server data. If that fails too, the
+ * store runs on an in-memory database until {@link retrySqliteStores} gets it back on the file. A failure later in the
+ * session reopens the database, and otherwise moves the store to the in-memory database.
  */
 export function bindSqliteStore(label: string, dbName: string, store: BindableStore, opts: BindSqliteStoreOptions = {}): void {
   const binding: StoreBinding = { label, dbName, store, opts: { dedicatedReader: opts.dedicatedReader, shredInJs: opts.shredInJs } };

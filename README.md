@@ -34,7 +34,7 @@ same engine compiled to WebAssembly, through `./sqljs`. Tests use sql.js too, th
 
 ```jsonc
 // package.json
-"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.2-gitpkg"
+"@sleeperhq/react-data-kernel": "blitzstudios/react-data-kernel.git#react-data-kernel-v0.10.3-gitpkg"
 ```
 
 ## Quick start

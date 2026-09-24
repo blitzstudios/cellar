@@ -1,27 +1,34 @@
 /**
- * A replacement for Reselect's `createSelector`, for a Redux selector that reads store data, usually by calling a
- * service in its `resultFn`. Reselect only re-runs when its inputs change, so it would keep a stale result after a
- * write. This one also re-runs when anything `resultFn` read from a store changes.
+ * `createTrackedSelector`, a replacement for Reselect's `createSelector` for a Redux selector that reads store data,
+ * usually by calling a service getter in its `resultFn`. Reselect caches on its inputs only, so such a selector would
+ * keep returning its old result after a store write. This one also records every store version `resultFn` read, and
+ * recomputes when one of those changes.
  */
 
 import { Dep, isTracking, runTracked, trackDependency } from './tracking';
 
-/** One entry in the `inputs` array: takes the selector's own arguments and returns a value `resultFn` receives. */
+/**
+ * One entry in a tracked selector's `inputs`: a function called with the selector's own arguments (such as Redux state
+ * and props), whose return value is passed to `resultFn`. The selector recomputes when any input's value changes.
+ */
 export type InputSelector<Args extends readonly unknown[], T = unknown> = (...args: Args) => T;
 
-/** Whether two values of an input are equal, so the cached result can be reused. */
+/** Compares an input's previous and new value; when every input is equal, the selector can return its cached result. */
 export type EqualityFn = (left: unknown, right: unknown) => boolean;
 
 /** Options for {@link createTrackedSelector}. */
 export interface TrackedSelectorOptions {
   /**
-   * How input values are compared; `Object.is` by default. Pass a shallow or deep compare for inputs rebuilt on every
-   * call.
+   * How an input's previous and new values are compared; `Object.is` by default. Pass a shallow or deep comparison for
+   * an input that returns a newly built object or array on every call, or the selector would recompute every time.
    */
   inputEqual?: EqualityFn;
-  /** The selector's name in the dev warning about being called outside a tracking scope. */
+  /**
+   * The selector's name in the dev warning shown when it reads store data outside a tracking scope (where nothing would
+   * re-render when that data changes). Defaults to the list of partitions it read.
+   */
   debugLabel?: string;
-  /** How many argument sets to cache results for; 8 by default. */
+  /** How many sets of arguments to cache a result for at once; 8 by default. The least recently used is dropped. */
   cacheMax?: number;
 }
 
@@ -35,9 +42,13 @@ interface CacheEntry<R> {
 }
 
 /**
- * Creates a selector that calls `resultFn` with the values of `inputs`, caching the result per argument set until an
- * input changes or something `resultFn` read from a store changes. Call it inside a tracking scope, such as a
- * `useTrackedStores` component or a `useValue` hook; elsewhere its results are correct but a write re-renders nothing.
+ * Creates a selector, like Reselect's `createSelector`, that calls `resultFn` with the values of `inputs` and caches
+ * the result per set of arguments. The cached result is reused until an input's value changes or a store version
+ * `resultFn` read changes (a partition or unit it looked at was written).
+ *
+ * Each call also reports the store data `resultFn` read to the enclosing tracking scope, so a component calling it
+ * inside `useTrackedStores` or a `useValue` computation re-renders when that data changes. Called outside any tracking
+ * scope, its results are still correct, but nothing re-renders on a write; dev logs a warning.
  */
 export function createTrackedSelector<Args extends readonly unknown[], V1, R>(
   inputs: readonly [InputSelector<Args, V1>],

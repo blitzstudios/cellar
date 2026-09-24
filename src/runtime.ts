@@ -10,7 +10,7 @@ import { createOnceGuard } from './diagnostics/once_guard';
 export interface CaptureContext {
   /** Searchable tags, such as the store's name. */
   tags?: Record<string, string>;
-  /** Groups reports into one issue. */
+    /** Sentry's grouping key: reports with the same fingerprint are collected into one issue. */
   fingerprint?: string[];
   /** Details attached to the report. */
   extra?: Record<string, unknown>;
@@ -39,15 +39,19 @@ export type QueryKey = readonly (string | undefined)[];
 export interface QuerySpec<T> {
   /** The partition's query key. */
   queryKey: QueryKey;
-  /** Fetches the partition and writes its rows. */
+    /** Fetches the partition and writes its rows to the table, resolving with the new version and the rows written. */
   queryFn: () => Promise<T>;
-  /** Whether the query should run. */
+    /** Whether the query may fetch; false while the read is disabled or its args don't name a partition yet. */
   enabled?: boolean;
   /** How long a fetched partition counts as fresh, in ms. */
   staleTime?: number;
   /** How long an unused query stays cached, in ms. */
   cacheTime?: number;
-  /** Which result fields re-render the caller when they change. */
+    /**
+   * The result fields whose changes re-render the caller. The kernel passes `isInitialLoading` and `isError` only, so
+   * a refetch starting and finishing doesn't re-render every reader of the partition; new rows re-render them through
+   * the partition's version instead.
+   */
   notifyOnChangeProps?: readonly string[];
 }
 
@@ -96,21 +100,30 @@ export interface QueryRuntime {
 }
 
 /**
- * Tells reads whether they are live, meaning they take writes and update. A read that isn't live keeps its last value
- * until it is live again. The app decides what makes a read not live, such as its screen being blurred.
+ * A read gate: tells the reads in one part of the app (typically one screen) whether they are live. A live read is
+ * subscribed to its data: it recomputes and re-renders when a write changes what it read. A read that isn't live is
+ * unsubscribed and keeps returning its last value, so a screen nobody is looking at does no work on writes; when the
+ * gate turns live again, each read re-renders once if its data changed meanwhile. The app decides what makes a gate
+ * not live, such as its screen being blurred or the app being in the background.
  *
- * It is a getter and a listener rather than a hook's return value, because it controls whether a read subscribes to
- * writes, not whether it renders. If a change in it re-rendered reads, every screen in the stack would re-render on
+ * It is a getter and a listener rather than a hook's return value, because it controls whether reads subscribe, not
+ * whether they render: if a change in it re-rendered reads, every screen in the navigation stack would re-render on
  * each navigation.
  */
 export interface ReadGate {
-  /** Whether reads under this gate are live. */
+    /** Whether reads under this gate are live now: subscribed to their data, and re-rendering when it changes. */
   isLive: () => boolean;
-  /** Subscribes to changes in `isLive`, returning an unsubscribe. The listener must not re-render its caller. */
+    /**
+   * Calls `listener` whenever `isLive` changes, in either direction, and returns a function that unsubscribes it. It
+   * must not re-render the component that subscribed; the reads resubscribe or unsubscribe themselves.
+   */
   onChange: (listener: () => void) => () => void;
 }
 
-/** The app's policy for when reads are live. */
+/**
+ * The app's policy for when reads are live: a hook that gives each component the read gate it belongs to. A live read
+ * is subscribed to its data and re-renders when it changes; a read that isn't live keeps its last value.
+ */
 export interface ReadGateRuntime {
   /**
    * Returns the gate for the component calling it, typically its screen's, read from context. Must return the same
@@ -121,11 +134,11 @@ export interface ReadGateRuntime {
 
 /** The services the app provides to the kernel. */
 export interface DataKernelRuntime {
-  /** Where error reports go. */
+    /** Where the kernel's error reports and notices go, such as Sentry. */
   errors: ErrorSink;
-  /** The React Query runtime fetches run on. */
+    /** The React Query hooks and client the stores' partition fetches run on. */
   query: QueryRuntime;
-  /** When reads are live. */
+    /** The app's policy for when reads are live (subscribed to their data) and when they keep their last value. */
   gate: ReadGateRuntime;
 }
 
@@ -177,8 +190,8 @@ export const INERT_QUERY: QueryRuntime = {
 const NO_UNSUBSCRIBE = () => {};
 
 /**
- * Always live, which is the safe default: a host that configures no gate keeps every read taking writes, exactly as
- * it behaved before reads were gated at all. Frozen and shared so it satisfies the stable-reference contract.
+ * A gate that is always live, the default when the app configures none, so every read stays subscribed. Frozen and
+ * shared, since a gate must be the same object across renders.
  */
 const ALWAYS_LIVE: ReadGate = Object.freeze({
   isLive: () => true,
