@@ -7,7 +7,7 @@
  * read after every write would build new values and re-render every component showing one, changed or not.
  *
  * Every write reports which units it changed, so only those units' values are rebuilt. A read that asks for particular
- * units ({@linkcode DerivedValues.one | one}, {@linkcode DerivedValues.byIds | byIds}) depends on just those units, so
+ * units ({@linkcode DerivedValues.at | at}, {@linkcode DerivedValues.atEach | atEach}) depends on just those units, so
  * a write to other units doesn't re-run it. A store declares one set of derived values per shape, and every read of
  * that shape shares it, so each unit's value is built once however many reads ask for it.
  */
@@ -25,24 +25,24 @@ import type { ReadDef } from './surface';
  * such as one player's rows.
  */
 export interface DerivedValuesDef<Row extends RowShape, V> {
-    /** A name for these derived values, shown with the store's name in warnings, such as `card` for player cards. */
+  /** A name for these derived values, shown with the store's name in warnings, such as `card` for player cards. */
   name: string;
   /**
-   *    * How many built values to keep, across all partitions; beyond that, the least recently used are discarded and
+   * How many built values to keep, across all partitions; beyond that, the least recently used are discarded and
    * rebuilt when asked for again. Set it above the most units one screen reads at once: a read asking for more than
    * {@linkcode DerivedValuesDef.max | max} units discards what it just built, rebuilding every one after every write,
    * and warns in dev.
    */
   max: number;
   /**
-   * * Builds one unit's value from its rows (all rows in the partition with that unit value, in storage order), usually
+   * Builds one unit's value from its rows (all rows in the partition with that unit value, in storage order), usually
    * a view model, or returns `undefined` for a unit that shouldn't have one. It runs once per unit, and again only
-   * after a write changes that unit's rows. In a table with one row per unit, it gets a one-row list: `fromRows:
-   * ([row]) => …`.
+   * after a write changes that unit's rows. In a table with one row per unit, it gets a one-row list:
+   * `fromRows: ([row]) => …`.
    */
   fromRows: (rows: readonly Row[]) => V | undefined;
   /**
-   * Text added to the dev warning shown when a read asks for more units than {@linkcode DerivedValuesDef.max | max}, *
+   * Text added to the dev warning shown when a read asks for more units than {@linkcode DerivedValuesDef.max | max},
    * where raising {@linkcode DerivedValuesDef.max | max} is the wrong fix, such as a detailed shape meant for one unit
    * at a time, which should point to the lean one.
    */
@@ -52,38 +52,41 @@ export interface DerivedValuesDef<Row extends RowShape, V> {
 /**
  * A declared set of derived values, as `derive` returns it: one value per unit, built from the unit's rows (usually a
  * view model), cached, and returned as the same object until a write changes that unit's rows. A unit is all the rows
- * sharing one value of the table's unit column, such as one player's rows. Reads use these methods in their
- * {@linkcode ReadDef.select | select}. Every method takes the partition key first (a partition is the set of rows one
- * fetch returns and replaces), and reads only that partition's rows.
+ * sharing one value of the table's unit column, such as one player's rows.
+ *
+ * Each value's address is a partition key plus a unit id (a partition is the set of rows one fetch returns and
+ * replaces), so every method takes the key first and reads only that partition's rows. Reads call these methods in
+ * their {@linkcode ReadDef.select | select}. Name a set after what it holds and the unit it is keyed by, such as
+ * `cardsByPlayer`.
  */
 export interface DerivedValues<Key, Row extends RowShape, V> {
   /**
-   *    * The value for the unit whose unit-column value is `id` (such as a `player_id`), or `undefined` if the
-   * partition has no rows for it. A read that calls it depends on that unit only: it re-runs when a write changes that
-   * unit's rows, and not for writes to other units.
+   * The value at unit `id` (a value of the unit column, such as a `player_id`), or `undefined` if the partition has no
+   * rows for it. A read that calls it depends on that unit only: it re-runs when a write changes that unit's rows, and
+   * not for writes to other units.
    */
-  one(key: Key, id: string): V | undefined;
+  at(key: Key, id: string): V | undefined;
   /**
-   *    * The values for the units whose unit-column values are `ids`, in the order of `ids`; an id with no rows in the
+   * The values at each of `ids` (values of the unit column), in the order of `ids`; an id with no rows in the
    * partition is left out. Builds every missing one with a single query. A read that calls it depends on those units
    * only.
    */
-  byIds(key: Key, ids: readonly string[]): V[];
+  atEach(key: Key, ids: readonly string[]): V[];
   /**
-   *    * The same values as {@linkcode DerivedValues.byIds | byIds}, as an object keyed by id instead of a list, for a
+   * The same values as {@linkcode DerivedValues.atEach | atEach}, as an object keyed by id instead of a list, for a
    * caller that looks them up. An id with no rows in the partition is left out. A read that calls it depends on those
    * units only.
    */
-  mapByIds(key: Key, ids: readonly string[]): Record<string, V>;
+  pick(key: Key, ids: readonly string[]): Record<string, V>;
   /**
-   * * The values for every unit that has rows matching `filter` (column values, on top of the partition's), such as `{
-   * team: 'KC' }`, in storage order. Where a unit has several rows, its value is built from just the rows that match. A
-   * read that calls it depends on the whole partition, since any write can change which units match.
+   * The values for every unit that has rows matching `filter` (column values, on top of the partition's), such as
+   * `{ team: 'KC' }`, in storage order. Where a unit has several rows, its value is built from just the rows that
+   * match. A read that calls it depends on the whole partition, since any write can change which units match.
    */
   where(key: Key, filter?: Partial<Row>): V[];
   /**
-   *    * The values for every unit in the partition, in storage order. A read that calls it depends on the whole
-   * partition, since any write can add or remove units.
+   * The values for every unit in the partition, in storage order. A read that calls it depends on the whole partition,
+   * since any write can add or remove units.
    */
   all(key: Key): V[];
 }
@@ -190,15 +193,15 @@ export function createDerivedValues<Row extends RowShape, Key, V>(
   };
 
   return {
-    one: (key, id) =>
+    at: (key, id) =>
       memo.for(key).read(id, WHOLE_UNIT, () => {
         const rows = table.find({ ...filter(key), [unit]: id } as Partial<Row>);
         return rows.length ? def.fromRows(rows) : undefined;
       }),
 
-    byIds: (key, ids) => (ids.length ? listed(resolve(key, ids), ids) : []),
+    atEach: (key, ids) => (ids.length ? listed(resolve(key, ids), ids) : []),
 
-    mapByIds: (key, ids) => {
+    pick: (key, ids) => {
       const out: Record<string, V> = {};
       if (!ids.length) return out;
       const resolved = resolve(key, ids);

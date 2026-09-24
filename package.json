@@ -1,6 +1,6 @@
 {
   "name": "@sleeperhq/react-data-kernel",
-  "version": "0.10.5",
+  "version": "0.11.0",
   "description": "An off-heap data layer for React Native: SQLite-backed row tables, partition-versioned reactivity, and declarative reads.",
   "repository": {
     "type": "git",

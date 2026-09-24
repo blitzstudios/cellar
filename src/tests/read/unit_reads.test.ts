@@ -37,7 +37,7 @@ function store() {
   const names = players.derive<string>()({ name: 'name', max: 64, fromRows: ([row]) => row.name });
   const PlayerNames = players.read<{ sport: string; ids: string[] }, string[]>()({
     varyBy: ['ids'],
-    select: ({ ids }, key) => names.byIds(key, ids),
+    select: ({ ids }, key) => names.atEach(key, ids),
     empty: [],
   });
   const RawNames = players.read<{ sport: string }, string[]>()({

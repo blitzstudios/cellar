@@ -54,9 +54,8 @@ export type ShredOp =
        */
       op: 'bind';
       /**
-       * Which of the write's {@linkcode NativeShredSpec.binds | binds} values to use, counting from 0.
-       * {@linkcode NativeShredSpec.binds | binds} is the list {@linkcode NativeShredSpec.binds} returns for the
-       * partition being written.
+       * Which of the write's bind values to use, counting from 0. The bind values are the list
+       * {@linkcode NativeShredSpec.binds} returns for the partition being written.
        */
       index: number;
     }
@@ -173,9 +172,8 @@ export interface ShredDeleteClause {
   /** The column to match, such as `league`. */
   column: string;
   /**
-   * Which of the write's {@linkcode NativeShredSpec.binds | binds} values the column must equal, counting from 0.
-   * {@linkcode NativeShredSpec.binds | binds} is the list {@linkcode NativeShredSpec.binds} returns for the partition
-   * being written.
+   * Which of the write's bind values the column must equal, counting from 0. The bind values are the list
+   * {@linkcode NativeShredSpec.binds} returns for the partition being written.
    */
   bindIndex: number;
 }

@@ -116,7 +116,7 @@ export interface RowTableSchema<Row extends RowShape> {
    * then bumps the partition's version and the version of each changed unit.
    *
    * Reads use the same division. A read that asks for particular units (through derived values'
-   * {@linkcode DerivedValues.one | one} or {@linkcode DerivedValues.byIds | byIds}, or a {@linkcode byUnit} memo)
+   * {@linkcode DerivedValues.at | at} or {@linkcode DerivedValues.atEach | atEach}, or a {@linkcode byUnit} memo)
    * depends on just those units, and recomputes only when a write changes one of them. A read that looks at the whole
    * partition (scanning the table, or derived values' {@linkcode DerivedValues.all | all} or
    * {@linkcode DerivedValues.where | where}) depends on the partition, and recomputes after any write that changes it.
@@ -190,7 +190,7 @@ export interface RowTable<Row extends RowShape> {
    */
   readonly unit: keyof Row & string;
   /**
-   *    * Adds `rows`, replacing any stored row with the same primary key, as a socket push wants. Unlike a partition
+   * Adds `rows`, replacing any stored row with the same primary key, as a socket push wants. Unlike a partition
    * replace, it removes nothing. Requires a primary key.
    *
    * Returns the unit values of the rows that were new or different, and the number of rows given. Writes in chunks, one
@@ -204,7 +204,7 @@ export interface RowTable<Row extends RowShape> {
     },
   ): Promise<WriteResult>;
   /**
-   * * Replaces the rows matching `where` with exactly `rows`, synchronously, so 300 rows can become 3, or none. Every
+   * Replaces the rows matching `where` with exactly `rows`, synchronously, so 300 rows can become 3, or none. Every
    * row in `rows` must itself match `where` (checked in dev), or the next replace of that partition wouldn't delete it.
    *
    * Returns the unit values that were added, removed or changed, and the number of rows given.

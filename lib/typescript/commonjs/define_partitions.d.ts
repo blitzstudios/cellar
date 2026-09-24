@@ -316,11 +316,11 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
      */
     memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
     /**
-     * * Declares values derived from each unit's rows, usually view models, cached per unit (a unit is all the rows
-     * sharing one value of the table's unit column, such as one player's rows). A read that returns them gets them from
-     * here: each unit's value is built once however many reads ask for it, kept as the same object, and rebuilt only when
-     * a write changes that unit's rows. Called in two steps, `derive<V>()({ name, max, fromRows })`. See
-     * {@linkcode createDerivedValues}.
+     * Declares values derived from each unit's rows, usually view models, cached per unit (a unit is all the rows
+     * sharing one value of the table's unit column, such as one player's rows) and addressed by partition key and unit
+     * id. A read that returns them gets them from here: each unit's value is built once however many reads ask for it,
+     * kept as the same object, and rebuilt only when a write changes that unit's rows. Called in two steps,
+     * `derive<V>()({ name, max, fromRows })`. See {@linkcode createDerivedValues}.
      */
     derive: <V>() => (def: DerivedValuesDef<Row, V>) => DerivedValues<Key, Row, V>;
     /**

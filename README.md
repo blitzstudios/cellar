@@ -112,7 +112,7 @@ export const itemStore = defineSqliteStore({
     table.init();
     const rows = rowsOf(table);
 
-    const items = definePartitions<ItemRow, ItemKey>({
+    const partitions = definePartitions<ItemRow, ItemKey>({
       name: 'items',
       table,
       version,
@@ -133,12 +133,12 @@ export const itemStore = defineSqliteStore({
 
     return {
       reads: {
-        GroupItems: items.read<ItemKey, ItemVM[]>()({
-          select: (_args, key) => rows.where(items.where(key), { orderBy: 'rank' }).map(toVM, NO_ITEMS),
+        GroupItems: partitions.read<ItemKey, ItemVM[]>()({
+          select: (_args, key) => rows.where(partitions.where(key), { orderBy: 'rank' }).map(toVM, NO_ITEMS),
           empty: NO_ITEMS,
         }),
       },
-      lifecycle: items.lifecycle,
+      lifecycle: partitions.lifecycle,
     };
   },
 });
@@ -160,14 +160,14 @@ Reading a cold partition fetches it, automatically, and that is meant to be unre
 layer exists. Worth knowing once, though: the fetch is scoped to the **partition**, never to what the read selects.
 
 ```ts
-ItemsByIds: items.read<ItemIdsKey, ItemVM[]>()({
+ItemsByIds: partitions.read<ItemIdsKey, ItemVM[]>()({
   varyBy: ['ids'],
-  select: (args, key) => rows.byIds(items.where(key), args.ids),
+  select: (args, key) => rows.byIds(partitions.where(key), args.ids),
   empty: NO_ITEMS,
 }),
 ```
 
-That read asks for a handful of ids. If `items` partitions by league and a league holds thirty thousand rows, the
+That read asks for a handful of ids. If the store partitions by league and a league holds thirty thousand rows, the
 first such read fetches thirty thousand rows. The gap can be three orders of magnitude and it is invisible at the
 call site, which sees only `useItemsByIds({ league, ids })`.
 
@@ -335,7 +335,7 @@ with nothing to compare against, its rows go straight in and every unit counts a
 | export | what it gives you |
 | --- | --- |
 | `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about. A `varyBy` value that is an object or an array keys by its content, and its identity is remembered per reference so a caller holding one across a list serializes it once — which is why `__DEV__` freezes it: a key remembered for a reference is only sound while the content holds still |
-| `partitions.derive()` | a value derived from each unit's rows, usually a view model, cached per unit: `.one`, `.byIds`, `.mapByIds`, `.where`, `.all`. You supply `fromRows`, which turns one unit's rows into its value; a write rebuilds only the units it changed and hands back the previous reference for the rest. `.one`, `.byIds` and `.mapByIds` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Reads of the same shape share one set of derived values, so a unit's value is built once however many ask |
+| `partitions.derive()` | a value derived from each unit's rows, usually a view model, cached per unit and addressed by partition key and unit id: `.at`, `.atEach`, `.pick`, `.where`, `.all`. Name it after what it holds and its unit, such as `cardsByPlayer`. You supply `fromRows`, which turns one unit's rows into its value; a write rebuilds only the units it changed and hands back the previous reference for the rest. `.one`, `.byIds` and `.mapByIds` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Reads of the same shape share one set of derived values, so a unit's value is built once however many ask |
 | `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares. They return the same value but do not fetch alike: `useValue` refetches on React Query's staleness, `getValue` fetches a partition that has never been fetched and otherwise leaves it |
 | `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
 | `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |

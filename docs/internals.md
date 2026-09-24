@@ -76,7 +76,7 @@ store is reaching past its entry point; import it from its own module only if yo
   answer:
 
   ```ts
-  const myPartitions = definePartitions<MyRow, MyKey>({
+  const partitions = definePartitions<MyRow, MyKey>({
     name: 'my_store',
     table,
     version,
@@ -121,7 +121,7 @@ store is reaching past its entry point; import it from its own module only if yo
   group — `usePrime`, `usePrimeMany`, `usePrimeAndVersion`, `has`, `getVersion`, `getFetchedAt`, `fetch`,
   `refetch`, `invalidate`, `forget`. Every member takes the same **args** a read does, in the `(args, options?)`
   call shape a backend publishes, so a backend hands the group straight out
-  (`lifecycle: myPartitions.lifecycle`) rather than restating it. `usePrime` and `usePrimeAndVersion` take those args
+  (`lifecycle: partitions.lifecycle`) rather than restating it. `usePrime` and `usePrimeAndVersion` take those args
   loosely, so a screen calls them with what it has, exactly as it calls a read: a field that has not arrived leaves
   the key unaddressable, and `key.of` answers `null` for args that name no partition, so neither primes anything.
 - **`createFetchIngest`** — the fetch engine `definePartitions` composes: React Query orchestrates a raw-text fetch
@@ -186,7 +186,7 @@ store is reaching past its entry point; import it from its own module only if yo
 - **`partitions.memos`** — every memo a store holds, in one block, and the only way it builds one:
 
   ```ts
-  const memos = myPartitions.memos({
+  const memos = partitions.memos({
     summaryMap: byVersion<MySummaryMap>()({ max: 2048 }),
     itemRow: bySource<MyItemVM>()({ max: 4096, by: ['itemId'] }),
   });

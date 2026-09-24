@@ -94,7 +94,7 @@ export const itemStore = defineSqliteStore({
       reads: {
         Item: items.read<ItemKey, { id: string } | undefined>()({
           varyBy: ['id'],
-          select: (args, key) => card.one(key, args.id),
+          select: (args, key) => card.at(key, args.id),
           empty: undefined,
         }),
         Rows: items.read<LeagueKey, ItemRow[]>()({
