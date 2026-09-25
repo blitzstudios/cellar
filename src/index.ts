@@ -27,9 +27,12 @@ export type { DataStatus, DataResult } from './store_result';
 export { DATA_RESULT_KEYS, makeResult } from './store_result';
 export type { PrimeState } from './prime_state';
 
-// What a store memoizes, declared through its partitions (`stats.memos({ … })`) so no caller builds a key.
-export type { MemoDeclaration, MemoFactory, MemoPart } from './caches';
-export { byVersion, byUnit, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
+// What a store keeps on the heap beyond its rows, declared in one block through its partitions
+// (`partitions.cache({ … })`) so no caller builds a key.
+export type { CacheDeclaration, CacheFactory } from './cache_block';
+export type { CacheKeyPart } from './caches';
+export { byVersion, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
+export { byUnit } from './read/derived_values';
 
 // The table a store's schema describes, and the rows it holds.
 export type { SqlValue, ColumnDef, RowTableSchema, RowTable } from './table/types';
@@ -53,7 +56,7 @@ export type { MaybeId, ReadOptions, Loose } from './read/facade';
 export { pairRead } from './read/facade';
 export type { WindowedBlock } from './read/windowed_list';
 export { createWindowedList } from './read/windowed_list';
-export type { DerivedValues, DerivedValuesDef } from './read/derived_values';
+export type { DerivedValues, DerivedValuesDef, UnitCacheDeclaration } from './read/derived_values';
 
 // Repainting on a write.
 export type { VersionAtom } from './reactivity/version_atom';

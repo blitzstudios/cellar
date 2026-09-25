@@ -14,10 +14,10 @@ import { cacheKey, partitionLabel, cacheKeyOf } from './args_key';
 import { createFetchIngest, FetchIngest, RawQuery } from './write/fetch_ingest';
 import { createReadSurface, Read, ReadDef, ReadGroupedDef, ReadManyDef, useResult, VarySpec } from './read/surface';
 import { RowShape, RowTable } from './table/types';
-import { BoundMemos, createBoundedLru, createMemos, MemoDeclaration } from './caches';
+import { createBoundedLru } from './caches';
+import { bindCaches, CacheFactory } from './cache_block';
 import { addressesPartition, NO_PARTS, VersionAtom } from './reactivity/version_atom';
 import { PartitionField, partitionKeyOf } from './read/partition_fields';
-import { createDerivedValues, DerivedValues, DerivedValuesDef, derivedValueMemo, DerivedValueMemo } from './read/derived_values';
 import { NO_PRIMING, PrimeState } from './prime_state';
 import { DataResult, offHeapStatus } from './store_result';
 import { reportStoreDegradation } from './diagnostics/telemetry';
@@ -26,7 +26,8 @@ import type { Loose } from './read/facade';
 import { ALL_UNITS, ChangeSet, isUnchanged, WriteResult } from './table/change_set';
 import type { SqliteStoreConfig } from './define_sqlite_store';
 import type { CommonDef } from './read/surface';
-import type { byUnit, byVersion } from './caches';
+import type { byVersion } from './caches';
+import type { byUnit, DerivedValues } from './read/derived_values';
 
 /** No partition: args still being filled in, or a slot a caller left empty, which keeps its index in the result. */
 type MaybePartition<Descriptor> = Descriptor | null | undefined;
@@ -294,7 +295,7 @@ interface PartitionReadGroupedDef<Args, Key, T, Descriptor, V extends VarySpec<A
 
 /**
  * What {@linkcode definePartitions} returns to a store's {@linkcode SqliteStoreConfig.build | build}: the functions
- * that declare the store's reads, memos and view models, lower-level access to its partitions for the store's own code,
+ * that declare the store's reads and caches, lower-level access to its partitions for the store's own code,
  * and the {@linkcode Partitions.lifecycle | lifecycle} group to publish. A partition is the set of rows one fetch
  * returns and replaces.
  */
@@ -325,21 +326,20 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
    */
   readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
   /**
-   * Declares the store's memos: caches of values the store computes from a partition's rows, declared together in one
-   * object. Each entry is a {@linkcode byVersion} memo (discarded by any write to the partition) or a
-   * {@linkcode byUnit} memo (one value per unit, discarded only when that unit's rows change). Using one takes a
-   * partition key and the memo's own key parts; the partition's version is looked up for it. See
-   * {@linkcode createMemos}.
+   * Declares the store's caches: every value it keeps on the heap beyond its rows, in one object, each under a name,
+   * with entries kept per partition. Each entry is one of two kinds, named for what a write discards:
+   *
+   * - {@linkcode byUnit}: one value per unit (a unit is all the rows sharing one value of the table's unit column, such
+   *   as one player's rows), built from that unit's rows by `fromRows` and rebuilt only when a write changes them. It
+   *   returns {@linkcode DerivedValues}, read by partition key and unit id, such as `gamesByTeam.at(key, team)`.
+   * - {@linkcode byVersion}: values computed from a whole partition, discarded by any write to it. The value is
+   *   computed at the lookup, by the `build` the lookup passes: `summaryMap.for(key).read(() => …)`.
+   *
+   * A value is built from rows already in the table, on first use; nothing here fetches, since the reads fetch their
+   * partitions before their {@linkcode ReadDef.select | select} runs. The store's name and the entry's key name each
+   * cache in warnings.
    */
-  memos: <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
-  /**
-   * Declares values derived from each unit's rows, usually view models, cached per unit (a unit is all the rows
-   * sharing one value of the table's unit column, such as one player's rows) and addressed by partition key and unit
-   * id. A read that returns them gets them from here: each unit's value is built once however many reads ask for it,
-   * kept as the same object, and rebuilt only when a write changes that unit's rows. Called in two steps,
-   * `derive<V>()({ name, max, fromRows })`. See {@linkcode createDerivedValues}.
-   */
-  derive: <V>() => (def: DerivedValuesDef<Row, V>) => DerivedValues<Key, Row, V>;
+  cache: CacheFactory<Key, Row>;
   /**
    * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`: the store's
    * {@linkcode PartitionKeySpec.where | key.where}.
@@ -397,7 +397,7 @@ const NO_DESCRIPTORS: readonly never[] = Object.freeze([]);
  * From the config it builds one React Query query per partition that fetches the partition (sending its stored ETag,
  * and writing the response with the native shredder or {@linkcode PartitionFetchSpec.parse | parse}), and bumps the
  * partition's version with the units the write changed, which re-renders the readers of those units. It returns the
- * functions that declare the store's reads, memos and view models on those partitions, and the
+ * functions that declare the store's reads and caches on those partitions, and the
  * {@linkcode Partitions.lifecycle | lifecycle} operations to publish. Call it from a store's
  * {@linkcode SqliteStoreConfig.build | build}, after {@linkcode RowTable.init | table.init()}.
  */
@@ -579,16 +579,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     read: surface.read,
     readMany: readManyOf,
     readGrouped: readGroupedOf,
-    memos: (decls) => createMemos(name, memoBinding, decls),
-    derive:
-      <V,>() =>
-      (def: DerivedValuesDef<Row, V>) => {
-        const bound = createMemos(name, memoBinding, { [def.name]: derivedValueMemo<V>(def.max) });
-        return createDerivedValues<Row, Key, V>(
-          { store: name, table, filter: where, memo: bound[def.name] as DerivedValueMemo<Key, V>, trackPartition: versionOf },
-          def,
-        );
-      },
+    cache: (decls) => bindCaches(name, memoBinding, decls, { table, filter: where, trackPartition: versionOf }),
     where,
     keyOf,
     internedKeys: () => (interned ? (interned.keys() as IterableIterator<Key>) : NO_INTERNED[Symbol.iterator]()),
@@ -618,4 +609,4 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { CommonDef, DataResult, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion, createMemos, createDerivedValues };
+export type { CommonDef, DataResult, DerivedValues, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion };

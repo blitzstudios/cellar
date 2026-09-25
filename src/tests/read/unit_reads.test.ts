@@ -8,6 +8,7 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { definePartitions } from '../../define_partitions';
+import { byUnit } from '../../read/derived_values';
 import { createTestRowTable } from '../../testing/row_table';
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { RowTableSchema } from '../../table/types';
@@ -34,7 +35,7 @@ function store() {
     version,
     key: { fields: ['sport'], where: ({ sport }) => ({ sport }) },
   });
-  const names = players.derive<string>()({ name: 'name', max: 64, fromRows: ([row]) => row.name });
+  const { names } = players.cache({ names: byUnit<string>()({ max: 64, fromRows: ([row]) => row.name }) });
   const PlayerNames = players.read<{ sport: string; ids: string[] }, string[]>()({
     varyBy: ['ids'],
     select: ({ ids }, key) => names.atEach(key, ids),

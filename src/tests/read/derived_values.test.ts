@@ -1,4 +1,5 @@
 import { definePartitions } from '../../define_partitions';
+import { byUnit } from '../../read/derived_values';
 import { createTestRowTable } from '../../testing/row_table';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { createVersionAtom } from '../../reactivity/version_atom';
@@ -53,7 +54,7 @@ function harness(over: { table?: RowTable<PlayerRow>; max?: number; fromRows?: (
   });
 
   const fromRows = jest.fn(over.fromRows ?? (([row]: readonly PlayerRow[]): NameVm | undefined => ({ id: row.player_id, label: row.name })));
-  const derived = players.derive<NameVm>()({ name: 'name', max: over.max ?? 64, fromRows });
+  const { name: derived } = players.cache({ name: byUnit<NameVm>()({ max: over.max ?? 64, fromRows }) });
 
   /** Writes the partition the way an ingest does: the table says what changed, and the bump carries it. */
   const seed = (rows: readonly PlayerRow[]): void => {
@@ -243,7 +244,7 @@ describe('derived values — a unit of several rows', () => {
     const version = createVersionAtom('derived_values_games_test');
     const weeks = definePartitions<GameRow, string>({ name: 'games', table, version, key: { where: (week) => ({ week }) } });
     const fromRows = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));
-    const totals = weeks.derive<TotalVm>()({ name: 'totals', max: 64, fromRows });
+    const { totals } = weeks.cache({ totals: byUnit<TotalVm>()({ max: 64, fromRows }) });
     const seed = (rows: GameRow[]) => weeks.bump('w1', table.overwrite({ week: 'w1' }, rows).changes);
     return { totals, fromRows, seed };
   }
@@ -292,7 +293,7 @@ describe('derived values — the memo bound is a bound, not a promise', () => {
 
     derived.atEach(NFL, ['p1', 'p2', 'p3']);
 
-    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' derived values were asked for 3 units but hold 2/);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' cache was asked for 3 units but holds 2/);
     warn.mockRestore();
   });
 });

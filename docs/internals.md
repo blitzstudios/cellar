@@ -183,54 +183,43 @@ store is reaching past its entry point; import it from its own module only if yo
   and then re-slices it by index; and, for a push-fed table, leaving `fetch` off, so its reads report `success`
   over an empty value. The kernel takes the fetch half as one value: the priming hooks and the refetch that goes
   with them are supplied together or not at all.
-- **`partitions.memos`** — every memo a store holds, in one block, and the only way it builds one:
+- **`partitions.cache`** — every value a store keeps on the heap beyond its rows, in one block, and the only way it
+  builds one:
 
   ```ts
-  const memos = partitions.memos({
+  const { gamesByTeam, summaryMap } = partitions.cache({
+    gamesByTeam: byUnit<GameVM[]>()({ max: 2048, fromRows: rowsToTeamGames }),
     summaryMap: byVersion<MySummaryMap>()({ max: 2048 }),
-    itemRow: bySource<MyItemVM>()({ max: 4096, by: ['itemId'] }),
   });
 
-  memos.summaryMap.for(key).read(() => deriveSummaryMap(rows.where(where(key)).rows));
-  memos.itemRow.for(key).put(itemId, row.data_json, () => toVM(row));
+  gamesByTeam.at(key, team);
+  summaryMap.for(key).read(() => deriveSummaryMap(rows.where(where(key)).rows));
   ```
 
-  The block is reached off the store's partitions, which is what makes `.for(key)` possible: the memo takes both
-  the partition's key and its current version from there, so **no store builds a memo key or looks up a version**.
-  What a store still names is `max`, which bounds what it derives onto the heap, and `by`, which is what the key
-  holds beyond the partition — one argument to `.for(…)`'s methods per name, in order, each either a scalar or a
-  structured value the kernel interns. So the block stays a complete, reviewable account of the store's heap, which
-  is the point: the judgment below is made by reading the keys. Each memo carries a dev-time watch that reports
-  itself too small for the keys it keeps being asked for again, and reports itself if it has never once answered
-  from its entry.
-- **`byVersion`** — a memo dropped by every write to its partition, with optional content-stable reference reuse: on
+  The block is reached off the store's partitions, which is what makes both kinds possible: a cache takes the
+  partition's key parts, its version and each unit's version from there, so **no store builds a cache key or looks
+  up a version**. What a store still names is `max`, which bounds what it keeps on the heap, and, for `byVersion`,
+  `by`, which is what the key holds beyond the partition — one argument to `.for(…)`'s methods per name, in order,
+  each either a scalar or a structured value the kernel interns. So the block stays a complete, reviewable account of
+  the store's heap. Each cache carries a dev-time watch that reports itself too small for the keys it keeps being
+  asked for again, and reports itself if it has never once answered from its entry; the report names it by its key.
+  A module that declares its own caches, such as a ranker, takes the store's `cache` function as a `CacheFactory`,
+  and a suite testing that module alone builds one with `testCache` from `./testing`, which takes `byVersion` caches
+  only.
+- **`byUnit`** — one value per unit, built from that unit's rows by `fromRows` and kept until a write changes them.
+  A lookup (`at`, `atEach`, `pick`) depends on the units it names, so a write to other units neither rebuilds their
+  values nor re-runs the read; `where` and `all` depend on the partition. Every miss in one `atEach` or `pick` is
+  built from one query. Underneath, the values sit in a unit memo (`unitMemo` in `caches.ts`), keyed by unit and, where
+  a filter can cut a unit's rows, by the filter.
+- **`byVersion`** — a cache dropped by every write to its partition, with optional content-stable reference reuse: on
   a bump that didn't change an entry, hand back the _same reference_ so downstream shallow-equal bails.
-  `read(…parts, compute)` is the whole memo in one call; `peek`/`set` are its batched half, for a caller that
+  `read(…parts, compute)` is the whole cache in one call; `peek`/`set` are its batched half, for a caller that
   gathers its misses and computes them in one round-trip.
 
   Reach for it when **several reads** derive the same value from a partition's rows, or when **one read consults it
   per item**. Both mean the key is not the read's key, which is the whole test: the read surface already memoizes
-  `select` per `(partition + varyBy, version)`, so a memo one read owns, keyed as that read is keyed, is the same
+  `select` per `(partition + varyBy, version)`, so a cache one read owns, keyed as that read is keyed, is the same
   cache twice at two sizes — the pair performs as whichever is smaller. Reach for `getCacheMax` instead.
-- **`bySource`** — the other of the two, and the one a hydration reaches for. A version
-  alone skips the **SQL round-trip** for a read no write invalidated, but it misses for every entry in a partition
-  the moment anything in it changes. A source — the `data_json` the value was built from — survives that miss and
-  hands back the same reference, which is what keeps one socket flush rewriting one item's row from repainting
-  every reader of every other row in the partition. This carries both in one entry: `peek(…parts)` answers
-  with no query at all, and `put(…parts, source, build)` rebuilds only when the source really moved.
-  **If a read's value feeds a downstream identity comparison — and every `isEqual` on a read descriptor is one —
-  hydrate it through this.**
-
-  Two rules when you add one. Name the filter that produced the entry in `by` as well as the entity, or two
-  reads holding different rows for the same entity re-hydrate each other on every call. And leave
-  whole-collection reads out of it: one of those evicts the bounded reads' entries and costs more than the
-  repaints it saves.
-
-  The name a report points at is the one the block gave it. This is the cache where too small is
-  worth catching at runtime, since a rebuilt value is a new reference and so a repaint no `isEqual` can bail
-  out of — a cost that lands spread across React's render phase, where a profile has nothing to point at. A
-  versioned cache that is too small costs a recompute instead, pooled under one function, so it is left to
-  the profile and carries no name.
 - **`offHeapStatus`** — the loading-status rule (`loading` while a cold fetch is in flight, else `success`).
   The engine calls this for you; bespoke batch reads call it directly.
 - **`shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct`** — the `isEqual` family. A
@@ -396,7 +385,8 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `prime_state.ts`                                 | what a read knows about the fetch behind its partition — the contract between the two, so neither imports the other |
 | `key.ts`                                         | how a key's parts are joined, on a separator no part can contain; imports nothing, so anything may have it |
 | `args_key.ts`                                    | what a read's key is derived from: a value by its content, a partition, a vary list |
-| `caches.ts`                                      | bounded LRU, the two memos and the block that binds them to a store's partitions, and the `isEqual` family |
+| `caches.ts`                                      | bounded LRU, the `byVersion` cache and the unit memo under `byUnit`, and the `isEqual` family |
+| `cache_block.ts`                                 | the `partitions.cache` block: binds each `byUnit` and `byVersion` entry to a store's partitions |
 | `collections.ts`                                 | `chunkList` and `getOrCreate`                                             |
 | `runtime.ts`                                     | the host's three services — where a report goes, the query runtime an ingest mounts on, and when a read is live — and the inert defaults until one is installed |
 
@@ -420,7 +410,7 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `surface.ts`                                     | the read engine — `read({ … })` → `{ getValue, useValue }`               |
 | `partition_fields.ts`                            | the field specs a read names its partition and its vary key with          |
 | `row_shaping.ts`                                 | `rowsOf`: a query, then rows → list / ordered list / record / groups, each with the stable empty |
-| `derived_values.ts`                              | `derive`: a value per unit, built from the unit's rows by `fromRows` (usually a view model), kept until a write changes that unit, so a bump rebuilds only the units that moved and every other reader gets the same reference back |
+| `derived_values.ts`                              | `byUnit` caches: a value per unit, built from the unit's rows by `fromRows` (usually a view model), kept until a write changes that unit, so a bump rebuilds only the units that moved and every other reader gets the same reference back |
 | `facade.ts`                                      | what a service is written against: `pairRead`, so it exposes the hook and the imperative read together, plus the types its methods are spelled in (`ReadOptions`, `MaybeId`, `Loose`) |
 | `windowed_list.ts`                               | windowed list reads (fetch a page, keep the rest off-heap), and the per-row `useWindowedDetail` that indexes back into one |
 
@@ -443,7 +433,7 @@ Two more entries ship beside the core one. `./diagnostics` holds what a develope
 `getIngestTimings` and `rollupIngestTimings` — kept out of the core entry because a shipping screen has no
 business reading them. `./testing` is what a store's tests are written against: `sqljs_connection.ts` (a real
 SQLite engine for parity tests), `version_atom.ts` (in-process version atom with working `subscribe`),
-`runtime.ts` (the host services as spies), `memos.ts` (a store's `memos` for a suite that builds one module
+`runtime.ts` (the host services as spies), `caches.ts` (a store's `cache` block for a suite that builds one module
 rather than a whole backend), and `dev_mode.ts` (the wrappers pinning a case to one build). It also re-exports the
 handful of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement`
 to check a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.

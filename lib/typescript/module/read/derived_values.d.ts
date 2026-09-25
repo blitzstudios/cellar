@@ -1,5 +1,5 @@
 /**
- * Derived values: a value derived from each unit's rows, usually a view model, cached per unit.
+ * {@linkcode byUnit} caches: a value derived from each unit's rows, usually a view model, cached per unit.
  *
  * A unit is all the rows sharing one value of the table's unit column, such as one player's rows (`player_id`). Derived
  * values turn a unit's rows into a value (typically the object a screen renders), keep it, and return the same object
@@ -14,14 +14,13 @@
 import { BoundUnitMemo, Memo, MemoDeclaration } from '../caches';
 import { RowShape, RowTable } from '../table/types';
 import type { ReadDef } from './surface';
+import type { Partitions } from '../define_partitions';
 /**
- * The definition of a set of derived values, passed to `derive`: how to build one unit's value from its rows (usually a
- * view model), and how many built values to keep. A unit is all the rows sharing one value of the table's unit column,
- * such as one player's rows.
+ * The definition of a {@linkcode byUnit} cache: how to build one unit's value from its rows (usually a view model), and
+ * how many built values to keep. A unit is all the rows sharing one value of the table's unit column, such as one
+ * player's rows. The cache's name, shown in warnings, is its key in the {@linkcode Partitions.cache | cache} block.
  */
 export interface DerivedValuesDef<Row extends RowShape, V> {
-    /** A name for these derived values, shown with the store's name in warnings, such as `card` for player cards. */
-    name: string;
     /**
      * How many built values to keep, across all partitions; beyond that, the least recently used are discarded and
      * rebuilt when asked for again. Set it above the most units one screen reads at once: a read asking for more than
@@ -44,7 +43,7 @@ export interface DerivedValuesDef<Row extends RowShape, V> {
     advice?: string;
 }
 /**
- * A declared set of derived values, as `derive` returns it: one value per unit, built from the unit's rows (usually a
+ * A {@linkcode byUnit} cache as a store's {@linkcode Partitions.cache | cache} block returns it: one value per unit, built from the unit's rows (usually a
  * view model), cached, and returned as the same object until a write changes that unit's rows. A unit is all the rows
  * sharing one value of the table's unit column, such as one player's rows.
  *
@@ -84,21 +83,47 @@ export interface DerivedValues<Key, Row extends RowShape, V> {
      */
     all(key: Key): V[];
 }
-/** The memo derived values are kept in: one per unit, and per filter where a filter can cut a unit's rows. */
+/**
+ * A {@linkcode byUnit} cache's definition, as {@linkcode byUnit} returns it, before a store's
+ * {@linkcode Partitions.cache | cache} block attaches it to the store's partitions.
+ */
+export interface UnitCacheDeclaration<Row extends RowShape, V> {
+    readonly kind: 'byUnit';
+    readonly def: DerivedValuesDef<Row, V>;
+}
+/**
+ * Declares a cache of values derived from each unit's rows, usually view models, for a store's
+ * {@linkcode Partitions.cache | cache} block: one value per unit (a unit is all the rows sharing one value of the
+ * table's unit column, such as one player's rows), built from that unit's rows by `fromRows` on first use and kept, as
+ * the same object, until a write changes that unit's rows. Reads look values up by partition key and unit id through the
+ * {@linkcode DerivedValues} methods, such as {@linkcode DerivedValues.at | at}.
+ *
+ * Called in two steps, so the value type can be given while the row type comes from the store:
+ * `byUnit<GameVM[]>()({ max: 2048, fromRows: rowsToTeamGames })`.
+ */
+export declare function byUnit<V>(): <Row extends RowShape>(def: DerivedValuesDef<Row, V>) => UnitCacheDeclaration<Row, V>;
+/** Whether a {@linkcode Partitions.cache | cache} block entry is a {@linkcode byUnit} cache. */
+export declare function isUnitCacheDeclaration(decl: unknown): decl is UnitCacheDeclaration<RowShape, unknown>;
+/**
+ * The memo a {@linkcode byUnit} cache keeps its values in: one per unit, and per filter where a filter can cut a unit's
+ * rows.
+ */
 export type DerivedValueMemo<Key, V> = Memo<Key, BoundUnitMemo<V | undefined, readonly ['scope']>>;
-/** The declaration derived values' memo is built from, so the store accounts for it with every other memo it holds. */
+/** The declaration a {@linkcode byUnit} cache's memo is built from. */
 export declare function derivedValueMemo<V>(max: number): MemoDeclaration;
 /**
- * What derived values need from the store around them: the rows, how a key addresses them, the memo their values live
- * in, and the partition's version, which a read over the whole partition depends on.
+ * What a {@linkcode byUnit} cache needs from the store around it: its name, the rows, how a key addresses them, the
+ * memo its values live in, and the partition's version, which a read over the whole partition depends on.
  */
 export interface DerivedValuesContext<Row extends RowShape, Key, V> {
     store: string;
+    /** The cache's key in the store's {@linkcode Partitions.cache | cache} block, shown in warnings. */
+    name: string;
     table: RowTable<Row>;
     filter: (key: Key) => Partial<Row>;
     memo: DerivedValueMemo<Key, V>;
     trackPartition: (key: Key) => void;
 }
 export declare function createDerivedValues<Row extends RowShape, Key, V>(ctx: DerivedValuesContext<Row, Key, V>, def: DerivedValuesDef<Row, V>): DerivedValues<Key, Row, V>;
-export type { ReadDef };
+export type { Partitions, ReadDef };
 //# sourceMappingURL=derived_values.d.ts.map

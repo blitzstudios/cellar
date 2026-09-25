@@ -279,12 +279,12 @@ avoids. Configure no gate and every read stays live.
   change set: the units with a row added, changed or removed. A refetch that brings back what the table already holds
   changes nothing and wakes nobody; a live poll where four players moved wakes the readers of those four.
 - **Reactivity per unit, found by reading.** A read subscribes to exactly what it read, discovered by running it: a
-  read of named units through derived values or a unit memo depends on those units, and a read over the whole slice
+  read of named units through a `byUnit` cache depends on those units, and a read over the whole slice
   depends on the slice. Nothing is declared, and a read that takes rows straight off the table falls back to its
   whole slice, so precision is never bought with correctness.
 - **Stable references for free.** Rows come back from SQLite as fresh objects, so a read rebuilding view models
-  would repaint every subscriber. Declare the shape with `derive` and the kernel keeps each unit's value (usually a view
-  model) until that unit changes, handing back the same reference until then.
+  would repaint every subscriber. Declare the shape as a `byUnit` cache and the kernel keeps each unit's value (usually
+  a view model) until that unit changes, handing back the same reference until then.
 - **One query engine.** Every environment runs SQLite — the device's, sql.js on the web, sql.js in tests — so a store
   writes each query once, in SQL, and a test runs the SQL a device runs. A store whose database file keeps failing
   moves to an in-memory database on the same engine, so a disk error costs persistence, not speed.
@@ -301,7 +301,7 @@ Everything below is exported from the package root.
 | export | what it gives you |
 | --- | --- |
 | `defineSqliteStore(config)` | the store: `reads`, `push` and `lifecycle` on whichever connection is running, `capabilities` for what the store builds from that connection (a ranker running its own SQL, say), `bindSqlite` to run it on a connection, and `testing.over(conn)` for a test's own surface and the table to seed it through |
-| `definePartitions(config)` | from `key.where` and an optional `fetch`: the read constructors, `lifecycle`, `memos`, and the row/version primitives (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`) |
+| `definePartitions(config)` | from `key.where` and an optional `fetch`: the read constructors, `lifecycle`, `cache`, and the row/version primitives (`where`, `keyOf`, `has`, `versionOf`, `bump`, `clearEtag`) |
 | `defineShredColumns<Src, Ctx>()(columns)` | one column table bound to everything derived from it: `names`, `columnDefs`, `row`, and `ops` once every column declares one |
 
 ### Rows
@@ -335,7 +335,6 @@ with nothing to compare against, its rows go straight in and every unit counts a
 | export | what it gives you |
 | --- | --- |
 | `partitions.read()`, `.readMany()`, `.readGrouped()` | a `{ getValue, useValue }` pair per read: one slice, a variable set of them, or one group of candidates per thing asked about. A `varyBy` value that is an object or an array keys by its content, and its identity is remembered per reference so a caller holding one across a list serializes it once — which is why `__DEV__` freezes it: a key remembered for a reference is only sound while the content holds still |
-| `partitions.derive()` | a value derived from each unit's rows, usually a view model, cached per unit and addressed by partition key and unit id: `.at`, `.atEach`, `.pick`, `.where`, `.all`. Name it after what it holds and its unit, such as `cardsByPlayer`. You supply `fromRows`, which turns one unit's rows into its value; a write rebuilds only the units it changed and hands back the previous reference for the rest. `.one`, `.byIds` and `.mapByIds` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Reads of the same shape share one set of derived values, so a unit's value is built once however many ask |
 | `pairRead(read)` | publishes a read's two halves on a service, gated on the args the read declares. They return the same value but do not fetch alike: `useValue` refetches on React Query's staleness, `getValue` fetches a partition that has never been fetched and otherwise leaves it |
 | `rowsOf(table)` | a query, then a shape: `.rows`, `.map`, `.indexed`, `.grouped`, and `.ordered` for results parallel to the ids asked for — each returning the caller's stable empty |
 | `createWindowedList(...)` | windowed list reads: fetch a page, keep the rest off-heap |
@@ -349,13 +348,13 @@ with nothing to compare against, its rows go straight in and every unit counts a
 | `createTrackedSelector` | off-heap-aware reselect, for reads reached from a Redux selector |
 | `useTrackedValue` | the hook every reactive read goes through: runs a derivation, subscribes to exactly what it read, and honours the read gate — for a derivation over several stores, or over Redux as well |
 
-### Memoizing derived values
+### Caching derived values
 
 | export | what it gives you |
 | --- | --- |
-| `partitions.memos({ … })` | every value a store derives onto the heap, declared in one reviewable block and keyed by the partition for you |
-| `byVersion` | dropped by every write that changed its partition; for a value derived from the whole slice |
-| `byUnit` | one entry per unit, kept until that unit changes; for a value built from one unit's rows. `readMany` answers what it holds and builds every miss in one call, so a read of a roster costs one query for the units that changed |
+| `partitions.cache({ … })` | every value a store keeps on the heap beyond its rows, declared in one reviewable block, each entry named by its key and kept per partition for you. Nothing in it fetches: a value is built from rows already in the table, on first use |
+| `byUnit` | one value per unit, built from that unit's rows by `fromRows` (usually a view model) and rebuilt only when a write changes them, handing back the previous reference for every other unit. Read by partition key and unit id: `.at`, `.atEach`, `.pick` depend on the units they name alone; `.where` and `.all` on the slice, since which units match can move. Every miss in one `.atEach` or `.pick` is built from one query. Name it after what it holds and its unit, such as `cardsByPlayer`; reads of the same shape share it, so a unit's value is built once however many ask |
+| `byVersion` | values computed from the whole slice, dropped by every write that changed it; the lookup passes the build: `.for(key).read(() => …)` |
 | `shallowEqualValue`, `shallowEqualRecord`, `shallowEqualArray`, `shallowEqualStruct` | the `isEqual` family a read compares its value with |
 
 ### Host services and diagnostics

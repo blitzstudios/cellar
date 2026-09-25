@@ -7,7 +7,7 @@
 import type { WriteResult } from './change_set';
 import type { PartitionKeySpec } from '../define_partitions';
 import type { DerivedValues } from '../read/derived_values';
-import type { byUnit } from '../caches';
+import type { byUnit } from '../read/derived_values';
 
 /** A value one SQLite column can hold in a row table: a string, a number, or null. Booleans are stored as 0 or 1. */
 export type SqlValue = string | number | null;
@@ -115,11 +115,11 @@ export interface RowTableSchema<Row extends RowShape> {
    * replaces the rows of each unit in the set with the unit's new rows, deleting a unit that's no longer there, and
    * then bumps the partition's version and the version of each changed unit.
    *
-   * Reads use the same division. A read that asks for particular units (through derived values'
-   * {@linkcode DerivedValues.at | at} or {@linkcode DerivedValues.atEach | atEach}, or a {@linkcode byUnit} memo)
-   * depends on just those units, and recomputes only when a write changes one of them. A read that looks at the whole
-   * partition (scanning the table, or derived values' {@linkcode DerivedValues.all | all} or
-   * {@linkcode DerivedValues.where | where}) depends on the partition, and recomputes after any write that changes it.
+   * Reads use the same division. A read that asks for particular units (through a {@linkcode byUnit} cache's
+   * {@linkcode DerivedValues.at | at} or {@linkcode DerivedValues.atEach | atEach}) depends on just those units, and
+   * recomputes only when a write changes one of them. A read that looks at the whole partition (scanning the table, or
+   * a {@linkcode byUnit} cache's {@linkcode DerivedValues.all | all} or {@linkcode DerivedValues.where | where})
+   * depends on the partition, and recomputes after any write that changes it.
    * Either way, the component re-renders only if the recomputed value differs. Derived values likewise build one
    * value per unit, and rebuild only the units a write changed.
    */

@@ -26,6 +26,7 @@ import { covered, uncoveredReads } from '../table/read_coverage';
 import type { PartitionLifecycle, Partitions, definePartitions } from '../define_partitions';
 import type { pairRead } from './facade';
 import type { shallowEqualStruct } from '../caches';
+import type { byUnit } from './derived_values';
 import type { StoreSurface } from '../define_sqlite_store';
 
 /**
@@ -188,7 +189,7 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
    * {@linkcode CommonDef.empty | empty}.
    *
    * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
-   * derived values or unit memos, it depends on just the units (such as the players) it read, and a write to other
+   * a {@linkcode byUnit} cache, it depends on just the units (such as the players) it read, and a write to other
    * units doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
    * after any write to it.
    */
@@ -439,8 +440,8 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     createTrackedCache<T>(def.getCacheMax ?? 256, def.isEqual ?? shallowEqualValue);
 
   /**
-   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from derived values and unit
-   * memos reports the units it read and depends on those alone. One that read rows straight off the table, or reported
+   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from `byUnit` caches reports
+   * the units it read and depends on those alone. One that read rows straight off the table, or reported
    * nothing at all, is made to depend on every partition it named: it could have read anything in them.
    */
   const selectTracked = <T>(partitions: readonly (readonly string[])[], select: () => T): T => {
@@ -615,4 +616,4 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };
+export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, byUnit, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };

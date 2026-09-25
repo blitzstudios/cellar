@@ -6,11 +6,11 @@
  *
  * These read the table directly, so a read whose {@linkcode ReadDef.select | select} uses them depends on the whole
  * partition (a partition is the set of rows one fetch returns and replaces) and recomputes after any write that changes
- * it. To depend on particular units instead, use derived values or a {@linkcode byUnit} memo.
+ * it. To depend on particular units instead, use a {@linkcode byUnit} cache.
  */
 import { FindOpts, RowShape, RowTable } from '../table/types';
 import type { ReadDef } from './surface';
-import type { byUnit } from '../caches';
+import type { byUnit } from './derived_values';
 /** Columns whose value is always a string, so they can key a `Map` or `Record` directly. */
 type StringColumn<Row> = {
     [K in keyof Row]-?: Row[K] extends string ? K : never;

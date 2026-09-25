@@ -17,6 +17,7 @@ import { DataResult, DataStatus } from '../store_result';
 import type { PartitionLifecycle, Partitions, definePartitions } from '../define_partitions';
 import type { pairRead } from './facade';
 import type { shallowEqualStruct } from '../caches';
+import type { byUnit } from './derived_values';
 import type { StoreSurface } from '../define_sqlite_store';
 /**
  * The parts of a store's fetch ingest that its reads use: the hooks that fetch partitions, and imperative fetch starts.
@@ -170,7 +171,7 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
      * {@linkcode CommonDef.empty | empty}.
      *
      * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
-     * derived values or unit memos, it depends on just the units (such as the players) it read, and a write to other
+     * a {@linkcode byUnit} cache, it depends on just the units (such as the players) it read, and a write to other
      * units doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
      * after any write to it.
      */
@@ -285,5 +286,5 @@ export declare function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>): 
     readGrouped: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadGroupedDef<Args, Key, T, V>) => Read<Args, T>;
     has: (key: Key) => boolean;
 };
-export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };
+export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, byUnit, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };
 //# sourceMappingURL=surface.d.ts.map

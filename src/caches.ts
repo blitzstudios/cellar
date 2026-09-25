@@ -2,12 +2,15 @@
  * Caches for values a store computes from its table rows, each holding a fixed number of entries.
  *
  * A store's rows live in SQLite, and every query returns new objects, so anything computed from them (a view model, a
- * ranking, a lookup map) would be rebuilt on every read without a cache. A memo keeps each computed value together with
- * the version of the rows it was computed from, and returns it until those rows change: a {@linkcode byVersion} memo
- * until any write to its partition (the set of rows one fetch returns and replaces), a {@linkcode byUnit} memo until a
- * write to its unit (all the rows sharing one value of the table's unit column, such as one player's rows). When a
- * value is rebuilt and `isEqual` finds it equal to the previous one, the previous object is kept, so readers don't
- * re-render. Stores declare their memos in one block with {@linkcode createMemos}.
+ * ranking, a lookup map) would be rebuilt on every read without a cache. A cache keeps each computed value together
+ * with the version of the rows it was computed from, and returns it until those rows change: a {@linkcode byVersion}
+ * cache until any write to its partition (the set of rows one fetch returns and replaces), a {@linkcode byUnit} cache
+ * until a write to its unit (all the rows sharing one value of the table's unit column, such as one player's rows).
+ * When a value is rebuilt and `isEqual` finds it equal to the previous one, the previous object is kept, so readers
+ * don't re-render. Stores declare their caches in one block, {@linkcode Partitions.cache | cache}.
+ *
+ * The per-partition machinery underneath is a memo: {@linkcode byVersion}'s entries, and {@linkcode unitMemo}, which
+ * holds a {@linkcode byUnit} cache's values.
  */
 
 import { identityOf, KEY_SEP, cacheKeyOf } from './args_key';
@@ -15,8 +18,8 @@ import { reportStoreDegradation } from './diagnostics/telemetry';
 import { Dep, runTracked, trackDependency } from './reactivity/tracking';
 import { covered } from './table/read_coverage';
 import type { CommonDef, ReadDef } from './read/surface';
-import type { Partitions, definePartitions } from './define_partitions';
-import type { SqliteStoreConfig } from './define_sqlite_store';
+import type { Partitions } from './define_partitions';
+import type { byUnit } from './read/derived_values';
 
 const EVICTION_GHOSTS = 256;
 const UNDERSIZED_REPORT_AT = 256;
@@ -261,21 +264,21 @@ export function createTrackedCache<V>(maxEntries: number, isEqual?: (prev: V, ne
 }
 
 /**
- * One part of a memo entry's key, beyond the partition (and unit): a string, number, boolean, null or undefined, or an
+ * One part of a cache entry's key, beyond the partition (and unit): a string, number, boolean, null or undefined, or an
  * object or array, such as a scoring config. Objects and arrays are compared by content, and each distinct content is
  * replaced in the key by a short id, so a large object doesn't make every key long.
  */
-export type MemoPart = string | number | boolean | null | undefined | readonly unknown[] | Record<string, unknown>;
+export type CacheKeyPart = string | number | boolean | null | undefined | readonly unknown[] | Record<string, unknown>;
 
-/** One {@linkcode MemoPart} per name the memo declared in {@linkcode MemoDecl.by | by}, in that order. */
-type PartsOf<By extends readonly string[]> = { -readonly [Index in keyof By]: MemoPart };
+/** One {@linkcode CacheKeyPart} per name the cache declared in {@linkcode MemoDecl.by | by}, in that order. */
+type PartsOf<By extends readonly string[]> = { -readonly [Index in keyof By]: CacheKeyPart };
 
 /**
- * A {@linkcode byVersion} memo for one partition, as `memo.for(key)` returns it. A partition is the set of rows one
- * fetch returns and replaces. Entries are keyed by the parts named in the memo's {@linkcode MemoDecl.by | by}, passed
- * in that order, and every entry counts as missing after any write that changes the partition.
+ * A {@linkcode byVersion} cache's entries for one partition, as `.for(key)` returns them. A partition is the set of rows
+ * one fetch returns and replaces. Entries are keyed by the parts named in the cache's {@linkcode MemoDecl.by | by},
+ * passed in that order, and every entry counts as missing after any write that changes the partition.
  *
- * `memo.for(key)` reads the partition's version when it is called, so call it where the value is needed rather than
+ * `.for(key)` reads the partition's version when it is called, so call it where the value is needed rather than
  * keeping its result. It is tracked: a read whose {@linkcode ReadDef.select | select} calls it depends on the whole
  * partition, and re-runs after any write that changes it.
  */
@@ -298,9 +301,9 @@ export interface BoundVersionMemo<V, By extends readonly string[]> {
 }
 
 /**
- * A {@linkcode byUnit} memo for one partition, as `memo.for(key)` returns it. A unit is all the rows sharing one value
- * of the table's unit column, such as one player's rows. Each entry belongs to one unit and is kept until a write
- * changes that unit's rows.
+ * A {@linkcode unitMemo} for one partition, as `.for(key)` returns it: where a {@linkcode byUnit} cache keeps its
+ * values. A unit is all the rows sharing one value of the table's unit column, such as one player's rows. Each entry
+ * belongs to one unit and is kept until a write changes that unit's rows.
  *
  * Every lookup is tracked per unit: a read whose {@linkcode ReadDef.select | select} looks up units here depends on
  * just those units, and doesn't re-run for writes to other units. Table reads inside `build` count as reads of that
@@ -322,36 +325,33 @@ export interface BoundUnitMemo<V, By extends readonly string[]> {
 }
 
 /**
- * A memo declared in a store's {@linkcode Partitions.memos | memos} block: one cache for the whole store, with entries
- * kept per partition. A partition is the set of rows one fetch returns and replaces.
+ * A {@linkcode byVersion} cache as a store's {@linkcode Partitions.cache | cache} block returns it: one cache for the
+ * whole store, with entries kept per partition. A partition is the set of rows one fetch returns and replaces.
  */
 export interface Memo<Key, Bound> {
   /**
-   * The memo's entries for one partition, to read and write. Reads the partition's current version, so call it where
+   * The cache's entries for one partition, to read and write. Reads the partition's current version, so call it where
    * the value is needed rather than keeping its result.
    */
   for(key: Key): Bound;
 }
 
 /**
- * A memo definition, before {@linkcode createMemos} attaches it to a store. {@linkcode byVersion} and
- * {@linkcode byUnit} create them.
+ * A memo definition, before {@linkcode createMemos} attaches it to a store: a {@linkcode byVersion} cache, or the
+ * {@linkcode unitMemo} under a {@linkcode byUnit} cache.
  */
-interface MemoDecl<Bound> {
+export interface MemoDecl<Bound> {
   /** The names of the memo's key parts beyond the partition (and unit), in the order a lookup passes them. */
   by: readonly string[];
   /** Attaches the memo to a store's partitions, which supply each partition's key and versions. */
   bind(store: PartitionBinding<unknown>, diagnostics: MemoDiagnostics): Memo<unknown, Bound>;
 }
 
-/**
- * A memo definition as created by {@linkcode byVersion} or {@linkcode byUnit}, before {@linkcode createMemos} attaches
- * it to a store: the type of each entry in a store's {@linkcode Partitions.memos | memos} block.
- */
+/** A memo definition of any kind, before {@linkcode createMemos} attaches it to a store. */
 export type MemoDeclaration = MemoDecl<unknown>;
 
 /**
- * What a store's partitions give its memos: how to turn a partition key into its key parts, and how to read the
+ * What a store's partitions give its caches: how to turn a partition key into its key parts, and how to read the
  * partition's version and each unit's. A partition is the set of rows one fetch returns and replaces; a unit is all the
  * rows sharing one value of the table's unit column.
  */
@@ -377,7 +377,7 @@ const INTERNED_PARTS_MAX = 256;
  * content get the same id, and a memo of thousands of entries holds ids instead of repeated JSON. An id evicted for
  * capacity costs a rebuild, never a wrong answer.
  */
-function createPartKeyer(): (prefix: string, parts: readonly MemoPart[]) => string {
+function createPartKeyer(): (prefix: string, parts: readonly CacheKeyPart[]) => string {
   const ids = createBoundedLru<string>(INTERNED_PARTS_MAX);
   let nextId = 0;
   const idFor = (part: object): string => {
@@ -398,16 +398,17 @@ function createPartKeyer(): (prefix: string, parts: readonly MemoPart[]) => stri
 }
 
 /** The last argument of a variadic memo call, and the parts before it. */
-function splitArgs<T>(args: readonly unknown[]): { parts: readonly MemoPart[]; last: T } {
-  return { parts: args.slice(0, -1) as readonly MemoPart[], last: args[args.length - 1] as T };
+function splitArgs<T>(args: readonly unknown[]): { parts: readonly CacheKeyPart[]; last: T } {
+  return { parts: args.slice(0, -1) as readonly CacheKeyPart[], last: args[args.length - 1] as T };
 }
 
 /**
- * Declares a memo of values computed from a whole partition (the set of rows one fetch returns and replaces), such as a
- * map of a league's players by team. Every entry counts as missing after any write that changes its partition, and
- * `build` runs again on the next lookup. A read that uses it depends on the whole partition.
+ * Declares a cache of values computed from a whole partition (the set of rows one fetch returns and replaces), such as
+ * a map of a league's players by team, for a store's {@linkcode Partitions.cache | cache} block. Every entry counts as
+ * missing after any write that changes its partition, and the value is computed again at the next lookup, by the
+ * `build` that lookup passes. A read that uses it depends on the whole partition.
  *
- * Use it for a value several reads share, or one a read looks up once per item in a list. A memo keyed exactly like a
+ * Use it for a value several reads share, or one a read looks up once per item in a list. A cache keyed exactly like a
  * single read adds nothing, since the read already caches its own value. Called in two steps, so the value type can be
  * given while {@linkcode MemoDecl.by | by} is inferred: `byVersion<Map<string, Player[]>>()({ max: 8 })`.
  */
@@ -417,7 +418,7 @@ export function byVersion<V>() {
     max: number;
     /**
      * Names for the key's parts beyond the partition, in the order a lookup passes them, such as `['scoring']`. Leave
-     * it out for a memo with one value per partition.
+     * it out for a cache with one value per partition.
      */
     by?: By;
     /**
@@ -452,15 +453,15 @@ export function byVersion<V>() {
 }
 
 /**
- * Declares a memo of values built from one unit's rows, such as a player's season totals. A unit is all the rows
- * sharing one value of the table's unit column (such as `player_id`). Each entry is kept until a write changes that
- * unit's rows.
+ * Declares a memo of values built from one unit's rows: where a {@linkcode byUnit} cache keeps its values, which a
+ * store declares instead. A unit is all the rows sharing one value of the table's unit column (such as `player_id`).
+ * Each entry is kept until a write changes that unit's rows.
  *
  * A read that looks units up here depends on just those units, so it re-runs only when one of them changes. Table reads
  * inside `build` count as reads of that unit, not of the whole partition. Called in two steps, so the value type can be
- * given while {@linkcode MemoDecl.by | by} is inferred: `byUnit<SeasonTotals>()({ max: 512 })`.
+ * given while {@linkcode MemoDecl.by | by} is inferred: `unitMemo<SeasonTotals>()({ max: 512 })`.
  */
-export function byUnit<V>() {
+export function unitMemo<V>() {
   return <const By extends readonly string[] = readonly []>(spec: {
     /** How many values to keep, across all partitions and units; beyond that, the least recently used are discarded. */
     max: number;
@@ -499,7 +500,7 @@ export function byUnit<V>() {
       return {
         for: (key) => {
           const prefix = cacheKeyOf(store.parts(key));
-          const entryKey = (unit: string, parts: readonly MemoPart[]): string => keyer(`${prefix}${KEY_SEP}${unit}`, parts);
+          const entryKey = (unit: string, parts: readonly CacheKeyPart[]): string => keyer(`${prefix}${KEY_SEP}${unit}`, parts);
           return {
             read: (unit, ...args) => {
               const { parts, last: build } = splitArgs<() => V>(args);
@@ -538,17 +539,9 @@ export function byUnit<V>() {
 export type BoundMemos<Key, D> = { [K in keyof D]: D[K] extends MemoDecl<infer Bound> ? Memo<Key, Bound> : never };
 
 /**
- * A store's {@linkcode Partitions.memos | memos} function (from {@linkcode definePartitions}), which attaches a block
- * of memo definitions to the store's partitions. A store's {@linkcode SqliteStoreConfig.build | build} passes it to
- * modules that declare their own memos, such as a ranker, so every memo the store holds is attached the same way.
- */
-export type MemoFactory<Key> = <D extends Record<string, MemoDeclaration>>(decls: D) => BoundMemos<Key, D>;
-
-/**
- * Attaches a block of memo definitions (from {@linkcode byVersion} and {@linkcode byUnit}) to a store's partitions,
+ * Attaches memo definitions (a {@linkcode byVersion} cache, or a {@linkcode unitMemo}) to a store's partitions,
  * returning one usable memo per entry. Each memo gets its partition's key parts and versions from `binding`, so a
- * lookup passes only the parts named in {@linkcode MemoDecl.by | by}. Declaring a store's memos in one block also
- * lists, in one place, everything it keeps in memory beyond its rows.
+ * lookup passes only the parts named in {@linkcode MemoDecl.by | by}.
  */
 export function createMemos<Key, D extends Record<string, MemoDeclaration>>(
   store: string,
@@ -632,4 +625,4 @@ export function shallowEqualArray<V>(left: readonly V[], right: readonly V[]): b
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { CommonDef, Partitions, ReadDef, SqliteStoreConfig, definePartitions };
+export type { CommonDef, Partitions, ReadDef, byUnit };

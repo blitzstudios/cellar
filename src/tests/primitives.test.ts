@@ -1,5 +1,4 @@
 import {
-  byUnit,
   byVersion,
   createBoundedLru,
   createMemos,
@@ -10,6 +9,7 @@ import {
   shallowEqualRecord,
   shallowEqualStruct,
   shallowEqualValue,
+  unitMemo,
 } from '../caches';
 import { itDev, itProd } from '../testing/dev_mode';
 import { makeResult } from '../store_result';
@@ -271,7 +271,7 @@ describe('a memo reporting on itself', () => {
   const of = (report: string) => warnings.filter((warning) => warning.includes(report));
 
   it('stays quiet about its size while it only rotates through keys that never come back', () => {
-    const { rotating } = createMemos('test', onePartition, { rotating: byUnit<{ n: number }>()({ max: 8 }) });
+    const { rotating } = createMemos('test', onePartition, { rotating: unitMemo<{ n: number }>()({ max: 8 }) });
 
     for (let key = 0; key < 4000; key += 1) rotating.for('us').read(`k${key}`, () => ({ n: key }));
 
@@ -279,7 +279,7 @@ describe('a memo reporting on itself', () => {
   });
 
   itDev('reports one too small for the keys it keeps being asked for again', () => {
-    const { undersized } = createMemos('test', onePartition, { undersized: byUnit<{ n: number }>()({ max: 8 }) });
+    const { undersized } = createMemos('test', onePartition, { undersized: unitMemo<{ n: number }>()({ max: 8 }) });
 
     for (let round = 0; round < 40; round += 1) {
       for (let key = 0; key < 16; key += 1) undersized.for('us').read(`k${key}`, () => ({ n: key }));
@@ -299,7 +299,7 @@ describe('a memo reporting on itself', () => {
   });
 
   itDev('says nothing about one whose keys come back', () => {
-    const { earning } = createMemos('test', onePartition, { earning: byUnit<number>()({ max: 4096 }) });
+    const { earning } = createMemos('test', onePartition, { earning: unitMemo<number>()({ max: 4096 }) });
 
     for (let key = 0; key < 4000; key += 1) earning.for('us').read('p1', () => key);
 
@@ -365,7 +365,7 @@ describe('a memo bound to a partition', () => {
 
   it('holds a unit value across writes that changed other units, and rebuilds once its unit changes', () => {
     const { binding, bump } = bindable();
-    const { players } = createMemos('test', binding, { players: byUnit<{ n: number }>()({ max: 64 }) });
+    const { players } = createMemos('test', binding, { players: unitMemo<{ n: number }>()({ max: 64 }) });
     let built = 0;
     const build = () => {
       built += 1;
@@ -383,7 +383,7 @@ describe('a memo bound to a partition', () => {
 
   it('builds every miss of a batch in one call, and answers the rest from what it holds', () => {
     const { binding, bump } = bindable();
-    const { players } = createMemos('test', binding, { players: byUnit<string | undefined>()({ max: 64 }) });
+    const { players } = createMemos('test', binding, { players: unitMemo<string | undefined>()({ max: 64 }) });
     const calls: string[][] = [];
     const build = (missing: readonly string[]) => {
       calls.push([...missing]);
@@ -404,7 +404,7 @@ describe('a memo bound to a partition', () => {
 
   it('reports the units it read and not the partition, so a reader of them sleeps through other writes', () => {
     const { binding } = bindable();
-    const { players } = createMemos('test', binding, { players: byUnit<number>()({ max: 64 }) });
+    const { players } = createMemos('test', binding, { players: unitMemo<number>()({ max: 64 }) });
 
     const { deps } = runTracked(() => players.for('us').readMany(['p1', 'p2'], (missing) => new Map(missing.map((unit) => [unit, 1]))));
 

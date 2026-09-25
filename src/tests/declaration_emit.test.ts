@@ -76,10 +76,9 @@ export const itemStore = defineSqliteStore({
       version,
       key: { fields: ['league'], where: (key) => ({ league: key.league }) },
     });
-    const card = items.derive<{ id: string }>()({ name: 'card', max: 64, fromRows: ([row]) => ({ id: row.id }) });
-    const memos = items.memos({
+    const { card, byTeam } = items.cache({
+      card: byUnit<{ id: string }>()({ max: 64, fromRows: ([row]) => ({ id: row.id }) }),
       byTeam: byVersion<Map<string, ItemRow[]>>()({ max: 4 }),
-      total: byUnit<number>()({ max: 64, by: ['scale'] }),
     });
     const push = createPushIngest<Item, ItemRow, LeagueKey>({
       name: 'item',
@@ -102,7 +101,7 @@ export const itemStore = defineSqliteStore({
           empty: [],
         }),
         Memoized: items.read<LeagueKey, number>()({
-          select: (_args, key) => memos.byTeam.for(key).read(() => new Map()).size,
+          select: (_args, key) => byTeam.for(key).read(() => new Map()).size,
           empty: 0,
         }),
         Across: items.readMany<ItemsKey, number>()({
