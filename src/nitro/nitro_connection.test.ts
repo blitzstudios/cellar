@@ -341,8 +341,9 @@ describe('binding a store — the handles a failure opened', () => {
     failingBind('metrics.db', writer, reader);
 
     // Three attempts, each closing its own: the file, the file again after deleting it, and then the in-memory
-    // fallback, which opens a writer and no reader.
-    expect(writer.close).toHaveBeenCalledTimes(3);
+    // fallback, which opens a writer and no reader. That fallback first tries a `:memory:` database, which this fake
+    // driver reports as a file, so it closes that too before opening the scratch database.
+    expect(writer.close).toHaveBeenCalledTimes(4);
     expect(reader.close).toHaveBeenCalledTimes(2);
   });
 
@@ -379,7 +380,7 @@ describe('binding a store — the handles a failure opened', () => {
     const reader = fakeHandle();
     failingBind('again.db', writer, reader);
 
-    expect(writer.close).toHaveBeenCalledTimes(3);
+    expect(writer.close).toHaveBeenCalledTimes(4);
     expect(reader.close).toHaveBeenCalledTimes(2);
     expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain('again.db');
   });
@@ -507,8 +508,42 @@ describe('binding a store — getting SQLite back', () => {
 
     bindSqliteStore('switched', 'switched.db', { bindSqlite }, { inMemory: true });
 
-    expect(mockOpen.mock.calls.map(([options]) => (options as { name: string }).name)).toEqual(['switched.db.fallback']);
+    expect(mockOpen.mock.calls.map(([options]) => (options as { name: string }).name)).toEqual([':memory:switched.db', 'switched.db.fallback']);
     expect(bindSqlite.mock.calls[0][1]).toEqual(expect.objectContaining({ temporary: true }));
+  });
+
+  /** A handle whose main database has no file, which is what nitro 1.1.5 and later open for a `:memory:` name. */
+  const memoryHandle = () => {
+    const handle = fakeHandle();
+    handle.execute.mockImplementation((sql: string, params?: unknown[]) => {
+      handle.executed.push({ sql, params });
+      return { rows: { _array: sql.includes('pragma_database_list') ? [{ file: '' }] : [] } };
+    });
+    return handle;
+  };
+
+  it('uses a private in-memory database where nitro opens one, and opens no scratch file', () => {
+    const memory = memoryHandle();
+    mockOpen.mockImplementation(({ name }: { name: string }) => (name.startsWith(':memory:') ? memory : fakeHandle()) as never);
+    const bindSqlite = jest.fn();
+
+    bindSqliteStore('private', 'private.db', { bindSqlite }, { inMemory: true });
+
+    expect(mockOpen.mock.calls.map(([options]) => (options as { name: string }).name)).toEqual([':memory:private.db']);
+    expect(bindSqlite.mock.calls[0][0]).toEqual(expect.objectContaining({ reader: undefined }));
+    expect(bindSqlite.mock.calls[0][1]).toEqual(expect.objectContaining({ temporary: true }));
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).toContain(':memory:private.db');
+    mockOpen.mockReset();
+  });
+
+  it('deletes the file an older nitro opens for a `:memory:` name, and falls back to the scratch database', () => {
+    const bindSqlite = jest.fn();
+
+    bindSqliteStore('older', 'older.db', { bindSqlite }, { inMemory: true });
+
+    expect(mockDrop.mock.calls.map(([file]) => file)).toEqual(expect.arrayContaining([':memory:older.db', ':memory:older.db-wal', ':memory:older.db-shm']));
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).toEqual(expect.arrayContaining(['older.db.fallback']));
+    expect(getOpenSqliteConnections().map((entry) => entry.name)).not.toContain(':memory:older.db');
   });
 
   it('ingests through the JS row builders when asked to: on the file, on a reopen, and on the in-memory database', () => {

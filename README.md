@@ -148,11 +148,12 @@ export const itemStore = defineSqliteStore({
 callers get before that, so it has to be a stable reference.
 
 Until it is bound, a store runs over a connection that answers nothing, so each read gives back its `empty`. Startup
-binds it (step 4). On device, a SQLite failure mid-session reopens the database, deleting it first when the file is
-what failed, and after two failed reopens moves the store to an in-memory database: the same SQLite, with the store's
-tables in the connection's temp schema. `build` runs again each time the store moves, so it holds nothing outside what
-it returns — and `itemStore.reads` always reaches whichever connection is running, so callers hold the store rather
-than anything taken off it.
+binds it (step 4). On device, a SQLite failure mid-session reopens the database, deleting it first when the file is what
+failed, and after two failed reopens moves the store to an in-memory database: the same SQLite, with the store's tables
+in the connection's temp schema. With `react-native-nitro-sqlite` 1.1.5 or later in the binary, that database needs no
+file at all; on an older binary it is a scratch file beside the store's own, with `temp_store` in memory. `build` runs
+again each time the store moves, so it holds nothing outside what it returns — and `itemStore.reads` always reaches
+whichever connection is running, so callers hold the store rather than anything taken off it.
 
 #### Priming is by partition, not by what a read selects
 
