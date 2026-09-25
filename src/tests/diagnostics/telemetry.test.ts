@@ -1,7 +1,7 @@
 import { devWarnings } from '../../testing/dev_mode';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { reportStoreDegradation } from '../../diagnostics/telemetry';
-import { configureDataKernel, INERT_ERRORS } from '../../runtime';
+import { configureCellar, INERT_ERRORS } from '../../runtime';
 
 describe('reportStoreDegradation', () => {
   let captureException: jest.Mock;
@@ -13,14 +13,14 @@ describe('reportStoreDegradation', () => {
     resetOnceGuards();
     captureException = jest.fn();
     captureMessage = jest.fn();
-    configureDataKernel({ errors: { captureException, captureMessage } });
+    configureCellar({ errors: { captureException, captureMessage } });
     warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     // Sampling is on by default, so every assertion about a report needs the dice fixed.
     random = jest.spyOn(Math, 'random').mockReturnValue(0);
   });
 
   afterEach(() => {
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
     warn.mockRestore();
     random.mockRestore();
   });
@@ -60,7 +60,7 @@ describe('reportStoreDegradation', () => {
   });
 
   it('does not throw when the host configured no reporter, and still says so where anyone can see it', () => {
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
     expect(() => reportStoreDegradation({ scope: 'row_table.native_shred.item', context: 'shred fell back to JS' })).not.toThrow();
     expect(warn).toHaveBeenCalledTimes(devWarnings(1));
   });

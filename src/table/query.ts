@@ -35,10 +35,10 @@ export function matchesWhere<Row extends RowShape>(row: Row, where: Partial<Row>
   return true;
 }
 
-/** Dev-only: the declared unit has to be one of the table's columns, since every write groups its rows by it. */
-export function assertUnitColumn<Row extends RowShape>(schema: RowTableSchema<Row>): void {
-  if (!(schema.unit in schema.columns)) {
-    throw new Error(`row_table: \`${schema.table}\` declares unit \`${String(schema.unit)}\`, which is not one of its columns.`);
+/** Dev-only: the declared entity has to be one of the table's columns, since every write groups its rows by it. */
+export function assertEntityIdColumn<Row extends RowShape>(schema: RowTableSchema<Row>): void {
+  if (!(schema.entityId in schema.columns)) {
+    throw new Error(`row_table: \`${schema.table}\` declares entityId \`${String(schema.entityId)}\`, which is not one of its columns.`);
   }
 }
 

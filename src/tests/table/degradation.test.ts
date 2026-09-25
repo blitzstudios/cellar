@@ -11,7 +11,7 @@ const schema: RowTableSchema<Thing> = {
   table: 'things',
   columns: { id: { type: 'TEXT' }, region: { type: 'TEXT' } },
   primaryKey: ['id'],
-  unit: 'id',
+  entityId: 'id',
 };
 
 function brokenConn(match = /./): SqliteConnection & { attempts: number } {

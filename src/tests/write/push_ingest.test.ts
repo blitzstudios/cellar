@@ -105,7 +105,7 @@ describe('create_push_ingest', () => {
     expect(harness.writes).toEqual(['us:1', 'us:2']);
   });
 
-  it('bumps each partition with the units its flush changed, chunks included', async () => {
+  it('bumps each partition with the entities its flush changed, chunks included', async () => {
     const harness = setup({ chunk: 1 });
     harness.push.queue('us:1', { id: 'a', value: 1 });
     harness.push.queue('us:1', { id: 'b', value: 2 });

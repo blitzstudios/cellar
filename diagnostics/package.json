@@ -1,5 +1,5 @@
 {
-  "name": "@sleeperhq/react-data-kernel/diagnostics",
+  "name": "@sleeperhq/cellar/diagnostics",
   "private": true,
   "main": "../lib/module/diagnostics/index.js",
   "module": "../lib/module/diagnostics/index.js",

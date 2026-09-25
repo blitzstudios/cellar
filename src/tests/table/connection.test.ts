@@ -14,7 +14,7 @@ const schema: RowTableSchema<Thing> = {
   table: 'things',
   columns: { scope: { type: 'TEXT' }, id: { type: 'TEXT' }, name: { type: 'TEXT' }, n: { type: 'INTEGER' } },
   primaryKey: ['scope', 'id'],
-  unit: 'id',
+  entityId: 'id',
 };
 
 const nativeShredSpec: NativeShredSpec = {

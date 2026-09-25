@@ -2,7 +2,7 @@
  * {@linkcode useTrackedValue}, the hook behind every {@linkcode Read.useValue | useValue} read: it runs a computation,
  * subscribes to exactly the store data it read, and runs it again when that data changes.
  *
- * Dependencies are found by running the computation, not declared: every partition version, unit version and presence
+ * Dependencies are found by running the computation, not declared: every partition version, entity version and presence
  * it reads is subscribed to. A read of three players subscribes to those three, so a write to a fourth doesn't re-run
  * it. When the computation reads something different the next time, the subscriptions change to match.
  */

@@ -6,12 +6,12 @@
  *
  * These read the table directly, so a read whose {@linkcode ReadDef.select | select} uses them depends on the whole
  * partition (a partition is the set of rows one fetch returns and replaces) and recomputes after any write that changes
- * it. To depend on particular units instead, use a {@linkcode byUnit} cache.
+ * it. To depend on particular entities instead, use a {@linkcode byEntity} cache.
  */
 
 import { FindOpts, RowShape, RowTable } from '../table/types';
 import type { ReadDef } from './surface';
-import type { byUnit } from './derived_values';
+import type { byEntity } from './derived_values';
 
 /** Columns whose value is always a string, so they can key a `Map` or `Record` directly. */
 type StringColumn<Row> = { [K in keyof Row]-?: Row[K] extends string ? K : never }[keyof Row] & string;
@@ -145,4 +145,4 @@ export function rowsOf<Row extends RowShape>(table: RowTable<Row>): RowReader<Ro
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { FindOpts, ReadDef, RowTable, byUnit };
+export type { FindOpts, ReadDef, RowTable, byEntity };

@@ -3,12 +3,12 @@ import type { ReadDef } from '../read/surface';
 /**
  * Whether a read touched the table somewhere nothing reported what it read.
  *
- * A read's dependencies are found by running it: derived values or a unit memo report the units they read, a partition
- * memo reports the partition. A {@linkcode ReadDef.select | select} that reads rows straight off the table reports
- * nothing, and if it also read one unit memo, it would look as though it depended on that unit alone. So every table
- * read counts itself here unless it runs inside {@linkcode covered} — which the kernel's own reporting constructs wrap
- * their reads in — and a read that made an uncovered table read is made to depend on its whole partition. A store can
- * lose precision this way, never correctness.
+ * A read's dependencies are found by running it: derived values or an entity memo report the entities they read, a
+ * partition memo reports the partition. A {@linkcode ReadDef.select | select} that reads rows straight off the table
+ * reports nothing, and if it also read one entity memo, it would look as though it depended on that entity alone. So
+ * every table read counts itself here unless it runs inside {@linkcode covered} — which Cellar's own reporting
+ * constructs wrap their reads in — and a read that made an uncovered table read is made to depend on its whole
+ * partition. A store can lose precision this way, never correctness.
  */
 
 let covering = 0;

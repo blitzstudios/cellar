@@ -7,7 +7,7 @@
 import type { WriteResult } from './change_set';
 import type { PartitionKeySpec } from '../define_partitions';
 import type { DerivedValues } from '../read/derived_values';
-import type { byUnit } from '../read/derived_values';
+import type { byEntity } from '../read/derived_values';
 
 /** A value one SQLite column can hold in a row table: a string, a number, or null. Booleans are stored as 0 or 1. */
 export type SqlValue = string | number | null;
@@ -77,7 +77,7 @@ export interface MetaDef<Row extends RowShape> {
 
 /**
  * The declaration of a row table: the SQLite table a store keeps its rows in, its columns, its primary key, the column
- * its changes are tracked by ({@linkcode RowTableSchema.unit | unit}), its indexes, and where it keeps ETags.
+ * its changes are tracked by ({@linkcode RowTableSchema.entityId | entityId}), its indexes, and where it keeps ETags.
  *
  * The table is created from this on the first launch, and each launch compares it with the table on disk. A change
  * that only adds nullable columns adds them in place and keeps the rows. Any other change (a column removed, retyped
@@ -101,29 +101,28 @@ export interface RowTableSchema<Row extends RowShape> {
    * partition, needs a primary key to match on.
    *
    * Use `[]` for a table whose rows have no identity of their own and can repeat, such as one a fetch refills whole;
-   * its writes compare each unit's rows as a set instead of row by row, and it can't be upserted into.
+   * its writes compare each entity's rows as a set instead of row by row, and it can't be upserted into.
    */
   primaryKey: ReadonlyArray<keyof Row & string>;
   /**
-   * The column that divides each partition into units. A unit is all the rows in one partition that share a value in
-   * this column: with `unit: 'player_id'`, player 4046's rows in the week 3 partition are one unit (one row or
-   * several), and the same player in the week 4 partition is a different unit. Choose the id that reads look things up
-   * by.
+   * The column holding each row's entity id: the id of the thing the row belongs to, such as `player_id`. With
+   * `entityId: 'player_id'`, player 4046 is one entity in the week 3 partition, whether it has one row there, several
+   * or none, and a separate entity in the week 4 partition. Choose the id that reads look things up by.
    *
-   * The unit is how finely the kernel tracks change. Every write compares its rows with the stored ones, and collects
-   * the unit value of each row that was added, changed or removed: that set is the write's change set. The write
-   * replaces the rows of each unit in the set with the unit's new rows, deleting a unit that's no longer there, and
-   * then bumps the partition's version and the version of each changed unit.
+   * The entity is how finely Cellar tracks change. Every write compares its rows with the stored ones, and collects
+   * the entity id of each row that was added, changed or removed: that set is the write's change set. The write
+   * replaces the rows of each entity in the set with the entity's new rows, removing the rows of an entity that's no
+   * longer there, and then bumps the partition's version and the version of each changed entity.
    *
-   * Reads use the same division. A read that asks for particular units (through a {@linkcode byUnit} cache's
-   * {@linkcode DerivedValues.at | at} or {@linkcode DerivedValues.atEach | atEach}) depends on just those units, and
+   * Reads use the same division. A read that asks for particular entities (through a {@linkcode byEntity} cache's
+   * {@linkcode DerivedValues.at | at} or {@linkcode DerivedValues.atEach | atEach}) depends on just those entities, and
    * recomputes only when a write changes one of them. A read that looks at the whole partition (scanning the table, or
-   * a {@linkcode byUnit} cache's {@linkcode DerivedValues.all | all} or {@linkcode DerivedValues.where | where})
+   * a {@linkcode byEntity} cache's {@linkcode DerivedValues.all | all} or {@linkcode DerivedValues.where | where})
    * depends on the partition, and recomputes after any write that changes it.
-   * Either way, the component re-renders only if the recomputed value differs. Derived values likewise build one
-   * value per unit, and rebuild only the units a write changed.
+   * Either way, the component re-renders only if the recomputed value differs. A {@linkcode byEntity} cache likewise
+   * builds one value per entity, and rebuilds only the entities a write changed.
    */
-  unit: keyof Row & string;
+  entityId: keyof Row & string;
   /**
    * Secondary indexes: SQLite indexes that let reads filtering on these columns find their rows without scanning the
    * whole table. Optional, and only for speed: without one, a read returns the same rows, but a filter no index covers
@@ -166,14 +165,14 @@ export interface FindOpts<Row extends RowShape> {
 /**
  * A store's rows in one SQLite table, and the only way the store reads and writes them. The table is divided into
  * partitions: a partition is the set of rows one fetch returns and replaces, picked out by column values (a
- * {@linkcode PartitionKeySpec.where | where}, such as `{ league: 'nfl' }`). Each partition is divided into units: a
- * unit is all the rows in the partition that share a value in the schema's {@linkcode RowTableSchema.unit | unit}
- * column, such as one player's rows.
+ * {@linkcode PartitionKeySpec.where | where}, such as `{ league: 'nfl' }`). A partition holds the rows of many
+ * entities: an entity is the thing a row belongs to, such as one player, named by the schema's
+ * {@linkcode RowTableSchema.entityId | entityId} column.
  *
- * Every write compares its rows with the stored ones and returns its change set: the unit value of each row that was
+ * Every write compares its rows with the stored ones and returns its change set: the entity id of each row that was
  * added, changed or removed. A write whose rows match what the table holds returns an empty set. The table doesn't
  * notify readers itself: the code that calls the write bumps the partition's version with the change set, which is what
- * re-renders the readers of those units.
+ * re-renders the readers of those entities.
  */
 export interface RowTable<Row extends RowShape> {
   /**
@@ -185,15 +184,16 @@ export interface RowTable<Row extends RowShape> {
   /** The columns whose values together identify one row, from the schema; `[]` for a table whose rows can repeat. */
   readonly primaryKey: ReadonlyArray<keyof Row & string>;
   /**
-   * The schema's unit column: the column whose value says which thing a row belongs to, such as `player_id`. Writes
-   * report their changes as the values of this column they changed, and derived values are built one per value.
+   * The schema's {@linkcode RowTableSchema.entityId | entityId} column: the column holding the id of the thing a row
+   * belongs to, such as `player_id`. Writes report their changes as the entity ids they changed, and a
+   * {@linkcode byEntity} cache builds one value per entity.
    */
-  readonly unit: keyof Row & string;
+  readonly entityId: keyof Row & string;
   /**
    * Adds `rows`, replacing any stored row with the same primary key, as a socket push wants. Unlike a partition
    * replace, it removes nothing. Requires a primary key.
    *
-   * Returns the unit values of the rows that were new or different, and the number of rows given. Writes in chunks, one
+   * Returns the entity ids of the rows that were new or different, and the number of rows given. Writes in chunks, one
    * transaction each, and gives the JS thread back between chunks.
    */
   upsert(
@@ -207,7 +207,7 @@ export interface RowTable<Row extends RowShape> {
    * Replaces the rows matching `where` with exactly `rows`, synchronously, so 300 rows can become 3, or none. Every
    * row in `rows` must itself match `where` (checked in dev), or the next replace of that partition wouldn't delete it.
    *
-   * Returns the unit values that were added, removed or changed, and the number of rows given.
+   * Returns the entity ids that were added, removed or changed, and the number of rows given.
    */
   overwrite(where: Partial<Row>, rows: readonly Row[]): WriteResult;
   /**
@@ -215,7 +215,7 @@ export interface RowTable<Row extends RowShape> {
    * {@linkcode RowTable.overwrite} does. When the connection and the store support it, the native shredder parses the
    * body and writes the rows in C++, so no JS objects are built for them; otherwise `parseRows` builds them in JS.
    *
-   * Returns the unit values that were added, removed or changed, and the number of rows written.
+   * Returns the entity ids that were added, removed or changed, and the number of rows written.
    */
   shred(where: Partial<Row>, rawJson: string, parseRows: (rawJson: string) => Row[]): Promise<WriteResult>;
   /** The first stored row whose columns equal the values in `where`, or `undefined` if none does. */
@@ -244,11 +244,11 @@ export interface RowTable<Row extends RowShape> {
    */
   has(where: Partial<Row>): boolean;
   /**
-   * The distinct values of the unit column among the rows matching `where`, such as every `player_id` in a league,
-   * without reading the rows themselves. Derived values use it to learn which units exist before building values
+   * The distinct entity ids among the rows matching `where`, such as every `player_id` in a league,
+   * without reading the rows themselves. Derived values use it to learn which entities exist before building values
    * only for the ones they haven't built yet.
    */
-  unitsWhere(where: Partial<Row>): string[];
+  entityIdsWhere(where: Partial<Row>): string[];
   /**
    * The ETag stored for the partition that `where` names (by the schema's
    * {@linkcode MetaDef.keyColumns | meta.keyColumns}), or `undefined` if none is stored or the schema declares no
@@ -270,4 +270,4 @@ export function columnNames<Row extends RowShape>(schema: RowTableSchema<Row>): 
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { PartitionKeySpec, DerivedValues, byUnit };
+export type { PartitionKeySpec, DerivedValues, byEntity };

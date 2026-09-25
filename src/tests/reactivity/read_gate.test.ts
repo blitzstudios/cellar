@@ -3,7 +3,7 @@ import TestRenderer, { act } from 'react-test-renderer';
 
 import { createVersionAtom } from '../../reactivity/version_atom';
 import { useTrackedValue } from '../../reactivity/tracked_value';
-import { configureDataKernel, INERT_GATE, ReadGate } from '../../runtime';
+import { configureCellar, INERT_GATE, ReadGate } from '../../runtime';
 
 /* global globalThis */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -40,7 +40,7 @@ function controllableGate() {
     },
   };
   return {
-    install: () => configureDataKernel({ gate: { useReadGate: () => gate } }),
+    install: () => configureCellar({ gate: { useReadGate: () => gate } }),
     set: (next: boolean) =>
       act(() => {
         live = next;
@@ -53,7 +53,7 @@ function controllableGate() {
 
 const US = ['us', '2024', 'regular', '5'];
 
-afterEach(() => configureDataKernel({ gate: INERT_GATE }));
+afterEach(() => configureCellar({ gate: INERT_GATE }));
 
 describe('the read gate on a subscription', () => {
   /** A read whose value moves with the partition version, counting how often the expensive part runs. */

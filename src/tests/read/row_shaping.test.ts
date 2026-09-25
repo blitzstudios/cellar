@@ -10,7 +10,7 @@ const schema: RowTableSchema<ItemRow> = {
   table: 'items',
   columns: { region: { type: 'TEXT' }, item_id: { type: 'TEXT' }, cohort: { type: 'TEXT' }, num: { type: 'INTEGER' } },
   primaryKey: ['region', 'item_id'],
-  unit: 'item_id',
+  entityId: 'item_id',
 };
 
 const row = (region: string, item_id: string, cohort: string, num: number | null): ItemRow => ({ region, item_id, cohort, num });

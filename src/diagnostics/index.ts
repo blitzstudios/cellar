@@ -1,5 +1,5 @@
 /**
- * What the kernel recorded about itself, for a developer surface to dump. Nothing a store, a screen or a service
+ * What Cellar recorded about itself, for a developer surface to dump. Nothing a store, a screen or a service
  * renders from reads this, which is why it sits behind its own entry point rather than the main one.
  */
 

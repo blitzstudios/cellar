@@ -1,143 +1,145 @@
 /**
- * {@linkcode byUnit} caches: a value derived from each unit's rows, usually a view model, cached per unit.
+ * {@linkcode byEntity} caches: a value derived from each entity's rows, usually a view model, cached per entity.
  *
- * A unit is all the rows sharing one value of the table's unit column, such as one player's rows (`player_id`). Derived
- * values turn a unit's rows into a value (typically the object a screen renders), keep it, and return the same object
- * until a write changes that unit's rows. Rows come out of SQLite as new objects on every query, so without this, every
+ * An entity is the thing a row belongs to, such as one player, named by the table's `entityId` column. Derived values
+ * turn an entity's rows into a value (typically the object a screen renders), keep it, and return the same object until
+ * a write changes that entity's rows. Rows come out of SQLite as new objects on every query, so without this, every
  * read after every write would build new values and re-render every component showing one, changed or not.
  *
- * Every write reports which units it changed, so only those units' values are rebuilt. A read that asks for particular
- * units ({@linkcode DerivedValues.at | at}, {@linkcode DerivedValues.atEach | atEach}) depends on just those units, so
- * a write to other units doesn't re-run it. A store declares one set of derived values per shape, and every read of
- * that shape shares it, so each unit's value is built once however many reads ask for it.
+ * Every write reports which entities it changed, so only those entities' values are rebuilt. A read that asks for
+ * particular entities ({@linkcode DerivedValues.at | at}, {@linkcode DerivedValues.atEach | atEach}) depends on just
+ * those entities, so a write to other entities doesn't re-run it. A store declares one set of derived values per shape,
+ * and every read of that shape shares it, so each entity's value is built once however many reads ask for it.
  */
 
-import { BoundUnitMemo, Memo, MemoDeclaration, unitMemo } from '../caches';
+import { BoundEntityMemo, Memo, MemoDeclaration, entityMemo } from '../caches';
 import { stableKey } from '../args_key';
 import { createOnceGuard } from '../diagnostics/once_guard';
 import { covered } from '../table/read_coverage';
 import { RowShape, RowTable } from '../table/types';
 import type { ReadDef } from './surface';
 import type { Partitions } from '../define_partitions';
+import type { byPartition } from '../caches';
 
 /**
- * The definition of a {@linkcode byUnit} cache: how to build one unit's value from its rows (usually a view model), and
- * how many built values to keep. A unit is all the rows sharing one value of the table's unit column, such as one
- * player's rows. The cache's name, shown in warnings, is its key in the {@linkcode Partitions.cache | cache} block.
+ * The definition of a {@linkcode byEntity} cache: how to build one entity's value from its rows (usually a view model),
+ * and how many built values to keep. An entity is the thing a row belongs to, such as one player, named by the table's
+ * `entityId` column. The cache's name, shown in warnings, is its key in the
+ * {@linkcode Partitions.defineCaches | defineCaches} block.
  */
 export interface DerivedValuesDef<Row extends RowShape, V> {
   /**
    * How many built values to keep, across all partitions; beyond that, the least recently used are discarded and
-   * rebuilt when asked for again. Set it above the most units one screen reads at once: a read asking for more than
-   * {@linkcode DerivedValuesDef.max | max} units discards what it just built, rebuilding every one after every write,
-   * and warns in dev.
+   * rebuilt when asked for again. Set it above the most entities one screen reads at once: a read asking for more than
+   * {@linkcode DerivedValuesDef.max | max} entities discards what it just built, rebuilding every one after every
+   * write, and warns in dev.
    */
   max: number;
   /**
-   * Builds one unit's value from its rows (all rows in the partition with that unit value, in storage order), usually
-   * a view model, or returns `undefined` for a unit that shouldn't have one. It runs once per unit, and again only
-   * after a write changes that unit's rows. In a table with one row per unit, it gets a one-row list:
+   * Builds one entity's value from its rows (all rows in the partition with that entity id, in storage order), usually
+   * a view model, or returns `undefined` for an entity that shouldn't have one. It runs once per entity, and again only
+   * after a write changes that entity's rows. In a table with one row per entity, it gets a one-row list:
    * `fromRows: ([row]) => …`.
    */
   fromRows: (rows: readonly Row[]) => V | undefined;
   /**
-   * Text added to the dev warning shown when a read asks for more units than {@linkcode DerivedValuesDef.max | max},
-   * where raising {@linkcode DerivedValuesDef.max | max} is the wrong fix, such as a detailed shape meant for one unit
-   * at a time, which should point to the lean one.
+   * Text added to the dev warning shown when a read asks for more entities than {@linkcode DerivedValuesDef.max | max},
+   * where raising {@linkcode DerivedValuesDef.max | max} is the wrong fix, such as a detailed shape meant for one
+   * entity at a time, which should point to the lean one.
    */
   advice?: string;
 }
 
 /**
- * A {@linkcode byUnit} cache as a store's {@linkcode Partitions.cache | cache} block returns it: one value per unit, built from the unit's rows (usually a
- * view model), cached, and returned as the same object until a write changes that unit's rows. A unit is all the rows
- * sharing one value of the table's unit column, such as one player's rows.
+ * A {@linkcode byEntity} cache as a store's {@linkcode Partitions.defineCaches | defineCaches} block returns it: one
+ * value per entity, built from the entity's rows (usually a view model), cached, and returned as the same object until
+ * a write changes that entity's rows. An entity is the thing a row belongs to, such as one player, named by the table's
+ * `entityId` column.
  *
- * Each value's address is a partition key plus a unit id (a partition is the set of rows one fetch returns and
+ * Each value's address is a partition key plus an entity id (a partition is the set of rows one fetch returns and
  * replaces), so every method takes the key first and reads only that partition's rows. Reads call these methods in
- * their {@linkcode ReadDef.select | select}. Name a set after what it holds and the unit it is keyed by, such as
+ * their {@linkcode ReadDef.select | select}. Name a set after what it holds and the entity it is keyed by, such as
  * `cardsByPlayer`.
  */
 export interface DerivedValues<Key, Row extends RowShape, V> {
   /**
-   * The value at unit `id` (a value of the unit column, such as a `player_id`), or `undefined` if the partition has no
-   * rows for it. A read that calls it depends on that unit only: it re-runs when a write changes that unit's rows, and
-   * not for writes to other units.
+   * The value for entity `id` (an entity id, such as a `player_id`), or `undefined` if the partition has no rows for
+   * it. A read that calls it depends on that entity only: it re-runs when a write changes that entity's rows, and not
+   * for writes to other entities.
    */
   at(key: Key, id: string): V | undefined;
   /**
-   * The values at each of `ids` (values of the unit column), in the order of `ids`; an id with no rows in the
-   * partition is left out. Builds every missing one with a single query. A read that calls it depends on those units
-   * only.
+   * The values at each of `ids` (entity ids), in the order of `ids`; an id with no rows in the partition is left out.
+   * Builds every missing one with a single query. A read that calls it depends on those entities only.
    */
   atEach(key: Key, ids: readonly string[]): V[];
   /**
    * The same values as {@linkcode DerivedValues.atEach | atEach}, as an object keyed by id instead of a list, for a
    * caller that looks them up. An id with no rows in the partition is left out. A read that calls it depends on those
-   * units only.
+   * entities only.
    */
   pick(key: Key, ids: readonly string[]): Record<string, V>;
   /**
-   * The values for every unit that has rows matching `filter` (column values, on top of the partition's), such as
-   * `{ team: 'KC' }`, in storage order. Where a unit has several rows, its value is built from just the rows that
-   * match. A read that calls it depends on the whole partition, since any write can change which units match.
+   * The values for every entity that has rows matching `filter` (column values, on top of the partition's), such as
+   * `{ team: 'KC' }`, in storage order. Where an entity has several rows, its value is built from just the rows that
+   * match. A read that calls it depends on the whole partition, since any write can change which entities match.
    */
   where(key: Key, filter?: Partial<Row>): V[];
   /**
-   * The values for every unit in the partition, in storage order. A read that calls it depends on the whole partition,
-   * since any write can add or remove units.
+   * The values for every entity in the partition, in storage order. A read that calls it depends on the whole
+   * partition, since any write can add or remove entities.
    */
   all(key: Key): V[];
 }
 
 /**
- * A {@linkcode byUnit} cache's definition, as {@linkcode byUnit} returns it, before a store's
- * {@linkcode Partitions.cache | cache} block attaches it to the store's partitions.
+ * A {@linkcode byEntity} cache's definition, as {@linkcode byEntity} returns it, before a store's
+ * {@linkcode Partitions.defineCaches | defineCaches} block attaches it to the store's partitions.
  */
-export interface UnitCacheDeclaration<Row extends RowShape, V> {
-  readonly kind: 'byUnit';
+export interface EntityCacheDeclaration<Row extends RowShape, V> {
+  readonly kind: 'byEntity';
   readonly def: DerivedValuesDef<Row, V>;
 }
 
 /**
- * Declares a cache of values derived from each unit's rows, usually view models, for a store's
- * {@linkcode Partitions.cache | cache} block: one value per unit (a unit is all the rows sharing one value of the
- * table's unit column, such as one player's rows), built from that unit's rows by `fromRows` on first use and kept, as
- * the same object, until a write changes that unit's rows. Reads look values up by partition key and unit id through the
- * {@linkcode DerivedValues} methods, such as {@linkcode DerivedValues.at | at}.
+ * Declares a cache of values derived from each entity's rows, usually view models, for a store's
+ * {@linkcode Partitions.defineCaches | defineCaches} block: one value per entity (an entity is the thing a row belongs
+ * to, such as one player, named by the table's `entityId` column), built from that entity's rows by `fromRows` on first
+ * use and kept, as the same object, until a write changes that entity's rows. Reads look values up by partition key and
+ * entity id through the {@linkcode DerivedValues} methods, such as {@linkcode DerivedValues.at | at}.
  *
- * Called in two steps, so the value type can be given while the row type comes from the store:
- * `byUnit<GameVM[]>()({ max: 2048, fromRows: rowsToTeamGames })`.
+ * Called in two steps, like {@linkcode byPartition}: `byEntity()({ max: 2048, fromRows: rowsToTeamGames })`. The row
+ * type comes from the store and the value type is what `fromRows` returns, so neither is written.
  */
-export function byUnit<V>() {
-  return <Row extends RowShape>(def: DerivedValuesDef<Row, V>): UnitCacheDeclaration<Row, V> => ({ kind: 'byUnit', def });
+export function byEntity() {
+  return <Row extends RowShape, V>(def: DerivedValuesDef<Row, V>): EntityCacheDeclaration<Row, V> => ({ kind: 'byEntity', def });
 }
 
-/** Whether a {@linkcode Partitions.cache | cache} block entry is a {@linkcode byUnit} cache. */
-export function isUnitCacheDeclaration(decl: unknown): decl is UnitCacheDeclaration<RowShape, unknown> {
-  return typeof decl === 'object' && decl !== null && (decl as { kind?: unknown }).kind === 'byUnit';
+/** Whether a {@linkcode Partitions.defineCaches | defineCaches} block entry is a {@linkcode byEntity} cache. */
+export function isEntityCacheDeclaration(decl: unknown): decl is EntityCacheDeclaration<RowShape, unknown> {
+  return typeof decl === 'object' && decl !== null && (decl as { kind?: unknown }).kind === 'byEntity';
 }
 
 const thrashWarned = createOnceGuard();
 
 /**
- * The memo a {@linkcode byUnit} cache keeps its values in: one per unit, and per filter where a filter can cut a unit's
- * rows.
+ * The memo a {@linkcode byEntity} cache keeps its values in: one per entity, and per filter where a filter can cut an
+ * entity's rows.
  */
-export type DerivedValueMemo<Key, V> = Memo<Key, BoundUnitMemo<V | undefined, readonly ['scope']>>;
+export type DerivedValueMemo<Key, V> = Memo<Key, BoundEntityMemo<V | undefined, readonly ['scope']>>;
 
-/** The declaration a {@linkcode byUnit} cache's memo is built from. */
+/** The declaration a {@linkcode byEntity} cache's memo is built from. */
 export function derivedValueMemo<V>(max: number): MemoDeclaration {
-  return unitMemo<V | undefined>()({ max, by: ['scope'] }) as MemoDeclaration;
+  return entityMemo<V | undefined>()({ max, by: ['scope'] }) as MemoDeclaration;
 }
 
 /**
- * What a {@linkcode byUnit} cache needs from the store around it: its name, the rows, how a key addresses them, the
+ * What a {@linkcode byEntity} cache needs from the store around it: its name, the rows, how a key addresses them, the
  * memo its values live in, and the partition's version, which a read over the whole partition depends on.
  */
 export interface DerivedValuesContext<Row extends RowShape, Key, V> {
   store: string;
-  /** The cache's key in the store's {@linkcode Partitions.cache | cache} block, shown in warnings. */
+  /** The cache's key in the store's {@linkcode Partitions.defineCaches | defineCaches} block, shown in warnings. */
   name: string;
   table: RowTable<Row>;
   filter: (key: Key) => Partial<Row>;
@@ -145,56 +147,56 @@ export interface DerivedValuesContext<Row extends RowShape, Key, V> {
   trackPartition: (key: Key) => void;
 }
 
-/** The scope of a read no filter narrows: the unit's whole rows, which every such read shares. */
-const WHOLE_UNIT = '';
+/** The scope of a read no filter narrows: the entity's whole rows, which every such read shares. */
+const WHOLE_ENTITY = '';
 
 export function createDerivedValues<Row extends RowShape, Key, V>(
   ctx: DerivedValuesContext<Row, Key, V>,
   def: DerivedValuesDef<Row, V>,
 ): DerivedValues<Key, Row, V> {
   const { store, name, table, filter, memo, trackPartition } = ctx;
-  const unit = table.unit;
+  const idColumn = table.entityId;
 
   /**
-   * Whether a unit is one row, which is what decides if a filtered read can share its view model with an unfiltered
-   * one. With one row per unit, a filter either includes the unit's row or not, so every read builds the same view
-   * model from it. With several, a filter can include some of a unit's rows — a traded player's games for one team —
-   * and the view model built from those is a different one, held under the filter. Worked out from the first key,
-   * since the partition's filter is a function of one; the same for every key of a store.
+   * Whether an entity has one row, which is what decides if a filtered read can share its view model with an unfiltered
+   * one. With one row per entity, a filter either includes the entity's row or not, so every read builds the same view
+   * model from it. With several, a filter can include some of an entity's rows — a traded player's games for one team —
+   * and the view model built from those is a different one, held under the filter. Worked out from the first key, since
+   * the partition's filter is a function of one; the same for every key of a store.
    */
   let singleRow: boolean | undefined;
   const isSingleRow = (key: Key): boolean => {
     if (singleRow === undefined) {
       const fixed = new Set(Object.keys(filter(key)));
       const rest = table.primaryKey.filter((column) => !fixed.has(column));
-      singleRow = rest.length === 1 && rest[0] === unit;
+      singleRow = rest.length === 1 && rest[0] === idColumn;
     }
     return singleRow;
   };
   const scopeOf = (key: Key, extra: Partial<Row> | undefined): string =>
-    !extra || isSingleRow(key) || !Object.keys(extra).length ? WHOLE_UNIT : stableKey(extra);
+    !extra || isSingleRow(key) || !Object.keys(extra).length ? WHOLE_ENTITY : stableKey(extra);
 
   const warnOnThrash = (count: number): void => {
     if (!__DEV__ || count <= def.max || thrashWarned.seen(store, name)) return;
     // eslint-disable-next-line no-console
     console.warn(
-      `[${store}_store] the '${name}' cache was asked for ${count} units but holds ${def.max}, so this read ` +
+      `[${store}_store] the '${name}' cache was asked for ${count} entities but holds ${def.max}, so this read ` +
         'evicts what it just built and rebuilds every value on every change. Raise `max` past the largest read, ' +
         `or read a narrower slice.${def.advice ? ` ${def.advice}` : ''}`,
     );
   };
 
-  /** Builds the view models for `units` from one query, grouped by unit in storage order. */
-  const buildMany = (scope: Partial<Row>, units: readonly string[]): Map<string, V | undefined> => {
+  /** Builds the view models for `entities` from one query, grouped by entity in storage order. */
+  const buildMany = (scope: Partial<Row>, entityIds: readonly string[]): Map<string, V | undefined> => {
     const grouped = new Map<string, Row[]>();
-    for (const row of table.findIn(scope, unit, units)) {
-      const id = String(row[unit]);
+    for (const row of table.findIn(scope, idColumn, entityIds)) {
+      const id = String(row[idColumn]);
       const list = grouped.get(id);
       if (list) list.push(row);
       else grouped.set(id, [row]);
     }
     const out = new Map<string, V | undefined>();
-    for (const id of units) {
+    for (const id of entityIds) {
       const rows = grouped.get(id);
       out.set(id, rows ? def.fromRows(rows) : undefined);
     }
@@ -217,17 +219,17 @@ export function createDerivedValues<Row extends RowShape, Key, V>(
   };
 
   const overFilter = (key: Key, extra?: Partial<Row>): V[] => {
-    // Which units the filter holds can change with any write to the partition, so this depends on all of it.
+    // Which entities the filter holds can change with any write to the partition, so this depends on all of it.
     trackPartition(key);
     const scope = extra ? { ...filter(key), ...extra } : filter(key);
-    const members = covered(() => table.unitsWhere(scope));
+    const members = covered(() => table.entityIdsWhere(scope));
     return listed(resolve(key, members, extra), members);
   };
 
   return {
     at: (key, id) =>
-      memo.for(key).read(id, WHOLE_UNIT, () => {
-        const rows = table.find({ ...filter(key), [unit]: id } as Partial<Row>);
+      memo.for(key).read(id, WHOLE_ENTITY, () => {
+        const rows = table.find({ ...filter(key), [idColumn]: id } as Partial<Row>);
         return rows.length ? def.fromRows(rows) : undefined;
       }),
 
@@ -252,4 +254,4 @@ export function createDerivedValues<Row extends RowShape, Key, V>(
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { Partitions, ReadDef };
+export type { Partitions, ReadDef, byPartition };

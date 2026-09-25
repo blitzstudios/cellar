@@ -5,8 +5,8 @@
  * inferred type but isn't exported from the entry point fails the consumer's build with TS4023, even though
  * `tsc --noEmit` and every bundler pass.
  *
- * The consumer here sees the package as the app does: the kernel's declarations are emitted to a temporary
- * `node_modules/@sleeperhq/react-data-kernel`, and the consumer imports it by package name, so no relative path can
+ * The consumer here sees the package as the app does: Cellar's declarations are emitted to a temporary
+ * `node_modules/@sleeperhq/cellar`, and the consumer imports it by package name, so no relative path can
  * reach a type the entry point doesn't export.
  */
 
@@ -20,8 +20,8 @@ const ROOT = join(__dirname, '..', '..');
 /** Exports a value built with every factory a store is written with, each left to inference. */
 const CONSUMER = `
 import {
-  byUnit,
-  byVersion,
+  byEntity,
+  byPartition,
   createPushIngest,
   createTrackedSelector,
   createWindowedList,
@@ -33,7 +33,7 @@ import {
   type RowOf,
   type RowTableSchema,
   type ShredColumn,
-} from '@sleeperhq/react-data-kernel';
+} from '@sleeperhq/cellar';
 
 type Item = { id: string; team?: string; points?: number };
 type Ctx = { league: string };
@@ -58,7 +58,7 @@ const schema: RowTableSchema<ItemRow> = {
   table: 'items',
   columns: itemShred.columnDefs,
   primaryKey: ['league', 'id'],
-  unit: 'id',
+  entityId: 'id',
 };
 
 type LeagueKey = { league: string };
@@ -76,9 +76,9 @@ export const itemStore = defineSqliteStore({
       version,
       key: { fields: ['league'], where: (key) => ({ league: key.league }) },
     });
-    const { card, byTeam } = items.cache({
-      card: byUnit<{ id: string }>()({ max: 64, fromRows: ([row]) => ({ id: row.id }) }),
-      byTeam: byVersion<Map<string, ItemRow[]>>()({ max: 4 }),
+    const { card, byTeam } = items.defineCaches({
+      card: byEntity()({ max: 64, fromRows: ([row]) => ({ id: row.id }) }),
+      byTeam: byPartition<Map<string, ItemRow[]>>()({ max: 4 }),
     });
     const push = createPushIngest<Item, ItemRow, LeagueKey>({
       name: 'item',
@@ -91,25 +91,25 @@ export const itemStore = defineSqliteStore({
     });
     return {
       reads: {
-        Item: items.read<ItemKey, { id: string } | undefined>()({
+        Item: items.defineRead<ItemKey, { id: string } | undefined>()({
           varyBy: ['id'],
           select: (args, key) => card.at(key, args.id),
           empty: undefined,
         }),
-        Rows: items.read<LeagueKey, ItemRow[]>()({
+        Rows: items.defineRead<LeagueKey, ItemRow[]>()({
           select: (_args, key) => rowsOf(table).where(items.where(key)).map((row) => row, []),
           empty: [],
         }),
-        Memoized: items.read<LeagueKey, number>()({
+        Memoized: items.defineRead<LeagueKey, number>()({
           select: (_args, key) => byTeam.for(key).read(() => new Map()).size,
           empty: 0,
         }),
-        Across: items.readMany<ItemsKey, number>()({
+        Across: items.defineReadMany<ItemsKey, number>()({
           varyBy: ['id'],
           select: (_args, keys) => keys.length,
           empty: 0,
         }),
-        Grouped: items.readGrouped<{ groups: readonly (readonly LeagueKey[])[] }, number>()({
+        Grouped: items.defineReadGrouped<{ groups: readonly (readonly LeagueKey[])[] }, number>()({
           groups: (args) => args.groups,
           requires: ['groups'],
           select: (_args, groups) => groups.length,
@@ -152,7 +152,7 @@ describe('declaration emit', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kernel-dts-'));
+    dir = mkdtempSync(join(tmpdir(), 'cellar-dts-'));
   });
 
   afterAll(() => {
@@ -163,11 +163,11 @@ describe('declaration emit', () => {
     const config = ts.getParsedCommandLineOfConfigFile(join(ROOT, 'tsconfig.build.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
     if (!config) throw new Error('tsconfig.build.json did not parse');
 
-    const packageDir = join(dir, 'node_modules', '@sleeperhq', 'react-data-kernel');
+    const packageDir = join(dir, 'node_modules', '@sleeperhq', 'cellar');
     mkdirSync(packageDir, { recursive: true });
     const kernelErrors = declarationErrors(config.fileNames, { ...config.options, rootDir: join(ROOT, 'src'), declarationMap: false }, packageDir);
     expect(kernelErrors).toEqual([]);
-    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@sleeperhq/react-data-kernel', types: 'index.d.ts' }));
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@sleeperhq/cellar', types: 'index.d.ts' }));
 
     const consumer = join(dir, 'consumer.ts');
     writeFileSync(consumer, CONSUMER);

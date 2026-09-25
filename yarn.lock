@@ -1834,9 +1834,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@sleeperhq/react-data-kernel@workspace:.":
+"@sleeperhq/cellar@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@sleeperhq/react-data-kernel@workspace:."
+  resolution: "@sleeperhq/cellar@workspace:."
   dependencies:
     "@tanstack/query-core": "npm:4.41.0"
     "@types/jest": "npm:^29.5.12"

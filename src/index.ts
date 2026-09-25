@@ -2,7 +2,7 @@ import type { definePartitions } from './define_partitions';
 import type { defineSqliteStore } from './define_sqlite_store';
 
 /**
- * The kernel's public surface: what a store definition, a service, or a screen imports. The pieces a store is built out
+ * Cellar's public surface: what a store definition, a service, or a screen imports. The pieces a store is built out
  * of are here; the pieces {@linkcode definePartitions} and {@linkcode defineSqliteStore} are built out of are not, and
  * a store that finds itself wanting one of those is reaching past its entry point.
  *
@@ -15,7 +15,7 @@ import type { defineSqliteStore } from './define_sqlite_store';
 // What the host installs before it binds a store: where a report goes, the query runtime an ingest mounts on, and
 // when a read is live.
 export type { QueryClient, QuerySpec, QueryStatus, ReadGate, ReadGateRuntime } from './runtime';
-export { configureDataKernel } from './runtime';
+export { configureCellar } from './runtime';
 
 // Declaring a store.
 export { defineSqliteStore } from './define_sqlite_store';
@@ -28,16 +28,16 @@ export { DATA_RESULT_KEYS, makeResult } from './store_result';
 export type { PrimeState } from './prime_state';
 
 // What a store keeps on the heap beyond its rows, declared in one block through its partitions
-// (`partitions.cache({ … })`) so no caller builds a key.
+// (`partitions.defineCaches({ … })`) so no caller builds a key.
 export type { CacheDeclaration, CacheFactory } from './cache_block';
 export type { CacheKeyPart } from './caches';
-export { byVersion, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
-export { byUnit } from './read/derived_values';
+export { byPartition, shallowEqualArray, shallowEqualRecord, shallowEqualStruct, shallowEqualValue } from './caches';
+export { byEntity } from './read/derived_values';
 
 // The table a store's schema describes, and the rows it holds.
 export type { SqlValue, ColumnDef, RowTableSchema, RowTable } from './table/types';
 export type { ChangeSet, WriteResult } from './table/change_set';
-export { ALL_UNITS, NO_CHANGES } from './table/change_set';
+export { ALL_ENTITIES, NO_CHANGES } from './table/change_set';
 export { createSqliteRowTable } from './table/sqlite';
 export type { SqliteConnection, PinnedConnection } from './table/connection';
 export { readRows, pinnedReader } from './table/connection';
@@ -56,7 +56,7 @@ export type { MaybeId, ReadOptions, Loose } from './read/facade';
 export { pairRead } from './read/facade';
 export type { WindowedBlock } from './read/windowed_list';
 export { createWindowedList } from './read/windowed_list';
-export type { DerivedValues, DerivedValuesDef, UnitCacheDeclaration } from './read/derived_values';
+export type { DerivedValues, DerivedValuesDef, EntityCacheDeclaration } from './read/derived_values';
 
 // Repainting on a write.
 export type { VersionAtom } from './reactivity/version_atom';

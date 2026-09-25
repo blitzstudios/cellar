@@ -1,5 +1,5 @@
 /**
- * How much the kernel logs to the console: nothing, errors, warnings too, or notices too. It doesn't affect error
+ * How much Cellar logs to the console: nothing, errors, warnings too, or notices too. It doesn't affect error
  * reports, which reach the error sink at any level.
  *
  * The default is `error`, because most warnings and notices can't be acted on where they appear, and logging them on
@@ -12,12 +12,12 @@ const RANK: Record<LogLevel, number> = { silent: 0, error: 1, warn: 2, info: 3 }
 
 let current: LogLevel = 'error';
 
-/** Sets how much the kernel logs to the console. */
+/** Sets how much Cellar logs to the console. */
 export function setLogLevel(level: LogLevel): void {
   current = level;
 }
 
-/** How much the kernel logs to the console. */
+/** How much Cellar logs to the console. */
 export function getLogLevel(): LogLevel {
   return current;
 }

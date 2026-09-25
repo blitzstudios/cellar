@@ -2,15 +2,15 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { installTestRuntime } from '../../testing/runtime';
-import { configureDataKernel, INERT_ERRORS } from '../../runtime';
+import { configureCellar, INERT_ERRORS } from '../../runtime';
 import { createFetchIngest, FetchIngestConfig, RawFetchResponse, RAW_TEXT_RESPONSE_TRANSFORM } from '../../write/fetch_ingest';
 import { resetOnceGuards } from '../../diagnostics/once_guard';
 import { VersionAtom } from '../../reactivity/version_atom';
 import { clearIngestTimings, getIngestTimings, rollupIngestTimings } from '../../diagnostics/ingest_timing';
-import { ALL_UNITS, NO_CHANGES, WriteResult } from '../../table/change_set';
+import { ALL_ENTITIES, NO_CHANGES, WriteResult } from '../../table/change_set';
 
-/** An ingest that landed `rows` rows and, like every ingest before change sets, reports every unit changed. */
-const ingested = (rows: number): WriteResult => ({ changes: ALL_UNITS, rows });
+/** An ingest that landed `rows` rows and, like every ingest before change sets, reports every entity changed. */
+const ingested = (rows: number): WriteResult => ({ changes: ALL_ENTITIES, rows });
 
 /* global globalThis */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -276,7 +276,7 @@ describe('createFetchIngest — a 200 carrying no body', () => {
 });
 
 describe('createFetchIngest — a body that changed nothing', () => {
-  it('bumps nothing when the ingest reports no units changed, so no reader wakes to republish what it holds', async () => {
+  it('bumps nothing when the ingest reports no entities changed, so no reader wakes to republish what it holds', async () => {
     const harness = makeCfg({ ingestRaw: jest.fn(async () => ({ changes: NO_CHANGES, rows: 3 })) });
     harness.setResponse({ data: '[{"x":1}]', etag: 'e2' });
 
@@ -288,7 +288,7 @@ describe('createFetchIngest — a body that changed nothing', () => {
     expect(harness.cfg.setEtag).toHaveBeenCalledWith('week', 'e2');
   });
 
-  it('bumps with the units the ingest reports', async () => {
+  it('bumps with the entities the ingest reports', async () => {
     const changes = new Set(['p7']);
     const harness = makeCfg({ ingestRaw: jest.fn(async () => ({ changes, rows: 3 })) });
     harness.setResponse({ data: '[{"x":1}]' });
@@ -368,7 +368,7 @@ describe('createFetchIngest — ingest timing', () => {
 
   it('reports an oversized partition once, since every read of it pays for the whole partition', async () => {
     const captureMessage = jest.fn();
-    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    configureCellar({ errors: { captureException: jest.fn(), captureMessage } });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(31_430)) });
     harness.setResponse({ data: '[{"id":1}]' });
@@ -383,13 +383,13 @@ describe('createFetchIngest — ingest timing', () => {
     expect(ctx.level).toBe('info');
     expect(ctx.extra).toMatchObject({ store: 'test_ingest', partition: 'cfb', rows: 31_430 });
 
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
     warn.mockRestore();
   });
 
   it('says nothing when a caller asked for the whole partition, since those rows are what it wanted', async () => {
     const captureMessage = jest.fn();
-    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    configureCellar({ errors: { captureException: jest.fn(), captureMessage } });
     const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(31_430)) });
     harness.setResponse({ data: '[{"id":1}]' });
     const ingest = createFetchIngest(harness.cfg);
@@ -400,12 +400,12 @@ describe('createFetchIngest — ingest timing', () => {
 
     expect(captureMessage).not.toHaveBeenCalled();
 
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
   });
 
   it('still reports when only a slice-selecting read primed it, which is the case the advice fits', async () => {
     const captureMessage = jest.fn();
-    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    configureCellar({ errors: { captureException: jest.fn(), captureMessage } });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(31_430)) });
     harness.setResponse({ data: '[{"id":1}]' });
@@ -416,20 +416,20 @@ describe('createFetchIngest — ingest timing', () => {
 
     expect(captureMessage).toHaveBeenCalledTimes(1);
 
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
     warn.mockRestore();
   });
 
   it('leaves an ordinary partition alone, so the report stays worth reading', async () => {
     const captureMessage = jest.fn();
-    configureDataKernel({ errors: { captureException: jest.fn(), captureMessage } });
+    configureCellar({ errors: { captureException: jest.fn(), captureMessage } });
     const harness = makeCfg({ ingestRaw: jest.fn(async () => ingested(12)) });
     harness.setResponse({ data: '[{"id":1}]' });
 
     await createFetchIngest(harness.cfg).prefetch('us');
 
     expect(captureMessage).not.toHaveBeenCalled();
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
   });
 
   it('records a 304 as a fetch that shred nothing, so a cheap launch is not mistaken for a missing ingest', async () => {

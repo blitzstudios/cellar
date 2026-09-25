@@ -4,7 +4,7 @@
  * {@linkcode QueryRuntime.useQuery | useQuery} reports idle. Install once per test file, at module scope.
  */
 
-import { configureDataKernel, QuerySpec, QueryStatus } from '../runtime';
+import { configureCellar, QuerySpec, QueryStatus } from '../runtime';
 import type { QueryClient, QueryRuntime } from '../runtime';
 
 const IDLE: QueryStatus = { isInitialLoading: false, isFetching: false, isError: false };
@@ -23,7 +23,7 @@ export interface TestRuntime {
   captureMessage: jest.Mock;
 }
 
-/** Configures the kernel with Jest mocks for its query runtime and error sink, and returns them. */
+/** Configures Cellar with Jest mocks for its query runtime and error sink, and returns them. */
 export function installTestRuntime(): TestRuntime {
   const spies: TestRuntime = {
     fetchQuery: jest.fn((spec: QuerySpec<unknown>) => spec.queryFn()),
@@ -35,7 +35,7 @@ export function installTestRuntime(): TestRuntime {
     captureMessage: jest.fn(),
   };
 
-  configureDataKernel({
+  configureCellar({
     errors: {
       captureException: (error, context) => spies.captureException(error, context),
       captureMessage: (message, context) => spies.captureMessage(message, context),

@@ -11,7 +11,7 @@ const schema: RowTableSchema<Thing> = {
   table: 'things',
   columns: { id: { type: 'TEXT' } },
   primaryKey: ['id'],
-  unit: 'id',
+  entityId: 'id',
   meta: { table: 'things_meta', keyColumns: ['id'], column: 'etag' },
 };
 

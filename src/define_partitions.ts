@@ -3,7 +3,7 @@
  *
  * A partition is the set of rows one fetch returns and replaces, such as every player in one league, or one week of one
  * sport's stats. It is picked out by column values (its {@linkcode PartitionKeySpec.where | where}, such as `{ league:
- * 'nfl' }`), and it is the unit of everything fetch-related: one React Query query per partition, one ETag per
+ * 'nfl' }`), and it is the entity of everything fetch-related: one React Query query per partition, one ETag per
  * partition, one version number per partition that re-renders its readers. A read names the partition it reads with its
  * args, and reading a partition that has never been fetched fetches it.
  */
@@ -23,11 +23,11 @@ import { DataResult, offHeapStatus } from './store_result';
 import { reportStoreDegradation } from './diagnostics/telemetry';
 import { runSubscribed } from './reactivity/tracking';
 import type { Loose } from './read/facade';
-import { ALL_UNITS, ChangeSet, isUnchanged, WriteResult } from './table/change_set';
+import { ALL_ENTITIES, ChangeSet, isUnchanged, WriteResult } from './table/change_set';
 import type { SqliteStoreConfig } from './define_sqlite_store';
 import type { CommonDef } from './read/surface';
-import type { byVersion } from './caches';
-import type { byUnit, DerivedValues } from './read/derived_values';
+import type { byPartition } from './caches';
+import type { byEntity, DerivedValues } from './read/derived_values';
 
 /** No partition: args still being filled in, or a slot a caller left empty, which keeps its index in the result. */
 type MaybePartition<Descriptor> = Descriptor | null | undefined;
@@ -44,7 +44,7 @@ type MaybePartition<Descriptor> = Descriptor | null | undefined;
  * - {@linkcode PartitionKeySpec.of | of} and {@linkcode PartitionKeySpec.id | id}: {@linkcode PartitionKeySpec.of | of}
  *   turns the args into a partition record (an object describing what to fetch), and
  *   {@linkcode PartitionKeySpec.id | id} turns the record into a string key. For a partition described by more than a
- *   few small fields. The kernel remembers each record by its key, so the fetch can get the record back from the key.
+ *   few small fields. Cellar remembers each record by its key, so the fetch can get the record back from the key.
  *
  * Either way, {@linkcode PartitionKeySpec.where | where} turns the key into the column values that pick out the
  * partition's rows in the table.
@@ -71,7 +71,7 @@ export interface PartitionKeySpec<Row extends RowShape, Key, Args, Descriptor> {
   id?: (descriptor: Descriptor) => Key;
   /**
    * Turns a partition key back into its record: the reverse of {@linkcode PartitionKeySpec.id | id}, for a store whose
-   * keys can be parsed. The kernel remembers the record for each key it has seen, but only for the most recent
+   * keys can be parsed. Cellar remembers the record for each key it has seen, but only for the most recent
    * {@linkcode PartitionsConfig.internMax | internMax} partitions. Without {@linkcode PartitionKeySpec.from | from}, a
    * partition whose record was forgotten can't be fetched again for the rest of the session, which is reported; with
    * it, the record is parsed back from the key.
@@ -115,7 +115,7 @@ export interface PartitionFetchSpec<Row extends RowShape, Key, Descriptor> {
    */
   canShredNatively?: (partition: Descriptor) => boolean;
   /**
-   * Called when a fetch of the partition starts, and returns a function the kernel calls when the fetch has finished.
+   * Called when a fetch of the partition starts, and returns a function Cellar calls when the fetch has finished.
    * For a store that also receives socket pushes: hold the partition's pushes until the release is called. A fetch
    * replaces the whole partition, so a push written while the request was in flight would otherwise be overwritten by
    * the older response.
@@ -134,9 +134,9 @@ export interface PartitionsConfig<Row extends RowShape, Key, Args, Descriptor> {
   /** The row table the partitions divide: the store's SQLite table. */
   table: RowTable<Row>;
   /**
-   * The store's version atom: the version numbers, per partition and per unit, that the store's reads depend on. A
-   * write that changes a partition bumps its version with the units it changed, which re-renders the readers of those
-   * units.
+   * The store's version atom: the version numbers, per partition and per entity, that the store's reads depend on. A
+   * write that changes a partition bumps its version with the entities it changed, which re-renders the readers of
+   * those entities.
    */
   version: VersionAtom;
   /**
@@ -150,10 +150,10 @@ export interface PartitionsConfig<Row extends RowShape, Key, Args, Descriptor> {
    */
   fetch?: PartitionFetchSpec<Row, Key, Descriptor>;
   /**
-   * Called after a write changes a partition's rows, with the partition's key, its new version, and the units the write
-   * changed (the values of the table's unit column whose rows were added, changed or removed). Not called for a write
-   * that changed nothing. For a store that keeps something computed from a partition, such as a ranking, and needs to
-   * discard it when the rows change.
+   * Called after a write changes a partition's rows, with the partition's key, its new version, and the entities the
+   * write changed (the entity ids whose rows were added, changed or removed). Not called for a write that changed
+   * nothing. For a store that keeps something computed from a partition, such as a ranking, and needs to discard it
+   * when the rows change.
    */
   onChanged?: (key: Key, version: number, changes: ChangeSet) => void;
   /**
@@ -263,8 +263,8 @@ export interface PartitionLifecycle<Args> {
 }
 
 /**
- * Args that carry the read's partitions in the field of that name, where {@linkcode Partitions.readMany | readMany}
- * looks by default.
+ * Args that carry the read's partitions in the field of that name, where
+ * {@linkcode Partitions.defineReadMany | defineReadMany} looks by default.
  */
 interface NamesPartitions<Descriptor> {
   partitions: readonly MaybePartition<Descriptor>[];
@@ -274,15 +274,15 @@ interface NamesPartitions<Descriptor> {
 type PartitionsFrom<Args, Descriptor> = (args: Args) => readonly MaybePartition<Descriptor>[] | null | undefined;
 
 /**
- * {@linkcode Partitions.readMany | readMany}, naming its partitions as the records a caller holds. Optional when the
- * args already carry them.
+ * {@linkcode Partitions.defineReadMany | defineReadMany}, naming its partitions as the records a caller holds. Optional
+ * when the args already carry them.
  */
 type PartitionReadManyDef<Args, Key, T, Descriptor, V extends VarySpec<Args>> = Omit<ReadManyDef<Args, Key, T, V>, 'partitions'> &
   (Args extends NamesPartitions<Descriptor> ? { partitions?: PartitionsFrom<Args, Descriptor> } : { partitions: PartitionsFrom<Args, Descriptor> });
 
 /**
- * {@linkcode Partitions.readGrouped | readGrouped}, likewise: one group of candidate records per thing the caller is
- * asking about.
+ * {@linkcode Partitions.defineReadGrouped | defineReadGrouped}, likewise: one group of candidate records per thing the
+ * caller is asking about.
  */
 interface PartitionReadGroupedDef<Args, Key, T, Descriptor, V extends VarySpec<Args>> extends Omit<ReadGroupedDef<Args, Key, T, V>, 'groups'> {
   /**
@@ -310,36 +310,37 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
    * definition. The split lets TypeScript infer the exact {@linkcode CommonDef.varyBy | varyBy} list, which is what
    * restricts {@linkcode ReadDef.select | select}'s args to those fields.
    */
-  read: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V>) => Read<A, T>;
+  defineRead: <A extends Args, T>() => <const V extends VarySpec<A> = readonly []>(def: ReadDef<A, Key, T, V>) => Read<A, T>;
   /**
    * Declares a read across several partitions, such as one player's stats across several weeks: the args name a list of
    * partitions (by default their {@linkcode ReadManyDef.partitions | partitions} field), all of them are fetched and
    * subscribed to, and {@linkcode ReadDef.select | select} computes one value from all of them. Called in the same two
-   * steps as {@linkcode Partitions.read | read}.
+   * steps as {@linkcode Partitions.defineRead | defineRead}.
    */
-  readMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+  defineReadMany: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadManyDef<A, Key, T, Descriptor, V>) => Read<A, T>;
   /**
    * Declares a read that answers several lookups at once, where each lookup's rows could be in any of several candidate
    * partitions: the args give one group of candidate partitions per lookup, every candidate is fetched and subscribed
    * to, and {@linkcode ReadDef.select | select} gets the groups back in order to answer each lookup. Called in the same
-   * two steps as {@linkcode Partitions.read | read}.
+   * two steps as {@linkcode Partitions.defineRead | defineRead}.
    */
-  readGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
+  defineReadGrouped: <A, T>() => <const V extends VarySpec<A> = readonly []>(def: PartitionReadGroupedDef<A, Key, T, Descriptor, V>) => Read<A, T>;
   /**
    * Declares the store's caches: every value it keeps on the heap beyond its rows, in one object, each under a name,
    * with entries kept per partition. Each entry is one of two kinds, named for what a write discards:
    *
-   * - {@linkcode byUnit}: one value per unit (a unit is all the rows sharing one value of the table's unit column, such
-   *   as one player's rows), built from that unit's rows by `fromRows` and rebuilt only when a write changes them. It
-   *   returns {@linkcode DerivedValues}, read by partition key and unit id, such as `gamesByTeam.at(key, team)`.
-   * - {@linkcode byVersion}: values computed from a whole partition, discarded by any write to it. The value is
+   * - {@linkcode byEntity}: one value per entity (an entity is the thing a row belongs to, such as one player, named by
+   *   the table's `entityId` column, such
+   *   as one player's rows), built from that entity's rows by `fromRows` and rebuilt only when a write changes them. It
+   *   returns {@linkcode DerivedValues}, read by partition key and entity id, such as `gamesByTeam.at(key, team)`.
+   * - {@linkcode byPartition}: values computed from a whole partition, discarded by any write to it. The value is
    *   computed at the lookup, by the `build` the lookup passes: `summaryMap.for(key).read(() => …)`.
    *
    * A value is built from rows already in the table, on first use; nothing here fetches, since the reads fetch their
    * partitions before their {@linkcode ReadDef.select | select} runs. The store's name and the entry's key name each
    * cache in warnings.
    */
-  cache: CacheFactory<Key, Row>;
+  defineCaches: CacheFactory<Key, Row>;
   /**
    * The column values that pick out a partition's rows in the table, such as `{ league: 'nfl' }`: the store's
    * {@linkcode PartitionKeySpec.where | key.where}.
@@ -369,8 +370,8 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
    * {@linkcode PartitionsConfig.onChanged | onChanged}, and returns the new version. Table writes never notify anyone
    * on their own; fetches call this for you, and anything else that writes rows must.
    *
-   * Pass the units the write changed (the values of the table's unit column in its change set), and only readers of
-   * those units re-render; without them, every unit counts as changed. An empty set changes nothing and bumps nothing.
+   * Pass the entities the write changed (the entity ids in its change set), and only readers of those entities
+   * re-render; without them, every entity counts as changed. An empty set changes nothing and bumps nothing.
    */
   bump: (key: Key, changes?: ChangeSet) => number;
   /**
@@ -386,7 +387,7 @@ export interface Partitions<Row extends RowShape, Key, Args, Descriptor> {
 
 const INTERN_MAX = 512;
 const NO_INTERNED: readonly never[] = Object.freeze([]);
-/** The empty descriptor list {@linkcode Partitions.readMany | readMany} falls back on when args name no partitions. */
+/** The empty descriptor list {@linkcode Partitions.defineReadMany | defineReadMany} falls back on when args name no partitions. */
 const NO_DESCRIPTORS: readonly never[] = Object.freeze([]);
 
 /**
@@ -396,8 +397,8 @@ const NO_DESCRIPTORS: readonly never[] = Object.freeze([]);
  *
  * From the config it builds one React Query query per partition that fetches the partition (sending its stored ETag,
  * and writing the response with the native shredder or {@linkcode PartitionFetchSpec.parse | parse}), and bumps the
- * partition's version with the units the write changed, which re-renders the readers of those units. It returns the
- * functions that declare the store's reads and caches on those partitions, and the
+ * partition's version with the entities the write changed, which re-renders the readers of those entities. It returns
+ * the functions that declare the store's reads and caches on those partitions, and the
  * {@linkcode Partitions.lifecycle | lifecycle} operations to publish. Call it from a store's
  * {@linkcode SqliteStoreConfig.build | build}, after {@linkcode RowTable.init | table.init()}.
  */
@@ -444,7 +445,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
       return reparsed;
     }
 
-    // Nothing else in the kernel fails a read outright, and this is the one bound that can. A store whose keys
+    // Nothing else in Cellar fails a read outright, and this is the one bound that can. A store whose keys
     // are parseable should declare `from`; one whose keys are not needs a larger `internMax`.
     reportStoreDegradation({
       scope: `partitions.intern_evicted.${name}`,
@@ -465,7 +466,7 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
     : // The fields are named against `Key` and here pick out of `Args`, which `defaultPartition` already requires.
       partitionKeyOf<Args, Key>(fields as unknown as readonly PartitionField<Args>[]);
 
-  const bump = (key: Key, changes: ChangeSet = ALL_UNITS): number => {
+  const bump = (key: Key, changes: ChangeSet = ALL_ENTITIES): number => {
     const parts = toParts(key);
     if (isUnchanged(changes)) return version.get(parts);
     const next = version.bump(parts, changes);
@@ -531,8 +532,8 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
   /** Whether the partition holds rows. Tracks, since the surface's probe takes the version on every call. */
   const has = (key: Key): boolean => surface.has(key);
   const versionOf = (key: Key): number => version.get(toParts(key));
-  /** What every memo this store declares is bound by: a partition's version, and each unit's. */
-  const memoBinding = { parts: toParts, version: versionOf, unitVersion: (key: Key, unit: string) => version.getUnit(toParts(key), unit) };
+  /** What every memo this store declares is bound by: a partition's version, and each entity's. */
+  const memoBinding = { parts: toParts, version: versionOf, entityVersion: (key: Key, entityId: string) => version.getEntity(toParts(key), entityId) };
 
   // Bound once, so the hook a component calls is the same one on every render.
   const usePriming = ingest?.usePrime ?? NO_PRIMING;
@@ -576,10 +577,10 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
   }
 
   return {
-    read: surface.read,
-    readMany: readManyOf,
-    readGrouped: readGroupedOf,
-    cache: (decls) => bindCaches(name, memoBinding, decls, { table, filter: where, trackPartition: versionOf }),
+    defineRead: surface.read,
+    defineReadMany: readManyOf,
+    defineReadGrouped: readGroupedOf,
+    defineCaches: (decls) => bindCaches(name, memoBinding, decls, { table, filter: where, trackPartition: versionOf }),
     where,
     keyOf,
     internedKeys: () => (interned ? (interned.keys() as IterableIterator<Key>) : NO_INTERNED[Symbol.iterator]()),
@@ -609,4 +610,4 @@ export function definePartitions<Row extends RowShape, Key, Args = Key, Descript
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { CommonDef, DataResult, DerivedValues, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byUnit, byVersion };
+export type { CommonDef, DataResult, DerivedValues, RawQuery, Read, ReadDef, ReadGroupedDef, ReadManyDef, RowTable, SqliteStoreConfig, addressesPartition, byEntity, byPartition };

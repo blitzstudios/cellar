@@ -153,7 +153,8 @@ export function defineShredColumns<Src, Ctx = void>() {
     const defs: Record<string, ColumnDef> = {};
     for (const column of columns) defs[column.name] = column.notNull ? { type: column.type, notNull: true } : { type: column.type };
 
-    // Derived on first read and kept: the ops are the expensive pair, and a spec built per category asks for them again.
+    // Derived on first read and kept: the ops are the expensive pair, and a spec built per category asks for them
+    // again.
     let named: { name: string; op: ShredOp }[] | undefined;
     const namedOps = (): { name: string; op: ShredOp }[] =>
       (named ??= columns.map((column) => {

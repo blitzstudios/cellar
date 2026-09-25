@@ -1,7 +1,7 @@
 /**
  * What a change-set write costs against the delete-and-reinsert it replaced, on a partition shaped like a live NFL
  * stats week: 2,184 rows, 24 base columns plus 372 generated stat columns of which one sport fills 202, and a stats
- * JSON blob per row. Opt-in, since it is a measurement and not a check: `KERNEL_BENCH=1 yarn jest unit_diff.bench`.
+ * JSON blob per row. Opt-in, since it is a measurement and not a check: `KERNEL_BENCH=1 yarn jest entity_diff.bench`.
  *
  * sql.js is SQLite compiled to WASM, so the absolute numbers say nothing about a device. The ratios are the point:
  * both strategies run on the same engine, over the same rows, in the same process.
@@ -30,7 +30,7 @@ const schema: RowTableSchema<RowShape> = {
   table: 'player_stats',
   columns,
   primaryKey: ['partition_key', 'stat_uid'],
-  unit: 'player_id',
+  entityId: 'player_id',
   // The two the real table carries: every row a write lands pays for both.
   indexes: [
     { name: 'idx_player_stats_partition', columns: ['partition_key', 'player_id'] },
@@ -84,7 +84,7 @@ bench('write cost — change-set write vs delete-and-reinsert', () => {
     await initSqlJs();
   });
 
-  it('measures a first load, and rewrites of 0, 4 and every unit', () => {
+  it('measures a first load, and rewrites of 0, 4 and every entity', () => {
     const results: Record<string, { legacy: number; changeSet: number }> = {};
     const base = payload(0);
 

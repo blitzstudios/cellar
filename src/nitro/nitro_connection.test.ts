@@ -1,6 +1,6 @@
 import { NitroSQLite, open, openSecondary } from 'react-native-nitro-sqlite';
 
-import { configureDataKernel } from '../index';
+import { configureCellar } from '../index';
 import { resetOnceGuards } from '../diagnostics/once_guard';
 import { bindSqliteStore, getOpenSqliteConnections, openNitroConnection, retrySqliteStores } from './nitro_connection';
 
@@ -13,7 +13,7 @@ const mockNativeClose = NitroSQLite.native.close as jest.MockedFunction<typeof N
 const handleInUse = () => new Error("handle 'things:reader' is already in use by an open connection");
 const captureException = jest.fn();
 const captureMessage = jest.fn();
-configureDataKernel({ errors: { captureException, captureMessage } });
+configureCellar({ errors: { captureException, captureMessage } });
 
 /** What the adapter reported: the scope it filed under, and the context line it filed. */
 function lastReport(): { scope: string; context: string } {

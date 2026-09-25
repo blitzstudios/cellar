@@ -1,5 +1,5 @@
 {
-  "name": "@sleeperhq/react-data-kernel/sqljs",
+  "name": "@sleeperhq/cellar/sqljs",
   "private": true,
   "main": "../lib/module/sqljs/index.js",
   "module": "../lib/module/sqljs/index.js",

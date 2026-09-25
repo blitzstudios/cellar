@@ -3,7 +3,7 @@
  * response. There is one React Query query per partition. Its query function sends the partition's stored ETag, writes
  * the response body as the partition's rows (with the native shredder or the store's
  * {@linkcode PartitionFetchSpec.parse | parse}), stores the new ETag, and bumps the partition's version with the
- * write's change set, which re-renders the readers of the changed units.
+ * write's change set, which re-renders the readers of the changed entities.
  */
 import { VersionAtom } from '../reactivity/version_atom';
 import { PrimeState } from '../prime_state';
@@ -29,7 +29,7 @@ export interface RawFetchResponse {
 }
 /**
  * A partition's request, described but not run, as a partition's {@linkcode PartitionFetchSpec.query | fetch.query}
- * returns it. The kernel runs it as the query function of the partition's React Query query, with these timings.
+ * returns it. Cellar runs it as the query function of the partition's React Query query, with these timings.
  */
 export interface RawQuery {
     /** Makes the request, and resolves to the response body, its ETag, and whether the server answered 304. */
@@ -56,7 +56,7 @@ export interface FetchIngestConfig<Key> {
      * it.
      */
     ingestKeyRoot: string;
-    /** The store's version atom: the per-partition and per-unit version numbers that a fetch's write bumps. */
+    /** The store's version atom: the per-partition and per-entity version numbers that a fetch's write bumps. */
     version: VersionAtom;
     /** A partition key's parts: its values as a list of strings, which make up the rest of its query key. */
     toParts: (key: Key) => readonly string[];
@@ -68,7 +68,7 @@ export interface FetchIngestConfig<Key> {
     setEtag: (key: Key, etag: string) => void;
     /**
      * Writes the response body as the partition's rows, replacing what it held, and returns the write's change set (the
-     * unit value of each row added, changed or removed) and how many rows the body held.
+     * entity id of each row added, changed or removed) and how many rows the body held.
      */
     ingestRaw: (key: Key, rawJson: string) => Promise<WriteResult>;
     /**
@@ -159,7 +159,7 @@ export interface PrimeIntent {
  * Creates a store's fetching: one React Query query per partition (the set of rows one fetch returns and replaces). Its
  * query function sends the partition's stored ETag; on a 304, keeps the rows; otherwise writes the body with
  * {@linkcode FetchIngestConfig.ingestRaw | ingestRaw}, stores the new ETag, and bumps the partition's version with the
- * write's change set, so the readers of the changed units re-render. {@linkcode definePartitions} creates it from a
+ * write's change set, so the readers of the changed entities re-render. {@linkcode definePartitions} creates it from a
  * store's {@linkcode PartitionsConfig.fetch | fetch} spec, so a store declares that spec rather than calling this.
  */
 export declare function createFetchIngest<Key>(cfg: FetchIngestConfig<Key>): FetchIngest<Key>;

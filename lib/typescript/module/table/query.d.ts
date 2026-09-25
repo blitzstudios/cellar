@@ -12,8 +12,8 @@ export declare function whereClause(where: Partial<RowShape>): {
  * Whether one row satisfies `where`, by the rule {@linkcode whereClause} writes in SQL; the dev check below uses it.
  */
 export declare function matchesWhere<Row extends RowShape>(row: Row, where: Partial<Row>): boolean;
-/** Dev-only: the declared unit has to be one of the table's columns, since every write groups its rows by it. */
-export declare function assertUnitColumn<Row extends RowShape>(schema: RowTableSchema<Row>): void;
+/** Dev-only: the declared entity has to be one of the table's columns, since every write groups its rows by it. */
+export declare function assertEntityIdColumn<Row extends RowShape>(schema: RowTableSchema<Row>): void;
 /**
  * Dev-only: every row written under a filter must satisfy it. A row that doesn't lands outside the slice its own write
  * just cleared, where the next write to that slice cannot reach it and no {@linkcode RowTable.find | find} for it

@@ -29,10 +29,11 @@ export type StoreCapabilities = object;
  */
 export interface StoreSurface {
   /**
-   * The store's reads, by name: each a declared read (from {@linkcode Partitions.read | read},
-   * {@linkcode Partitions.readMany | readMany} or {@linkcode Partitions.readGrouped | readGrouped}) with a
-   * {@linkcode Read.useValue | useValue} hook and a {@linkcode Read.getValue | getValue} getter. A service publishes
-   * each one as a `use*` hook and a `get*` getter with {@linkcode pairRead}.
+   * The store's reads, by name: each a declared read (from {@linkcode Partitions.defineRead | defineRead},
+   * {@linkcode Partitions.defineReadMany | defineReadMany} or
+   * {@linkcode Partitions.defineReadGrouped | defineReadGrouped}) with a {@linkcode Read.useValue | useValue} hook and
+   * a {@linkcode Read.getValue | getValue} getter. A service publishes each one as a `use*` hook and a `get*` getter
+   * with {@linkcode pairRead}.
    */
   reads: object;
   /** Functions that write rows that arrive outside a fetch, such as socket pushes, and tell their readers. */
@@ -55,8 +56,8 @@ export interface SqliteStoreConfig<Row extends RowShape, Surface extends StoreSu
   /** The store's name, such as `player`. It names the store's version atom and appears in logs and error reports. */
   name: string;
   /**
-   * The declaration of the store's SQLite table: its columns, primary key, unit column, indexes and ETag table. The
-   * table is created, or brought up to date, whenever the store is bound to a database.
+   * The declaration of the store's SQLite table: its columns, primary key, `entityId` column, indexes and ETag table.
+   * The table is created, or brought up to date, whenever the store is bound to a database.
    */
   schema: RowTableSchema<Row>;
   /**

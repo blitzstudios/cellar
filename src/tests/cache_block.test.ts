@@ -1,11 +1,11 @@
 /**
- * A store's cache block: `byUnit` and `byVersion` caches declared together, each named by its key, each discarded by
- * the writes its kind says it is.
+ * A store's cache block: `byEntity` and `byPartition` caches declared together, each named by its key, each discarded
+ * by the writes its kind says it is.
  */
 
-import { byVersion } from '../caches';
+import { byPartition } from '../caches';
 import { definePartitions } from '../define_partitions';
-import { byUnit } from '../read/derived_values';
+import { byEntity } from '../read/derived_values';
 import { createTestRowTable } from '../testing/row_table';
 import { createVersionAtom } from '../reactivity/version_atom';
 import { RowTableSchema } from '../table/types';
@@ -21,7 +21,7 @@ const SCHEMA: RowTableSchema<GameRow> = {
   table: 'games',
   columns: { season: { type: 'TEXT', notNull: true }, team: { type: 'TEXT', notNull: true }, week: { type: 'INTEGER', notNull: true } },
   primaryKey: ['season', 'team', 'week'],
-  unit: 'team',
+  entityId: 'team',
 };
 
 const S2026: SeasonKey = { season: '2026' };
@@ -31,9 +31,9 @@ function store() {
   table.init();
   const partitions = definePartitions<GameRow, SeasonKey>({ name: 'games', table, version: createVersionAtom('cache_block_test'), key: { fields: ['season'], where: ({ season }) => ({ season }) } });
   const weeksBuilt = jest.fn((rows: readonly GameRow[]) => rows.map((row) => row.week));
-  const caches = partitions.cache({
-    weeksByTeam: byUnit<number[]>()({ max: 64, fromRows: weeksBuilt }),
-    lastWeek: byVersion<number>()({ max: 4 }),
+  const caches = partitions.defineCaches({
+    weeksByTeam: byEntity()({ max: 64, fromRows: weeksBuilt }),
+    lastWeek: byPartition<number>()({ max: 4 }),
   });
   const write = (rows: GameRow[]) => partitions.bump(S2026, table.overwrite(S2026, rows).changes);
   const lastWeek = () => caches.lastWeek.for(S2026).read(() => Math.max(...table.find(S2026).map((row) => row.week)));
@@ -54,7 +54,7 @@ describe('a store cache block', () => {
     expect(lastWeek()).toBe(2);
   });
 
-  it('rebuilds a byUnit value only for the units a write changed, and discards a byVersion value on any write', () => {
+  it('rebuilds a byEntity value only for the entities a write changed, and discards a byPartition value on any write', () => {
     const { weeksByTeam, weeksBuilt, write, lastWeek } = store();
     write([
       { season: '2026', team: 'KC', week: 1 },
@@ -77,11 +77,11 @@ describe('a store cache block', () => {
     expect(lastWeek()).toBe(3);
   });
 
-  it("takes only byVersion caches in a module's test block, which has no rows to build a byUnit value from", () => {
+  it("takes only byPartition caches in a module's test block, which has no rows to build a byEntity value from", () => {
     const cache = testCache(createVersionAtom('cache_block_module_test'));
 
-    expect(cache({ totals: byVersion<number>()({ max: 4 }) }).totals.for('k').read(() => 7)).toBe(7);
-    // @ts-expect-error a byUnit cache needs a store's row type
-    expect(() => cache({ names: byUnit<string>()({ max: 4, fromRows: () => 'x' }) })).toThrow(/'names' is a byUnit cache/);
+    expect(cache({ totals: byPartition<number>()({ max: 4 }) }).totals.for('k').read(() => 7)).toBe(7);
+    // @ts-expect-error a byEntity cache needs a store's row type
+    expect(() => cache({ names: byEntity()({ max: 4, fromRows: () => 'x' }) })).toThrow(/'names' is a byEntity cache/);
   });
 });

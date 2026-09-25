@@ -17,7 +17,7 @@ import { DataResult, DataStatus } from '../store_result';
 import type { PartitionLifecycle, Partitions, definePartitions } from '../define_partitions';
 import type { pairRead } from './facade';
 import type { shallowEqualStruct } from '../caches';
-import type { byUnit } from './derived_values';
+import type { byEntity } from './derived_values';
 import type { StoreSurface } from '../define_sqlite_store';
 /**
  * The parts of a store's fetch ingest that its reads use: the hooks that fetch partitions, and imperative fetch starts.
@@ -45,7 +45,7 @@ export interface FetchOwner<Key> {
  * store.
  */
 export interface ReadSurfaceKernel<Key> {
-    /** The store's version atom: the per-partition and per-unit version numbers reads depend on and re-render from. */
+    /** The store's version atom: the per-partition and per-entity version numbers reads depend on and re-render from. */
     version: VersionAtom;
     /** The store's name, used in the dev warning about a screen making too many separate reads. */
     name?: string;
@@ -89,8 +89,9 @@ export type SelectArgs<Args, V> = V extends readonly (keyof Args)[] ? {
     [K in V[number]]: NonNullable<Args[K & keyof Args]>;
 } : Args;
 /**
- * The fields every kind of read definition shares ({@linkcode Partitions.read | read},
- * {@linkcode Partitions.readMany | readMany} and {@linkcode Partitions.readGrouped | readGrouped}).
+ * The fields every kind of read definition shares ({@linkcode Partitions.defineRead | defineRead},
+ * {@linkcode Partitions.defineReadMany | defineReadMany} and
+ * {@linkcode Partitions.defineReadGrouped | defineReadGrouped}).
  */
 export interface CommonDef<Args, T, V extends VarySpec<Args>> {
     /**
@@ -171,8 +172,8 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
      * {@linkcode CommonDef.empty | empty}.
      *
      * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
-     * a {@linkcode byUnit} cache, it depends on just the units (such as the players) it read, and a write to other
-     * units doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
+     * a {@linkcode byEntity} cache, it depends on just the entities (such as the players) it read, and a write to other
+     * entities doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
      * after any write to it.
      */
     select: (args: SelectArgs<Args, V>, key: Key) => T;
@@ -268,10 +269,10 @@ export interface Read<Args, T> {
 /** Returns a {@linkcode DataResult} whose identity is stable across renders while its parts hold. */
 export declare function useResult<T>(data: T, status: DataStatus, isFetching: boolean, doRefetch: () => void): DataResult<T>;
 /**
- * Builds the read engine over one store's partitions: {@linkcode Partitions.read | read} /
- * {@linkcode Partitions.readMany | readMany} / {@linkcode Partitions.readGrouped | readGrouped} each take a descriptor
- * and hand back its {@linkcode Read.useValue | useValue} / {@linkcode Read.getValue | getValue} pair, with the priming,
- * the version subscription, the presence gate and the value cache already wrapped around
+ * Builds the read engine over one store's partitions: {@linkcode Partitions.defineRead | defineRead} /
+ * {@linkcode Partitions.defineReadMany | defineReadMany} / {@linkcode Partitions.defineReadGrouped | defineReadGrouped}
+ * each take a descriptor and hand back its {@linkcode Read.useValue | useValue} / {@linkcode Read.getValue | getValue}
+ * pair, with the priming, the version subscription, the presence gate and the value cache already wrapped around
  * {@linkcode ReadDef.select | select}. {@linkcode definePartitions} builds one per store, so stores declare reads.
  */
 export declare function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>): {
@@ -286,5 +287,5 @@ export declare function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>): 
     readGrouped: <Args, T>() => <const V extends VarySpec<Args> = readonly []>(def: ReadGroupedDef<Args, Key, T, V>) => Read<Args, T>;
     has: (key: Key) => boolean;
 };
-export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, byUnit, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };
+export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, byEntity, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };
 //# sourceMappingURL=surface.d.ts.map

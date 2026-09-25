@@ -1,19 +1,19 @@
 # Internals
 
-The long-form reference behind [the README](../README.md): every piece the kernel exports, the rules it imposes,
+The long-form reference behind [the README](../README.md): every piece Cellar exports, the rules it imposes,
 and why each one is shaped the way it is. The README is enough to write a store; this is what to read when you
-need to know *why* a piece behaves as it does, or when you are changing the kernel itself.
+need to know *why* a piece behaves as it does, or when you are changing Cellar itself.
 
 ---
 
-## What the kernel gives you (the reusable half)
+## What Cellar gives you (the reusable half)
 
 Everything in this package is shared and already tested. You compose these; you don't reimplement them.
 
 A note on reach: `index.ts` exports what a store, a service or a screen writes against. The pieces `definePartitions`
 and `defineSqliteStore` are themselves built out of — the spine, the read surface, the fetch ingest, the SQL batch and
 migration helpers — are described below but deliberately absent from it. Wanting one of them by name usually means a
-store is reaching past its entry point; import it from its own module only if you are working on the kernel itself.
+store is reaching past its entry point; import it from its own module only if you are working on Cellar itself.
 
 - **`defineSqliteStore`** — a store's whole spine in one descriptor: the version atom, the one slot holding the
   active backend, the in-memory default for web and tests, the SQLite builder startup binds, and the degrade
@@ -71,7 +71,7 @@ store is reaching past its entry point; import it from its own module only if yo
   enumerable. If your spec varies — different columns per category, say — enumerate the variants and give
   `variant(scope)` the job of picking one. Naming a variant that isn't in the map falls back to the JS parse path
   rather than shredding through `undefined`.
-- **`definePartitions`** — **how your rows are divided into fetchable units, and the thing you actually write.**
+- **`definePartitions`** — **how your rows are divided into partitions you can fetch, and the thing you actually write.**
   It asks one question — *where does one partition's rows live?* — and derives the rest of the plumbing from the
   answer:
 
@@ -92,7 +92,7 @@ store is reaching past its entry point; import it from its own module only if yo
   ```
 
   `key.where` is a `WHERE` over your table — the same shape `table.find` takes — and it locates the partition for
-  every operation the kernel runs on your behalf: reading and writing its ETag (`table.getMeta`/`setMeta`),
+  every operation Cellar runs on your behalf: reading and writing its ETag (`table.getMeta`/`setMeta`),
   testing whether it holds rows yet (`table.has`), replacing its rows on ingest, and bumping its version on a
   write.
 
@@ -181,15 +181,15 @@ store is reaching past its entry point; import it from its own module only if yo
   `readGrouped({ groups, … })` when the caller is asking about several things at once and each has its own
   candidate partitions — `select` gets the groups back in the order it named them, so a read never flattens a list
   and then re-slices it by index; and, for a push-fed table, leaving `fetch` off, so its reads report `success`
-  over an empty value. The kernel takes the fetch half as one value: the priming hooks and the refetch that goes
+  over an empty value. Cellar takes the fetch half as one value: the priming hooks and the refetch that goes
   with them are supplied together or not at all.
-- **`partitions.cache`** — every value a store keeps on the heap beyond its rows, in one block, and the only way it
-  builds one:
+- **`partitions.defineCaches`** — every value a store keeps on the heap beyond its rows, in one block, and the only way
+  it builds one:
 
   ```ts
-  const { gamesByTeam, summaryMap } = partitions.cache({
-    gamesByTeam: byUnit<GameVM[]>()({ max: 2048, fromRows: rowsToTeamGames }),
-    summaryMap: byVersion<MySummaryMap>()({ max: 2048 }),
+  const { gamesByTeam, summaryMap } = partitions.defineCaches({
+    gamesByTeam: byEntity()({ max: 2048, fromRows: rowsToTeamGames }),
+    summaryMap: byPartition<MySummaryMap>()({ max: 2048 }),
   });
 
   gamesByTeam.at(key, team);
@@ -197,21 +197,21 @@ store is reaching past its entry point; import it from its own module only if yo
   ```
 
   The block is reached off the store's partitions, which is what makes both kinds possible: a cache takes the
-  partition's key parts, its version and each unit's version from there, so **no store builds a cache key or looks
-  up a version**. What a store still names is `max`, which bounds what it keeps on the heap, and, for `byVersion`,
+  partition's key parts, its version and each entity's version from there, so **no store builds a cache key or looks
+  up a version**. What a store still names is `max`, which bounds what it keeps on the heap, and, for `byPartition`,
   `by`, which is what the key holds beyond the partition — one argument to `.for(…)`'s methods per name, in order,
-  each either a scalar or a structured value the kernel interns. So the block stays a complete, reviewable account of
+  each either a scalar or a structured value Cellar interns. So the block stays a complete, reviewable account of
   the store's heap. Each cache carries a dev-time watch that reports itself too small for the keys it keeps being
   asked for again, and reports itself if it has never once answered from its entry; the report names it by its key.
   A module that declares its own caches, such as a ranker, takes the store's `cache` function as a `CacheFactory`,
-  and a suite testing that module alone builds one with `testCache` from `./testing`, which takes `byVersion` caches
+  and a suite testing that module alone builds one with `testCache` from `./testing`, which takes `byPartition` caches
   only.
-- **`byUnit`** — one value per unit, built from that unit's rows by `fromRows` and kept until a write changes them.
-  A lookup (`at`, `atEach`, `pick`) depends on the units it names, so a write to other units neither rebuilds their
-  values nor re-runs the read; `where` and `all` depend on the partition. Every miss in one `atEach` or `pick` is
-  built from one query. Underneath, the values sit in a unit memo (`unitMemo` in `caches.ts`), keyed by unit and, where
-  a filter can cut a unit's rows, by the filter.
-- **`byVersion`** — a cache dropped by every write to its partition, with optional content-stable reference reuse: on
+- **`byEntity`** — one value per entity, built from that entity's rows by `fromRows` and kept until a write changes
+  them. A lookup (`at`, `atEach`, `pick`) depends on the entities it names, so a write to other entities neither
+  rebuilds their values nor re-runs the read; `where` and `all` depend on the partition. Every miss in one `atEach` or
+  `pick` is built from one query. Underneath, the values sit in an entity memo (`entityMemo` in `caches.ts`), keyed by
+  entity and, where a filter can cut an entity's rows, by the filter.
+- **`byPartition`** — a cache dropped by every write to its partition, with optional content-stable reference reuse: on
   a bump that didn't change an entry, hand back the _same reference_ so downstream shallow-equal bails.
   `read(…parts, compute)` is the whole cache in one call; `peek`/`set` are its batched half, for a caller that
   gathers its misses and computes them in one round-trip.
@@ -236,11 +236,11 @@ become invisible to both the tracking scope and the DEV guard below; and if the 
 subscribing itself, wrap the read in **`runSubscribed(() => …)`** so the guard knows the subscription exists.
 `createReadSurface` and `useSelect`/`useSelectMany` already do both for you.
 
-**The guard:** in `__DEV__`, a read that happens during render with nothing subscribing it logs a warning
-naming the partition and the component (`reactivity/tracking.ts` + `reactivity/render_phase.ts`). That failure is invisible on
-screen — the value is correct on first paint and then frozen — so it is checked at the single choke point every
-read passes through. Reads outside render (callbacks, reducers, socket handlers) are deliberately unsubscribed
-and stay silent.
+**The guard:** in `__DEV__`, a read that happens during render with nothing subscribing it logs a warning naming the
+partition and the component (`reactivity/tracking.ts` + `reactivity/render_phase.ts`). That failure is invisible on
+screen — the value is correct on first paint and then frozen — so it is checked at the single choke point every read
+passes through. Reads outside render (callbacks, reducers, socket handlers) are deliberately unsubscribed and stay
+silent.
 
 ---
 
@@ -256,7 +256,7 @@ Three groups, and which one a new function belongs in is decided by who calls it
 
 **A fetch-fed store's ingest belongs to the partition's `fetch`, and the only way rows arrive is a fetch the read
 surface already triggers — the common case.** You add `push` when rows arrive from
-somewhere the kernel doesn't own (a socket). `lifecycle` is where a caller outside the read path primes, checks
+somewhere Cellar doesn't own (a socket). `lifecycle` is where a caller outside the read path primes, checks
 freshness or invalidates a partition.
 
 A group with no members is left off rather than declared empty, so a backend's shape tells you what kind of store
@@ -321,7 +321,7 @@ export const createSqliteMyBackend = myStore.createSqliteBackend;
 export const initMyStore = () => bindSqliteStore('initMyStore', 'my.db', setMyBackend, createSqliteMyBackend);
 ```
 
-Caching, reactivity and fetch orchestration are the kernel's; a store does not write its own.
+Caching, reactivity and fetch orchestration are Cellar's; a store does not write its own.
 
 Two optional fields, and nothing else: `nativeShredSpec` for a native (simdjson) ingest shred, and
 `sqliteCapabilities` for an accelerator that needs the live connection. Every store falls back to the same
@@ -362,16 +362,15 @@ is load-bearing:
 
 ## Map of the files here
 
-**What earns a place in this package:** the kernel is the store-authoring vocabulary — the pieces you compose to
-write a store. Being generic is not the bar, and neither is having more than one caller: a mechanism belongs here
-when a *store author* reaches for it. So `read/windowed_list.ts` lives here with a single
-consumer today, because "windowed list read" is one of the read shapes you choose between when writing a store;
-whereas the compute-table LRU inside a native-compute store's ranker is just as generic and stays in that store,
-because no store author picks it — it's how that one store's ranked scan happens to work. A per-store mechanism moves here
-when a second *store* needs it, which is also the point at which its shape has been checked against more than
-one caller.
+**What earns a place in this package:** Cellar is the store-authoring vocabulary — the pieces you compose to write a
+store. Being generic is not the bar, and neither is having more than one caller: a mechanism belongs here when a *store
+author* reaches for it. So `read/windowed_list.ts` lives here with a single consumer today, because "windowed list read"
+is one of the read shapes you choose between when writing a store; whereas the compute-table LRU inside a native-compute
+store's ranker is just as generic and stays in that store, because no store author picks it — it's how that one store's
+ranked scan happens to work. A per-store mechanism moves here when a second *store* needs it, which is also the point at
+which its shape has been checked against more than one caller.
 
-Reusable kernel (you use, never fork):
+Cellar's reusable core (you use, never fork):
 
 The root holds what a store declares itself with, plus the primitives every folder below needs. The folders
 follow the trip a row takes: it lands in a `table/`, gets there through `write/`, comes back out through
@@ -385,8 +384,8 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `prime_state.ts`                                 | what a read knows about the fetch behind its partition — the contract between the two, so neither imports the other |
 | `key.ts`                                         | how a key's parts are joined, on a separator no part can contain; imports nothing, so anything may have it |
 | `args_key.ts`                                    | what a read's key is derived from: a value by its content, a partition, a vary list |
-| `caches.ts`                                      | bounded LRU, the `byVersion` cache and the unit memo under `byUnit`, and the `isEqual` family |
-| `cache_block.ts`                                 | the `partitions.cache` block: binds each `byUnit` and `byVersion` entry to a store's partitions |
+| `caches.ts`                                      | bounded LRU, the `byPartition` cache and the entity memo under `byEntity`, and the `isEqual` family |
+| `cache_block.ts`                                 | the `partitions.defineCaches` block: binds each `byEntity` and `byPartition` entry to a store's partitions |
 | `collections.ts`                                 | `chunkList` and `getOrCreate`                                             |
 | `runtime.ts`                                     | the host's three services — where a report goes, the query runtime an ingest mounts on, and when a read is live — and the inert defaults until one is installed |
 
@@ -410,7 +409,7 @@ follow the trip a row takes: it lands in a `table/`, gets there through `write/`
 | `surface.ts`                                     | the read engine — `read({ … })` → `{ getValue, useValue }`               |
 | `partition_fields.ts`                            | the field specs a read names its partition and its vary key with          |
 | `row_shaping.ts`                                 | `rowsOf`: a query, then rows → list / ordered list / record / groups, each with the stable empty |
-| `derived_values.ts`                              | `byUnit` caches: a value per unit, built from the unit's rows by `fromRows` (usually a view model), kept until a write changes that unit, so a bump rebuilds only the units that moved and every other reader gets the same reference back |
+| `derived_values.ts`                              | `byEntity` caches: a value per entity, built from the entity's rows by `fromRows` (usually a view model), kept until a write changes that entity, so a bump rebuilds only the entities that moved and every other reader gets the same reference back |
 | `facade.ts`                                      | what a service is written against: `pairRead`, so it exposes the hook and the imperative read together, plus the types its methods are spelled in (`ReadOptions`, `MaybeId`, `Loose`) |
 | `windowed_list.ts`                               | windowed list reads (fetch a page, keep the rest off-heap), and the per-row `useWindowedDetail` that indexes back into one |
 
@@ -438,7 +437,7 @@ rather than a whole backend), and `dev_mode.ts` (the wrappers pinning a case to 
 handful of internals that only a test reaches for — a real `createVersionAtom` to bump by hand, `evalShredElement`
 to check a native shred against, and `resetOnceGuards` — which is why those are absent from the core entry.
 
-Bespoke per store, and staying in the app: the schema, the payload types, the row builders and the shred spec
-beside them, the view models and the `fromRows` functions their derived values are declared with, and the backend
-that composes all of the above out of the pieces here. A native-compute store adds the SQL engine behind its whole-collection read, which is
-advanced, opt-in, and no part of this package.
+Bespoke per store, and staying in the app: the schema, the payload types, the row builders and the shred spec beside
+them, the view models and the `fromRows` functions their derived values are declared with, and the backend that composes
+all of the above out of the pieces here. A native-compute store adds the SQL engine behind its whole-collection read,
+which is advanced, opt-in, and no part of this package.

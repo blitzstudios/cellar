@@ -1,6 +1,6 @@
 /**
- * The three services the app provides to the kernel: where error reports go, the React Query runtime fetches run on,
- * and when a read is live. The app calls {@linkcode configureDataKernel} once at startup, before binding any store.
+ * The three services the app provides to Cellar: where error reports go, the React Query runtime fetches run on,
+ * and when a read is live. The app calls {@linkcode configureCellar} once at startup, before binding any store.
  * Until then each does nothing, so stores still read their rows and tests still render.
  */
 
@@ -8,7 +8,7 @@ import { createOnceGuard } from './diagnostics/once_guard';
 import type { FetchIngest } from './write/fetch_ingest';
 import type { PartitionLifecycle } from './define_partitions';
 
-/** The extra context sent with a kernel error report, in Sentry's shape. */
+/** The extra context sent with a Cellar error report, in Sentry's shape. */
 export interface CaptureContext {
   /** Searchable tags, such as the store's name. */
   tags?: Record<string, string>;
@@ -19,7 +19,7 @@ export interface CaptureContext {
 }
 
 /**
- * Where the kernel sends error reports. Shaped like Sentry's two capture calls, so the app can pass Sentry's directly.
+ * Where Cellar sends error reports. Shaped like Sentry's two capture calls, so the app can pass Sentry's directly.
  */
 export interface ErrorSink {
   /** Reports an error. */
@@ -34,11 +34,11 @@ export interface ErrorSink {
   ) => void;
 }
 
-/** A React Query key built by the kernel: the store's query root, then the partition's key parts. */
+/** A React Query key built by Cellar: the store's query root, then the partition's key parts. */
 export type QueryKey = readonly (string | undefined)[];
 
 /**
- * One partition's fetch, as the kernel passes it to the app's {@linkcode QueryRuntime.useQuery | useQuery}. The fields
+ * One partition's fetch, as Cellar passes it to the app's {@linkcode QueryRuntime.useQuery | useQuery}. The fields
  * are React Query's.
  */
 export interface QuerySpec<T> {
@@ -53,7 +53,7 @@ export interface QuerySpec<T> {
   /** How long an unused query stays cached, in ms. */
   cacheTime?: number;
   /**
-   * The result fields whose changes re-render the caller. The kernel passes
+   * The result fields whose changes re-render the caller. Cellar passes
    * {@linkcode QueryStatus.isInitialLoading | isInitialLoading} and {@linkcode QueryStatus.isError | isError} only, so
    * a refetch starting and finishing doesn't re-render every reader of the partition; new rows re-render them through
    * the partition's version instead.
@@ -61,7 +61,7 @@ export interface QuerySpec<T> {
   notifyOnChangeProps?: readonly string[];
 }
 
-/** The fields of a {@linkcode QueryRuntime.useQuery | useQuery} result the kernel reads. */
+/** The fields of a {@linkcode QueryRuntime.useQuery | useQuery} result Cellar reads. */
 export interface QueryStatus {
   /** Whether the first fetch is in flight and nothing has loaded yet. */
   isInitialLoading: boolean;
@@ -72,7 +72,7 @@ export interface QueryStatus {
 }
 
 /**
- * The parts of React Query's {@linkcode QueryClient} the kernel uses for {@linkcode FetchIngest.prefetch | prefetch},
+ * The parts of React Query's {@linkcode QueryClient} Cellar uses for {@linkcode FetchIngest.prefetch | prefetch},
  * {@linkcode PartitionLifecycle.invalidate | invalidate}, {@linkcode PartitionLifecycle.refetch | refetch} and
  * {@linkcode PartitionLifecycle.forget | forget}.
  */
@@ -98,7 +98,7 @@ export interface QueryClient {
  * blur.
  */
 export interface QueryRuntime {
-  /** Returns the query client. Called on each use, so the app can create the client after configuring the kernel. */
+  /** Returns the query client. Called on each use, so the app can create the client after configuring Cellar. */
   client: () => QueryClient;
   /** React Query's {@linkcode QueryRuntime.useQuery | useQuery}, or a drop-in for it. */
   useQuery: <T>(spec: QuerySpec<T>) => QueryStatus;
@@ -143,9 +143,9 @@ export interface ReadGateRuntime {
   useReadGate: () => ReadGate;
 }
 
-/** The services the app provides to the kernel. */
-export interface DataKernelRuntime {
-  /** Where the kernel's error reports and notices go, such as Sentry. */
+/** The services the app provides to Cellar. */
+export interface CellarRuntime {
+  /** Where Cellar's error reports and notices go, such as Sentry. */
   errors: ErrorSink;
   /** The React Query hooks and client the stores' partition fetches run on. */
   query: QueryRuntime;
@@ -159,8 +159,8 @@ function warnUnconfigured(what: string): void {
   if (!__DEV__ || unconfigured.seen(what)) return;
   // eslint-disable-next-line no-console
   console.warn(
-    `data_kernel.unconfigured: ${what} was used before \`configureDataKernel\` ran. Reads still answer from the rows ` +
-      'already stored, but nothing fetches. Call `configureDataKernel` during startup, before binding a store.',
+    `data_kernel.unconfigured: ${what} was used before \`configureCellar\` ran. Reads still answer from the rows ` +
+      'already stored, but nothing fetches. Call `configureCellar` during startup, before binding a store.',
   );
 }
 
@@ -176,7 +176,7 @@ const NO_STATUSES: readonly QueryStatus[] = Object.freeze([]);
 const INERT_CLIENT: QueryClient = {
   fetchQuery: () => {
     warnUnconfigured('a partition prefetch');
-    return Promise.reject(new Error('data_kernel: no query runtime is configured, so nothing can fetch'));
+    return Promise.reject(new Error('cellar: no query runtime is configured, so nothing can fetch'));
   },
   invalidateQueries: () => warnUnconfigured('a partition invalidation'),
   removeQueries: () => warnUnconfigured('a store forget'),
@@ -214,13 +214,13 @@ export const INERT_GATE: ReadGateRuntime = {
   useReadGate: () => ALWAYS_LIVE,
 };
 
-let runtime: DataKernelRuntime = { errors: INERT_ERRORS, query: INERT_QUERY, gate: INERT_GATE };
+let runtime: CellarRuntime = { errors: INERT_ERRORS, query: INERT_QUERY, gate: INERT_GATE };
 
 /**
- * Sets the services the kernel uses. Each part passed replaces the current one and the rest are kept, so the app can
+ * Sets the services Cellar uses. Each part passed replaces the current one and the rest are kept, so the app can
  * configure them from different places, and a test can set one and leave the others as defaults.
  */
-export function configureDataKernel(next: Partial<DataKernelRuntime>): void {
+export function configureCellar(next: Partial<CellarRuntime>): void {
   runtime = {
     errors: next.errors ?? runtime.errors,
     query: next.query ?? runtime.query,

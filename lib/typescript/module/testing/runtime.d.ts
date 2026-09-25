@@ -18,7 +18,7 @@ export interface TestRuntime {
     captureException: jest.Mock;
     captureMessage: jest.Mock;
 }
-/** Configures the kernel with Jest mocks for its query runtime and error sink, and returns them. */
+/** Configures Cellar with Jest mocks for its query runtime and error sink, and returns them. */
 export declare function installTestRuntime(): TestRuntime;
 export type { QueryClient, QueryRuntime, QuerySpec };
 //# sourceMappingURL=runtime.d.ts.map

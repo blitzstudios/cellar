@@ -1,5 +1,5 @@
 /**
- * The record⇄key table is bounded, and `describe` is the one place in the kernel where a bound could fail a
+ * The record⇄key table is bounded, and `describe` is the one place in Cellar where a bound could fail a
  * read outright rather than only slow it down. A store whose keys are parseable declares `key.from` and is
  * immune; a store whose keys are not gets a report saying so.
  */
@@ -17,7 +17,7 @@ const SCHEMA: RowTableSchema<GameRow> = {
   table: 'games',
   columns: { partition_key: { type: 'TEXT' }, game_id: { type: 'TEXT' } },
   primaryKey: ['partition_key', 'game_id'],
-  unit: 'game_id',
+  entityId: 'game_id',
   meta: { table: 'games_meta', keyColumns: ['partition_key'], column: 'etag' },
 };
 

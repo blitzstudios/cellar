@@ -1,20 +1,20 @@
 /** A real {@linkcode VersionAtom} that also records its bumps, for tests. */
 
 import { createVersionAtom, VersionAtom } from '../reactivity/version_atom';
-import { ALL_UNITS, ChangeSet, isUnchanged } from '../table/change_set';
+import { ALL_ENTITIES, ChangeSet, isUnchanged } from '../table/change_set';
 
 /** Creates a {@linkcode VersionAtom} that records each bump that changed something. */
 export function createTestVersionAtom(root = 'test_version'): VersionAtom & {
   /** Each bumped partition's key parts joined with `:`, in order. */
   bumped: string[];
-  /** The units each bump changed, in the same order. */
+  /** The entities each bump changed, in the same order. */
   bumpedWith: ChangeSet[];
 } {
   const atom = createVersionAtom(root);
   const realBump = atom.bump;
   const bumped: string[] = [];
   const bumpedWith: ChangeSet[] = [];
-  const bump: VersionAtom['bump'] = (parts, changes = ALL_UNITS) => {
+  const bump: VersionAtom['bump'] = (parts, changes = ALL_ENTITIES) => {
     if (!isUnchanged(changes)) {
       bumped.push(parts.join(':'));
       bumpedWith.push(changes);

@@ -191,7 +191,7 @@ export interface ShredSpec {
   /** The version of the program format; always 1. */
   version: 1;
   /**
-   * The table the rows are written to: the row table's name. When the partition already holds rows, the kernel points
+   * The table the rows are written to: the row table's name. When the partition already holds rows, Cellar points
    * the program at a staging table instead, so it can compare the new rows with the old ones before applying them.
    */
   table: string;

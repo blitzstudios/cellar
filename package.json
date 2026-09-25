@@ -1,13 +1,26 @@
 {
-  "name": "@sleeperhq/react-data-kernel",
-  "version": "0.13.0",
-  "description": "An off-heap data layer for React Native: SQLite-backed row tables, partition-versioned reactivity, and declarative reads.",
+  "name": "@sleeperhq/cellar",
+  "version": "1.0.0",
+  "description": "Keeps a React Native app's large server data off the JS heap, in SQLite, while components read it synchronously and re-render only for what changed.",
+  "keywords": [
+    "react-native",
+    "react",
+    "sqlite",
+    "off-heap",
+    "reactivity",
+    "data-layer",
+    "cache",
+    "hermes"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/blitzstudios/react-data-kernel.git"
+    "url": "git+https://github.com/blitzstudios/cellar.git"
   },
-  "license": "UNLICENSED",
-  "private": true,
+  "homepage": "https://github.com/blitzstudios/cellar#readme",
+  "bugs": {
+    "url": "https://github.com/blitzstudios/cellar/issues"
+  },
+  "license": "MIT",
   "main": "./lib/module/index",
   "module": "./lib/module/index",
   "types": "./lib/typescript/module/index.d.ts",

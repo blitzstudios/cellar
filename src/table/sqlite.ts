@@ -5,9 +5,9 @@ import { chunkList } from '../collections';
 import { createPresence, whereMapKey } from './presence';
 import { noteTableRead } from './read_coverage';
 import { columnNames, FindOpts, IndexDef, RowShape, RowTable, RowTableSchema, SqlValue } from './types';
-import { assertRowsMatchWhere, assertUnitColumn, comparator, whereClause } from './query';
-import { ALL_UNITS, NO_CHANGES, unionChanges, WriteResult } from './change_set';
-import { stageNames, unitDiffSql, UnitDiffSql, WriteMode } from './unit_diff_sql';
+import { assertRowsMatchWhere, assertEntityIdColumn, comparator, whereClause } from './query';
+import { ALL_ENTITIES, NO_CHANGES, unionChanges, WriteResult } from './change_set';
+import { stageNames, entityDiffSql, EntityDiffSql, WriteMode } from './entity_diff_sql';
 import {
   addColumnSql,
   addedColumns,
@@ -54,7 +54,7 @@ function createDiffLostReporter(table: string): () => void {
     reported = true;
     reportStoreDegradation({
       scope: `row_table.diff_lost.${table}`,
-      context: 'a write found no record of its own diff, so it reported every unit changed; readers repaint rather than show stale rows',
+      context: 'a write found no record of its own diff, so it reported every entity changed; readers repaint rather than show stale rows',
       extra: { table },
     });
   };
@@ -113,13 +113,13 @@ export function createSqliteRowTable<Row extends RowShape>(
   nativeShredSpec?: NativeShredSpec,
   options: SqliteRowTableOptions = {},
 ): RowTable<Row> {
-  if (__DEV__) assertUnitColumn(schema);
+  if (__DEV__) assertEntityIdColumn(schema);
   const cols = columnNames(schema);
 
   const stageFingerprint = schemaFingerprint(schema);
   const asyncStage = stageNames(schema.table, stageFingerprint, 'async');
-  const asyncDiff = unitDiffSql(schema, asyncStage, MAX_BIND_VARIABLES);
-  const syncDiff = unitDiffSql(schema, stageNames(schema.table, stageFingerprint, 'sync'), MAX_BIND_VARIABLES);
+  const asyncDiff = entityDiffSql(schema, asyncStage, MAX_BIND_VARIABLES);
+  const syncDiff = entityDiffSql(schema, stageNames(schema.table, stageFingerprint, 'sync'), MAX_BIND_VARIABLES);
 
   /**
    * Async writes run one at a time. Each stages its rows and then diffs the stage in a second step, and the native
@@ -143,23 +143,23 @@ export function createSqliteRowTable<Row extends RowShape>(
 
   /**
    * Reads back what one write changed. The summary row is always written, so finding none means the transaction never
-   * ran — a guarded connection in release answers a failed statement with silence — and the write reports every unit
+   * ran — a guarded connection in release answers a failed statement with silence — and the write reports every entity
    * rather than none: a reader woken for nothing costs a render, and one left asleep shows stale data.
    */
-  function readBack(sql: UnitDiffSql, writeId: number): WriteResult {
+  function readBack(sql: EntityDiffSql, writeId: number): WriteResult {
     const [statement, params] = sql.readBack(writeId);
     const result = conn.execute(statement, params);
-    const rows = (result.rows?._array ?? []) as Array<{ unit: SqlValue; rows: number | null }>;
+    const rows = (result.rows?._array ?? []) as Array<{ entity_id: SqlValue; rows: number | null }>;
     result.dispose?.();
     let count: number | undefined;
     const changed = new Set<string>();
     for (const row of rows) {
       if (row.rows != null) count = row.rows;
-      else if (row.unit != null) changed.add(String(row.unit));
+      else if (row.entity_id != null) changed.add(String(row.entity_id));
     }
     if (count === undefined) {
       diffLost();
-      return { changes: ALL_UNITS, rows: 0 };
+      return { changes: ALL_ENTITIES, rows: 0 };
     }
     return { changes: changed.size ? changed : NO_CHANGES, rows: count };
   }
@@ -231,7 +231,7 @@ export function createSqliteRowTable<Row extends RowShape>(
 
   /**
    * Whether the partition holds no rows, asked of the writer so it sees every write before it. An empty partition has
-   * nothing to compare against, so its write skips the stage and lands straight in the table: every unit it brings is
+   * nothing to compare against, so its write skips the stage and lands straight in the table: every entity it brings is
    * new. That is a first load — a cold start, a new week — and it is the one write where staging would double the cost.
    */
   const partitionIsEmpty = (where: Partial<Row>): boolean => {
@@ -242,20 +242,20 @@ export function createSqliteRowTable<Row extends RowShape>(
     return empty;
   };
 
-  const unitsOf = (rows: readonly Row[]): ReadonlySet<string> => (rows.length ? new Set(rows.map((row) => String(row[schema.unit]))) : NO_CHANGES);
+  const entityIdsOf = (rows: readonly Row[]): ReadonlySet<string> => (rows.length ? new Set(rows.map((row) => String(row[schema.entityId]))) : NO_CHANGES);
 
-  /** The units a direct write landed, read back from the table, since the native shred's rows never reach JS. */
-  const unitsLanded = (where: Partial<Row>, rows: number): WriteResult => {
+  /** The entities a direct write landed, read back from the table, since the native shred's rows never reach JS. */
+  const entitiesLanded = (where: Partial<Row>, rows: number): WriteResult => {
     const { sql, params } = whereClause(where);
-    const result = conn.execute(`SELECT DISTINCT ${schema.unit} AS unit FROM ${schema.table}${sql};`, params);
-    const units = new Set(((result.rows?._array ?? []) as Array<{ unit: SqlValue }>).map((row) => String(row.unit)));
+    const result = conn.execute(`SELECT DISTINCT ${schema.entityId} AS entity_id FROM ${schema.table}${sql};`, params);
+    const entityIds = new Set(((result.rows?._array ?? []) as Array<{ entity_id: SqlValue }>).map((row) => String(row.entity_id)));
     result.dispose?.();
     // Rows landed but none can be found: the read failed silently, so say everything changed rather than nothing.
-    if (rows > 0 && !units.size) {
+    if (rows > 0 && !entityIds.size) {
       diffLost();
-      return { changes: ALL_UNITS, rows };
+      return { changes: ALL_ENTITIES, rows };
     }
-    return { changes: units.size ? units : NO_CHANGES, rows };
+    return { changes: entityIds.size ? entityIds : NO_CHANGES, rows };
   };
 
   /** A whole-partition replace written straight into the table, the way every write worked before change sets. */
@@ -277,7 +277,7 @@ export function createSqliteRowTable<Row extends RowShape>(
         let result: WriteResult;
         if (direct) {
           const landed = await conn.shredJsonArrayAsync(spec, rawJson, binds);
-          result = unitsLanded(where, landed);
+          result = entitiesLanded(where, landed);
         } else {
           await runBatchAsync(conn, [...asyncDiff.ensure, asyncDiff.clear]);
           await conn.shredJsonArrayAsync(stageSpecFor(variant, spec), rawJson, binds);
@@ -302,7 +302,7 @@ export function createSqliteRowTable<Row extends RowShape>(
     let result: WriteResult;
     if (direct) {
       await runBatchAsync(conn, replaceDirectly(where, rows));
-      result = { changes: unitsOf(rows), rows: rows.length };
+      result = { changes: entityIdsOf(rows), rows: rows.length };
     } else {
       result = await stageAndApply('replace', where, rows);
     }
@@ -317,7 +317,7 @@ export function createSqliteRowTable<Row extends RowShape>(
 
   return {
     primaryKey: schema.primaryKey,
-    unit: schema.unit,
+    entityId: schema.entityId,
 
     init(): void {
       if (options.temporary) {
@@ -372,7 +372,7 @@ export function createSqliteRowTable<Row extends RowShape>(
       if (partitionIsEmpty(where)) {
         runBatch(conn, replaceDirectly(where, rows));
         presence.afterDelete(where);
-        return { changes: unitsOf(rows), rows: rows.length };
+        return { changes: entityIdsOf(rows), rows: rows.length };
       }
       const writeId = nextWriteId();
       runBatch(conn, [...syncDiff.ensure, syncDiff.clear, ...syncDiff.stageRows(rows), ...syncDiff.diff('replace', where, writeId)]);
@@ -424,10 +424,10 @@ export function createSqliteRowTable<Row extends RowShape>(
       return !!row;
     },
 
-    unitsWhere(where: Partial<Row>): string[] {
+    entityIdsWhere(where: Partial<Row>): string[] {
       noteTableRead();
       const { sql, params } = whereClause(where);
-      return readRows<{ unit: SqlValue }>(conn, `SELECT DISTINCT ${schema.unit} AS unit FROM ${schema.table}${sql};`, params).map((row) => String(row.unit));
+      return readRows<{ entity_id: SqlValue }>(conn, `SELECT DISTINCT ${schema.entityId} AS entity_id FROM ${schema.table}${sql};`, params).map((row) => String(row.entity_id));
     },
 
     getMeta(where: Partial<Row>): string | undefined {

@@ -1,5 +1,5 @@
 import { definePartitions } from '../../define_partitions';
-import { byUnit } from '../../read/derived_values';
+import { byEntity } from '../../read/derived_values';
 import { createTestRowTable } from '../../testing/row_table';
 import { createSqliteRowTable } from '../../table/sqlite';
 import { createVersionAtom } from '../../reactivity/version_atom';
@@ -15,7 +15,7 @@ installTestRuntime();
 type PlayerRow = { sport: string; player_id: string; name: string; team: string | null; rank: number | null };
 type PlayerKey = { sport: string };
 
-/** One row per player: the primary key less the partition is exactly the unit. */
+/** One row per player: the primary key less the partition is exactly the entity. */
 const SCHEMA: RowTableSchema<PlayerRow> = {
   table: 'players',
   columns: {
@@ -26,7 +26,7 @@ const SCHEMA: RowTableSchema<PlayerRow> = {
     rank: { type: 'INTEGER' },
   },
   primaryKey: ['sport', 'player_id'],
-  unit: 'player_id',
+  entityId: 'player_id',
 };
 
 const NFL: PlayerKey = { sport: 'nfl' };
@@ -54,7 +54,7 @@ function harness(over: { table?: RowTable<PlayerRow>; max?: number; fromRows?: (
   });
 
   const fromRows = jest.fn(over.fromRows ?? (([row]: readonly PlayerRow[]): NameVm | undefined => ({ id: row.player_id, label: row.name })));
-  const { name: derived } = players.cache({ name: byUnit<NameVm>()({ max: over.max ?? 64, fromRows }) });
+  const { name: derived } = players.defineCaches({ name: byEntity()({ max: over.max ?? 64, fromRows }) });
 
   /** Writes the partition the way an ingest does: the table says what changed, and the bump carries it. */
   const seed = (rows: readonly PlayerRow[]): void => {
@@ -67,8 +67,8 @@ function harness(over: { table?: RowTable<PlayerRow>; max?: number; fromRows?: (
 
 const idsOf = (deps: readonly { id: string }[]): string[] => deps.map((dep) => dep.id);
 
-describe('derived values — a write rebuilds only the units it changed', () => {
-  it('builds one view model per unit, and answers a repeat without rebuilding', () => {
+describe('derived values — a write rebuilds only the entities it changed', () => {
+  it('builds one view model per entity, and answers a repeat without rebuilding', () => {
     const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
@@ -96,7 +96,7 @@ describe('derived values — a write rebuilds only the units it changed', () => 
     expect(fromRows).not.toHaveBeenCalled();
   });
 
-  it('rebuilds the one unit that moved and holds the reference of every unit that did not', () => {
+  it('rebuilds the one entity that moved and holds the reference of every entity that did not', () => {
     const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob'), player('p3', 'Cara')]);
     const before = derived.atEach(NFL, ['p1', 'p2', 'p3']);
@@ -124,7 +124,7 @@ describe('derived values — a write rebuilds only the units it changed', () => 
     expect(fromRows).toHaveBeenCalledTimes(1);
   });
 
-  it('shares one memo across every read of the shape, so a unit asked for three ways is built once', () => {
+  it('shares one memo across every read of the shape, so an entity asked for three ways is built once', () => {
     const { derived, fromRows, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
@@ -139,7 +139,7 @@ describe('derived values — a write rebuilds only the units it changed', () => 
 });
 
 describe('derived values — what a read depends on', () => {
-  it('a read of named units depends on those units and not the partition, so a write to another leaves it asleep', () => {
+  it('a read of named entities depends on those entities and not the partition, so a write to another leaves it asleep', () => {
     const { derived, players, seed } = harness();
     seed([player('p1', 'Alice'), player('p2', 'Bob')]);
 
@@ -156,7 +156,7 @@ describe('derived values — what a read depends on', () => {
     expect(players.versionOf(NFL)).toBeGreaterThan(0);
   });
 
-  it('a read over a filter depends on the partition, since which units match can move with any write', () => {
+  it('a read over a filter depends on the partition, since which entities match can move with any write', () => {
     const { derived, seed } = harness();
     seed([player('p1', 'Alice')]);
 
@@ -173,7 +173,7 @@ describe('derived values — what it hands back', () => {
     expect(derived.atEach(NFL, ['p2', 'missing', 'p1']).map((vm) => vm.id)).toEqual(['p2', 'p1']);
   });
 
-  it('remembers that a unit is absent, so a write to another unit does not send it asking again', () => {
+  it('remembers that an entity is absent, so a write to another entity does not send it asking again', () => {
     const { derived, table, seed } = harness();
     seed([player('p1', 'Alice')]);
     derived.atEach(NFL, ['missing']);
@@ -185,7 +185,7 @@ describe('derived values — what it hands back', () => {
     expect(findIn).not.toHaveBeenCalled();
   });
 
-  it('notices a unit that arrives where there was none', () => {
+  it('notices an entity that arrives where there was none', () => {
     const { derived, seed } = harness();
     seed([player('p1', 'Alice')]);
     expect(derived.at(NFL, 'p2')).toBeUndefined();
@@ -200,7 +200,7 @@ describe('derived values — what it hands back', () => {
     expect(Object.keys(derived.pick(NFL, ['p1', 'missing']))).toEqual(['p1']);
   });
 
-  it('narrows to a filter within the partition, and reflects a unit leaving that filter', () => {
+  it('narrows to a filter within the partition, and reflects an entity leaving that filter', () => {
     const { derived, seed } = harness();
     seed([player('p1', 'Alice', 'NE'), player('p2', 'Bob', 'KC')]);
     expect(derived.where(NFL, { team: 'NE' }).map((vm) => vm.id)).toEqual(['p1']);
@@ -220,7 +220,7 @@ describe('derived values — what it hands back', () => {
     expect(findIn).not.toHaveBeenCalled();
   });
 
-  it('keeps a unit out of the view models where the store says it makes none', () => {
+  it('keeps an entity out of the view models where the store says it makes none', () => {
     const { derived, seed } = harness({ fromRows: ([row]) => (row.team ? { id: row.player_id, label: row.name } : undefined) });
     seed([player('p1', 'Alice', null), player('p2', 'Bob', 'NE')]);
 
@@ -229,13 +229,13 @@ describe('derived values — what it hands back', () => {
   });
 });
 
-describe('derived values — a unit of several rows', () => {
+describe('derived values — an entity of several rows', () => {
   type GameRow = { week: string; game_id: string; player_id: string; team: string; pts: number };
   const GAMES: RowTableSchema<GameRow> = {
     table: 'games',
     columns: { week: { type: 'TEXT' }, game_id: { type: 'TEXT' }, player_id: { type: 'TEXT' }, team: { type: 'TEXT' }, pts: { type: 'REAL' } },
     primaryKey: ['week', 'game_id', 'player_id'],
-    unit: 'player_id',
+    entityId: 'player_id',
   };
   type TotalVm = { id: string; games: number; pts: number };
 
@@ -244,13 +244,13 @@ describe('derived values — a unit of several rows', () => {
     const version = createVersionAtom('derived_values_games_test');
     const weeks = definePartitions<GameRow, string>({ name: 'games', table, version, key: { where: (week) => ({ week }) } });
     const fromRows = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));
-    const { totals } = weeks.cache({ totals: byUnit<TotalVm>()({ max: 64, fromRows }) });
+    const { totals } = weeks.defineCaches({ totals: byEntity()({ max: 64, fromRows }) });
     const seed = (rows: GameRow[]) => weeks.bump('w1', table.overwrite({ week: 'w1' }, rows).changes);
     return { totals, fromRows, seed };
   }
   const game = (id: string, playerId: string, team: string, pts: number): GameRow => ({ week: 'w1', game_id: id, player_id: playerId, team, pts });
 
-  it('hands a unit every one of its rows', () => {
+  it('hands an entity every one of its rows', () => {
     const { totals, seed } = games();
     seed([game('g1', 'p1', 'LAL', 10), game('g2', 'p1', 'LAL', 20), game('g1', 'p2', 'BOS', 5)]);
 
@@ -260,7 +260,7 @@ describe('derived values — a unit of several rows', () => {
     ]);
   });
 
-  it('builds a filtered read from the rows the filter holds, apart from the unit whole, since they differ', () => {
+  it('builds a filtered read from the rows the filter holds, apart from the entity whole, since they differ', () => {
     const { totals, seed } = games();
     // Traded mid-week: one game for each team.
     seed([game('g1', 'p1', 'BOS', 10), game('g2', 'p1', 'LAL', 20)]);
@@ -293,7 +293,7 @@ describe('derived values — the memo bound is a bound, not a promise', () => {
 
     derived.atEach(NFL, ['p1', 'p2', 'p3']);
 
-    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' cache was asked for 3 units but holds 2/);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/'name' cache was asked for 3 entities but holds 2/);
     warn.mockRestore();
   });
 });

@@ -3,20 +3,21 @@
  *
  * A tracking scope is code run through {@linkcode runTracked} (which {@linkcode Read.useValue | useValue} reads,
  * `useTrackedStores` and tracked selectors all use). Every time code inside it reads a version number (a partition's, a
- * unit's, or a partition's presence), the read reports a dependency to the scope; the scope then subscribes to exactly
- * those, and re-runs when one changes. A getter must report its dependencies on every call, cache hits included, or a
- * computation using it won't update.
+ * entity's, or a partition's presence), the read reports a dependency to the scope; the scope then subscribes to
+ * exactly those, and re-runs when one changes. A getter must report its dependencies on every call, cache hits
+ * included, or a computation using it won't update.
  */
 import type { Read } from '../read/surface';
 import type { VersionAtom } from './version_atom';
 /**
- * One thing a computation in a tracking scope read, which the scope subscribes to: a partition's version, one unit's
+ * One thing a computation in a tracking scope read, which the scope subscribes to: a partition's version, one entity's
  * version within a partition, or a partition's presence (whether it has rows). A partition is the set of rows one fetch
- * returns and replaces; a unit is all the rows sharing one value of the table's unit column.
+ * returns and replaces; an entity is the thing a row belongs to, such as one player, named by the table's `entityId`
+ * column.
  */
 export interface Dep {
     /**
-     * A string identifying the dependency (store, partition, and unit or presence), so a scope can compare what it read
+     * A string identifying the dependency (store, partition, and entity or presence), so a scope can compare what it read
      * this time with what it subscribed to last time, and change only the subscriptions that differ.
      */
     id: string;
@@ -49,7 +50,7 @@ export declare function runSubscribed<T>(fn: () => T): T;
 export declare function trackDependency(dep: Dep): void;
 /**
  * Runs `fn` as a tracking scope and returns its result together with its dependencies: every version number `fn` read
- * (partitions, units, presence), each once. It doesn't subscribe to anything itself; the caller does, as
+ * (partitions, entities, presence), each once. It doesn't subscribe to anything itself; the caller does, as
  * {@linkcode Read.useValue | useValue}, `useTrackedStores` and tracked selectors do.
  *
  * Scopes nest, and the dependencies of an inner scope aren't passed to the outer one automatically: to make the outer

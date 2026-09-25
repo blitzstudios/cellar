@@ -1,6 +1,6 @@
 import path from 'path';
 
-import { configureDataKernel } from '../index';
+import { configureCellar } from '../index';
 import { defineSqliteStore } from '../define_sqlite_store';
 import { RowTableSchema } from '../table/types';
 import { createSqliteRowTable } from '../table/sqlite';
@@ -12,7 +12,7 @@ const schema: RowTableSchema<Item> = {
   table: 'items',
   columns: { id: { type: 'TEXT', notNull: true }, group_id: { type: 'TEXT', notNull: true }, score: { type: 'REAL' } },
   primaryKey: ['group_id', 'id'],
-  unit: 'id',
+  entityId: 'id',
   indexes: [{ name: 'idx_items_group', columns: ['group_id'] }],
 };
 
@@ -65,7 +65,7 @@ describe('sql.js on the web', () => {
 
   it('reports a bind that fails and leaves the store reading empty, rather than taking the page down', () => {
     const captureException = jest.fn();
-    configureDataKernel({ errors: { captureException, captureMessage: jest.fn() } });
+    configureCellar({ errors: { captureException, captureMessage: jest.fn() } });
     const broken = { Database: jest.fn(() => { throw new Error('wasm failed to instantiate'); }) } as unknown as SqlJsModule;
     const store = itemStore();
 

@@ -1,4 +1,4 @@
-import { configureDataKernel, INERT_ERRORS } from '../../runtime';
+import { configureCellar, INERT_ERRORS } from '../../runtime';
 import { BatchCommand, readRows, SqliteConnection } from '../../table/connection';
 import { createTestRowTable } from '../../testing/row_table';
 import { columnNames, RowTableSchema } from '../../table/types';
@@ -29,7 +29,7 @@ const schema: RowTableSchema<TestRow> = {
     num: { type: 'INTEGER' },
   },
   primaryKey: ['region', 'id'],
-  unit: 'id',
+  entityId: 'id',
   indexes: [{ name: 'idx_things_cohort', columns: ['region', 'cohort'] }],
   meta: { table: 'things_meta', keyColumns: ['region'], column: 'etag' },
 };
@@ -119,8 +119,8 @@ function makeConn(): {
   const conn: SqliteConnection = {
     execute(sql, params) {
       calls.push({ sql, params });
-      // A recording fake runs no diff, so a write's read-back finds its summary row and no changed units.
-      if (/RETURNING unit, rows;$/.test(sql)) return { rows: { _array: [{ unit: null, rows: 0 }] } };
+      // A recording fake runs no diff, so a write's read-back finds its summary row and no changed entities.
+      if (/RETURNING entity_id, rows;$/.test(sql)) return { rows: { _array: [{ entity_id: null, rows: 0 }] } };
       return { rows: { _array: reader(sql, params) } };
     },
     executeBatch(commands) {
@@ -414,7 +414,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
     const withSentry = (assert: (sentry: { captureException: jest.Mock; captureMessage: jest.Mock }) => void): void => {
       const sentry = { captureException: jest.fn(), captureMessage: jest.fn() };
-      configureDataKernel({ errors: sentry });
+      configureCellar({ errors: sentry });
       resetOnceGuards();
       // The report is sampled, so an unlucky roll would otherwise decide whether this test sees it.
       const random = jest.spyOn(Math, 'random').mockReturnValue(0);
@@ -422,7 +422,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
         assert(sentry);
       } finally {
         random.mockRestore();
-        configureDataKernel({ errors: INERT_ERRORS });
+        configureCellar({ errors: INERT_ERRORS });
       }
     };
 
@@ -512,11 +512,11 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     expect(staged?.[0]).toMatch(/\(id, region, cohort, num\) VALUES \(\?, \?, \?, \?\), \(\?, \?, \?, \?\);$/);
     expect(staged?.[1]).toEqual(['a', 'us', 'NE', 2, 'b', 'us', 'KC', 1]);
     expect(statements.some((sql) => sql.startsWith('INSERT INTO things') || sql.startsWith('INSERT OR REPLACE INTO things (id'))).toBe(true);
-    // The table is only ever touched for the units the diff recorded.
+    // The table is only ever touched for the entities the diff recorded.
     expect(statements.filter((sql) => sql.startsWith('DELETE FROM things '))).toEqual([
-      expect.stringMatching(/^DELETE FROM things WHERE region = \? AND id IN \(SELECT unit FROM temp\.things__changes/),
+      expect.stringMatching(/^DELETE FROM things WHERE region = \? AND id IN \(SELECT entity_id FROM temp\.things__entity_changes/),
     ]);
-    expect(last(calls)?.sql).toMatch(/^DELETE FROM temp\.things__changes WHERE write_id = \? RETURNING unit, rows;$/);
+    expect(last(calls)?.sql).toMatch(/^DELETE FROM temp\.things__entity_changes WHERE write_id = \? RETURNING entity_id, rows;$/);
     expect(db.has({ region: 'us' })).toBe(true);
   });
 
@@ -665,7 +665,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
 
   it('shreds a first load natively straight into the table, with the spec exactly as declared', async () => {
     const { conn, setReader } = makeConn();
-    setReader((sql) => (sql.startsWith('SELECT DISTINCT id') ? [{ unit: 'p1' }] : []));
+    setReader((sql) => (sql.startsWith('SELECT DISTINCT id') ? [{ entity_id: 'p1' }] : []));
     const shredJsonArrayAsync = jest.fn(async () => 1);
     const db = createSqliteRowTable(
       schema,
@@ -851,7 +851,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
   it('shred reports the shred fallback, since callers cannot observe it', async () => {
     resetOnceGuards();
     const captureException = jest.fn();
-    configureDataKernel({ errors: { captureException, captureMessage: jest.fn() } });
+    configureCellar({ errors: { captureException, captureMessage: jest.fn() } });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const { conn } = makeConn();
@@ -864,7 +864,7 @@ describe('row_table — sqlite backend (generated SQL)', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
     expect(captureException.mock.calls[0][1].tags).toEqual({ off_heap_degradation: 'row_table.native_shred.things' });
 
-    configureDataKernel({ errors: INERT_ERRORS });
+    configureCellar({ errors: INERT_ERRORS });
     warn.mockRestore();
   });
 
@@ -966,7 +966,7 @@ describe('row_table — what a `where` with a null means', () => {
   });
 });
 
-describe('row_table — unitsWhere names the units a filter holds', () => {
+describe('row_table — entityIdsWhere names the entities a filter holds', () => {
   beforeAll(async () => {
     await initSqlJs();
   });
@@ -979,27 +979,27 @@ describe('row_table — unitsWhere names the units a filter holds', () => {
     return table;
   };
 
-  it('names every unit in the filter', () => {
-    expect(seeded().unitsWhere({ region: 'us' }).sort()).toEqual(['a', 'b', 'c']);
+  it('names every entity in the filter', () => {
+    expect(seeded().entityIdsWhere({ region: 'us' }).sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('narrows to the filter, a null constraint included, and answers nothing for a partition it does not hold', () => {
     const db = seeded();
-    expect(db.unitsWhere({ region: 'us', cohort: 'KC' })).toEqual(['c']);
-    expect(db.unitsWhere({ region: 'us', cohort: null })).toEqual(['b']);
-    expect(db.unitsWhere({ region: 'eu' })).toEqual([]);
+    expect(db.entityIdsWhere({ region: 'us', cohort: 'KC' })).toEqual(['c']);
+    expect(db.entityIdsWhere({ region: 'us', cohort: null })).toEqual(['b']);
+    expect(db.entityIdsWhere({ region: 'eu' })).toEqual([]);
   });
 
-  it('names the units and never reads the rows behind them', () => {
+  it('names the entities and never reads the rows behind them', () => {
     const conn = createSqlJsConnection({ capabilities: 'full' });
     const db = createSqliteRowTable(schema, conn);
     db.init();
     db.overwrite({ region: 'us' }, seed);
     conn.executed.length = 0;
 
-    db.unitsWhere({ region: 'us' });
+    db.entityIdsWhere({ region: 'us' });
 
-    expect(conn.executed).toEqual(['SELECT DISTINCT id AS unit FROM things WHERE region = ?;']);
+    expect(conn.executed).toEqual(['SELECT DISTINCT id AS entity_id FROM things WHERE region = ?;']);
   });
 });
 

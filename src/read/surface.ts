@@ -26,7 +26,7 @@ import { covered, uncoveredReads } from '../table/read_coverage';
 import type { PartitionLifecycle, Partitions, definePartitions } from '../define_partitions';
 import type { pairRead } from './facade';
 import type { shallowEqualStruct } from '../caches';
-import type { byUnit } from './derived_values';
+import type { byEntity } from './derived_values';
 import type { StoreSurface } from '../define_sqlite_store';
 
 /**
@@ -52,7 +52,7 @@ export interface FetchOwner<Key> {
  * store.
  */
 export interface ReadSurfaceKernel<Key> {
-  /** The store's version atom: the per-partition and per-unit version numbers reads depend on and re-render from. */
+  /** The store's version atom: the per-partition and per-entity version numbers reads depend on and re-render from. */
   version: VersionAtom;
   /** The store's name, used in the dev warning about a screen making too many separate reads. */
   name?: string;
@@ -106,8 +106,9 @@ function overArgs<Args, Named, T, V>(select: (args: SelectArgs<Args, V>, named: 
 }
 
 /**
- * The fields every kind of read definition shares ({@linkcode Partitions.read | read},
- * {@linkcode Partitions.readMany | readMany} and {@linkcode Partitions.readGrouped | readGrouped}).
+ * The fields every kind of read definition shares ({@linkcode Partitions.defineRead | defineRead},
+ * {@linkcode Partitions.defineReadMany | defineReadMany} and
+ * {@linkcode Partitions.defineReadGrouped | defineReadGrouped}).
  */
 export interface CommonDef<Args, T, V extends VarySpec<Args>> {
   /**
@@ -189,8 +190,8 @@ export interface ReadDef<Args, Key, T, V extends VarySpec<Args> = readonly []> e
    * {@linkcode CommonDef.empty | empty}.
    *
    * The result is cached until the rows it depended on change. If {@linkcode ReadDef.select | select} reads through
-   * a {@linkcode byUnit} cache, it depends on just the units (such as the players) it read, and a write to other
-   * units doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
+   * a {@linkcode byEntity} cache, it depends on just the entities (such as the players) it read, and a write to other
+   * entities doesn't recompute it. If it reads the table directly, it depends on the whole partition and is recomputed
    * after any write to it.
    */
   select: (args: SelectArgs<Args, V>, key: Key) => T;
@@ -403,10 +404,10 @@ function useReadTail<T>(data: T, enabled: boolean, hasData: () => boolean, prime
 }
 
 /**
- * Builds the read engine over one store's partitions: {@linkcode Partitions.read | read} /
- * {@linkcode Partitions.readMany | readMany} / {@linkcode Partitions.readGrouped | readGrouped} each take a descriptor
- * and hand back its {@linkcode Read.useValue | useValue} / {@linkcode Read.getValue | getValue} pair, with the priming,
- * the version subscription, the presence gate and the value cache already wrapped around
+ * Builds the read engine over one store's partitions: {@linkcode Partitions.defineRead | defineRead} /
+ * {@linkcode Partitions.defineReadMany | defineReadMany} / {@linkcode Partitions.defineReadGrouped | defineReadGrouped}
+ * each take a descriptor and hand back its {@linkcode Read.useValue | useValue} / {@linkcode Read.getValue | getValue}
+ * pair, with the priming, the version subscription, the presence gate and the value cache already wrapped around
  * {@linkcode ReadDef.select | select}. {@linkcode definePartitions} builds one per store, so stores declare reads.
  */
 export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
@@ -419,7 +420,7 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   /** Whether each partition holds rows, keyed by partition and shared by every read on this surface. */
   const presenceByVersion = createVersionedCache<boolean>(PRESENCE_CACHE_MAX);
   // Held against the presence version, which moves only on a write that could have emptied or filled the partition,
-  // and tracks presence alone: a read of one unit must not come to depend on the whole partition by asking this.
+  // and tracks presence alone: a read of one entity must not come to depend on the whole partition by asking this.
   const hasOne = (key: Key, parts: readonly string[]): boolean =>
     presenceByVersion.read(cacheKeyOf(parts), kernel.version.getPresence(parts), () => covered(() => kernel.has(key)));
   const hasAny = (entries: readonly PartitionEntry<Key>[]): boolean => entries.some((entry) => addressesPartition(entry.parts) && hasOne(entry.key, entry.parts));
@@ -440,8 +441,8 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     createTrackedCache<T>(def.getCacheMax ?? 256, def.isEqual ?? shallowEqualValue);
 
   /**
-   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from `byUnit` caches reports
-   * the units it read and depends on those alone. One that read rows straight off the table, or reported
+   * Runs a read's `select` and makes sure the result depends on enough. A `select` built from `byEntity` caches reports
+   * the entities it read and depends on those alone. One that read rows straight off the table, or reported
    * nothing at all, is made to depend on every partition it named: it could have read anything in them.
    */
   const selectTracked = <T>(partitions: readonly (readonly string[])[], select: () => T): T => {
@@ -509,9 +510,10 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
   }
 
   /**
-   * The engine behind {@linkcode Partitions.readMany | readMany} and {@linkcode Partitions.readGrouped | readGrouped},
-   * which differ only in what `select` is handed back: the flat keys, or the groups they were named in. `resolve` runs
-   * once per call because naming a partition may intern it.
+   * The engine behind {@linkcode Partitions.defineReadMany | defineReadMany} and
+   * {@linkcode Partitions.defineReadGrouped | defineReadGrouped}, which differ only in what `select` is handed back:
+   * the flat keys, or the groups they were named in. `resolve` runs once per call because naming a partition may intern
+   * it.
    */
   function manyRead<Args, T, Named>(
     def: CommonDef<Args, T, VarySpec<Args>>,
@@ -526,8 +528,8 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
     const resolveOr = (args: Args | undefined) => (args === undefined ? { keys: NO_KEYS as readonly Key[], named: noneNamed } : resolve(args));
 
     /**
-     * {@linkcode Partitions.read | read}'s gates over a set: addressable when at least one partition is, since the rest
-     * are gaps.
+     * {@linkcode Partitions.defineRead | defineRead}'s gates over a set: addressable when at least one partition is,
+     * since the rest are gaps.
      */
     const gatesFor = (args: Args, partitions: readonly (readonly string[])[], vary: readonly VaryValue[], wanted: boolean, primeWanted = true) =>
       readGates(def, args, wanted && partitions.some(addressesPartition), vary, primeWanted);
@@ -616,4 +618,4 @@ export function createReadSurface<Key>(kernel: ReadSurfaceKernel<Key>) {
 
 // Exported so the built declaration files keep these names in scope for the doc links above; an import that only a
 // doc comment uses is dropped from them.
-export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, byUnit, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };
+export type { DataResult, PartitionLifecycle, Partitions, StoreSurface, byEntity, definePartitions, pairRead, shallowEqualStruct, shallowEqualValue };

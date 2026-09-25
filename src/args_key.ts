@@ -21,7 +21,7 @@ function warnOnceIfNotPlainData(value: object): void {
   if (notPlainData.seen(name)) return;
   // eslint-disable-next-line no-console
   console.warn(
-    `[data_kernel] keyed by a ${name}, which is not plain data: only own enumerable properties count towards a key, ` +
+    `[cellar] keyed by a ${name}, which is not plain data: only own enumerable properties count towards a key, ` +
       `so two different ${name}s would key alike and share one cache entry. Key by the values you mean instead.`,
   );
 }
@@ -97,8 +97,8 @@ export const GROUP_SEP = '\u0001';
 
 /**
  * The identity of a whole set of partitions, for something keyed by the set rather than by one member — a
- * {@linkcode Partitions.readMany | readMany}'s cache entry, a fetch over several partitions at once. Order and grouping
- * are both part of the key, so the same partitions named differently are a different set.
+ * {@linkcode Partitions.defineReadMany | defineReadMany}'s cache entry, a fetch over several partitions at once. Order
+ * and grouping are both part of the key, so the same partitions named differently are a different set.
  */
 export function partitionsKey(partitions: readonly (readonly string[])[]): string {
   return partitions.map(cacheKeyOf).join(GROUP_SEP);

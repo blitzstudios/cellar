@@ -1,5 +1,5 @@
 /**
- * The on-device half of the kernel: opening a SQLite database through `react-native-nitro-sqlite` and binding a
+ * The on-device half of Cellar: opening a SQLite database through `react-native-nitro-sqlite` and binding a
  * store to it. Kept behind its own entry point so the core stays runnable off-device.
  */
 

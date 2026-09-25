@@ -17,8 +17,8 @@ export interface QueryExecResult {
 }
 
 /**
- * A SQLite database handle, as the kernel uses it; a driver adapter implements this. Only
- * {@linkcode SqliteConnection.execute | execute} is required: each optional method is a faster path the kernel falls
+ * A SQLite database handle, as Cellar uses it; a driver adapter implements this. Only
+ * {@linkcode SqliteConnection.execute | execute} is required: each optional method is a faster path Cellar falls
  * back from when it's missing.
  */
 export interface SqliteConnection {
