@@ -1834,9 +1834,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@sleeperhq/cellar@workspace:.":
+"@sleeperhq/react-native-cellar@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@sleeperhq/cellar@workspace:."
+  resolution: "@sleeperhq/react-native-cellar@workspace:."
   dependencies:
     "@tanstack/query-core": "npm:4.41.0"
     "@types/jest": "npm:^29.5.12"
@@ -1858,11 +1858,14 @@ __metadata:
     react: ">=17"
     react-native: ">=0.70"
     react-native-nitro-modules: ">=0.35"
+    react-native-nitro-sqlite: ">=1.1.4"
     use-sync-external-store: ">=1.2.0"
   peerDependenciesMeta:
     react-native:
       optional: true
     react-native-nitro-modules:
+      optional: true
+    react-native-nitro-sqlite:
       optional: true
   languageName: unknown
   linkType: soft

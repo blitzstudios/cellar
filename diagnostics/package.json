@@ -1,5 +1,5 @@
 {
-  "name": "@sleeperhq/cellar/diagnostics",
+  "name": "@sleeperhq/react-native-cellar/diagnostics",
   "private": true,
   "main": "../lib/module/diagnostics/index.js",
   "module": "../lib/module/diagnostics/index.js",

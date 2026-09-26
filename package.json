@@ -1,5 +1,5 @@
 {
-  "name": "@sleeperhq/cellar",
+  "name": "@sleeperhq/react-native-cellar",
   "version": "1.0.0",
   "description": "Keeps a React Native app's large server data off the JS heap, in SQLite, while components read it synchronously and re-render only for what changed.",
   "keywords": [
@@ -14,11 +14,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/blitzstudios/cellar.git"
+    "url": "git+https://github.com/blitzstudios/react-native-cellar.git"
   },
-  "homepage": "https://github.com/blitzstudios/cellar#readme",
+  "homepage": "https://github.com/blitzstudios/react-native-cellar#readme",
   "bugs": {
-    "url": "https://github.com/blitzstudios/cellar/issues"
+    "url": "https://github.com/blitzstudios/react-native-cellar/issues"
   },
   "license": "MIT",
   "main": "./lib/module/index",
@@ -96,14 +96,12 @@
     "test:all": "yarn test && yarn test:prod",
     "prepublishOnly": "yarn build"
   },
-  "dependencies": {
-    "react-native-nitro-sqlite": "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.5-gitpkg"
-  },
   "peerDependencies": {
     "@tanstack/query-core": ">=4",
     "react": ">=17",
     "react-native": ">=0.70",
     "react-native-nitro-modules": ">=0.35",
+    "react-native-nitro-sqlite": ">=1.1.4",
     "use-sync-external-store": ">=1.2.0"
   },
   "peerDependenciesMeta": {
@@ -111,6 +109,9 @@
       "optional": true
     },
     "react-native-nitro-modules": {
+      "optional": true
+    },
+    "react-native-nitro-sqlite": {
       "optional": true
     }
   },
@@ -124,6 +125,7 @@
     "jest": "^29.7.0",
     "react": "19.2.3",
     "react-native-builder-bob": "^0.31.0",
+    "react-native-nitro-sqlite": "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.5-gitpkg",
     "react-test-renderer": "19.2.3",
     "sql.js": "1.13.0",
     "ts-jest": "^29.1.2",

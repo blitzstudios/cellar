@@ -1,5 +1,5 @@
 {
-  "name": "@sleeperhq/cellar/nitro",
+  "name": "@sleeperhq/react-native-cellar/nitro",
   "private": true,
   "main": "../lib/module/nitro/index.js",
   "module": "../lib/module/nitro/index.js",

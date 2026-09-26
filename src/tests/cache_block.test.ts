@@ -32,8 +32,8 @@ function store() {
   const partitions = definePartitions<GameRow, SeasonKey>({ name: 'games', table, version: createVersionAtom('cache_block_test'), key: { fields: ['season'], where: ({ season }) => ({ season }) } });
   const weeksBuilt = jest.fn((rows: readonly GameRow[]) => rows.map((row) => row.week));
   const caches = partitions.defineCaches({
-    weeksByTeam: byEntity()({ max: 64, fromRows: weeksBuilt }),
-    lastWeek: byPartition<number>()({ max: 4 }),
+    weeksByTeam: byEntity({ max: 64, fromRows: weeksBuilt }),
+    lastWeek: byPartition<number>({ max: 4 }),
   });
   const write = (rows: GameRow[]) => partitions.bump(S2026, table.overwrite(S2026, rows).changes);
   const lastWeek = () => caches.lastWeek.for(S2026).read(() => Math.max(...table.find(S2026).map((row) => row.week)));
@@ -80,8 +80,8 @@ describe('a store cache block', () => {
   it("takes only byPartition caches in a module's test block, which has no rows to build a byEntity value from", () => {
     const cache = testCache(createVersionAtom('cache_block_module_test'));
 
-    expect(cache({ totals: byPartition<number>()({ max: 4 }) }).totals.for('k').read(() => 7)).toBe(7);
+    expect(cache({ totals: byPartition<number>({ max: 4 }) }).totals.for('k').read(() => 7)).toBe(7);
     // @ts-expect-error a byEntity cache needs a store's row type
-    expect(() => cache({ names: byEntity()({ max: 4, fromRows: () => 'x' }) })).toThrow(/'names' is a byEntity cache/);
+    expect(() => cache({ names: byEntity({ max: 4, fromRows: () => 'x' }) })).toThrow(/'names' is a byEntity cache/);
   });
 });

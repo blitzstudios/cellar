@@ -71,9 +71,9 @@ store is reaching past its entry point; import it from its own module only if yo
   enumerable. If your spec varies — different columns per category, say — enumerate the variants and give
   `variant(scope)` the job of picking one. Naming a variant that isn't in the map falls back to the JS parse path
   rather than shredding through `undefined`.
-- **`definePartitions`** — **how your rows are divided into partitions you can fetch, and the thing you actually write.**
-  It asks one question — *where does one partition's rows live?* — and derives the rest of the plumbing from the
-  answer:
+- **`definePartitions`** — **how your rows are divided into partitions you can fetch, and the thing you actually
+  write.** It asks one question — *where does one partition's rows live?* — and derives the rest of the plumbing from
+  the answer:
 
   ```ts
   const partitions = definePartitions<MyRow, MyKey>({
@@ -188,8 +188,8 @@ store is reaching past its entry point; import it from its own module only if yo
 
   ```ts
   const { gamesByTeam, summaryMap } = partitions.defineCaches({
-    gamesByTeam: byEntity()({ max: 2048, fromRows: rowsToTeamGames }),
-    summaryMap: byPartition<MySummaryMap>()({ max: 2048 }),
+    gamesByTeam: byEntity({ max: 2048, fromRows: rowsToTeamGames }),
+    summaryMap: byPartition<MySummaryMap>({ max: 2048 }),
   });
 
   gamesByTeam.at(key, team);
@@ -197,15 +197,15 @@ store is reaching past its entry point; import it from its own module only if yo
   ```
 
   The block is reached off the store's partitions, which is what makes both kinds possible: a cache takes the
-  partition's key parts, its version and each entity's version from there, so **no store builds a cache key or looks
-  up a version**. What a store still names is `max`, which bounds what it keeps on the heap, and, for `byPartition`,
-  `by`, which is what the key holds beyond the partition — one argument to `.for(…)`'s methods per name, in order,
-  each either a scalar or a structured value Cellar interns. So the block stays a complete, reviewable account of
-  the store's heap. Each cache carries a dev-time watch that reports itself too small for the keys it keeps being
-  asked for again, and reports itself if it has never once answered from its entry; the report names it by its key.
-  A module that declares its own caches, such as a ranker, takes the store's `cache` function as a `CacheFactory`,
-  and a suite testing that module alone builds one with `testCache` from `./testing`, which takes `byPartition` caches
-  only.
+  partition's key parts, its version and each entity's version from there, so **no store builds a cache key or looks up
+  a version**. What a store still names is `max`, which bounds what it keeps on the heap, and, for `byPartition`, its
+  key parts, the second type argument: what the key holds beyond the partition, one argument to `.for(…)`'s methods per
+  part, in order, each either a scalar or a structured value Cellar interns. So the block stays a complete, reviewable
+  account of the store's heap. Each cache carries a dev-time watch that reports itself too small for the keys it keeps
+  being asked for again, and reports itself if it has never once answered from its entry; the report names it by its
+  key. A module that declares its own caches, such as a ranker, takes the store's `defineCaches` function as a
+  `CacheFactory`, and a suite testing that module alone builds one with `testCache` from `./testing`, which takes
+  `byPartition` caches only.
 - **`byEntity`** — one value per entity, built from that entity's rows by `fromRows` and kept until a write changes
   them. A lookup (`at`, `atEach`, `pick`) depends on the entities it names, so a write to other entities neither
   rebuilds their values nor re-runs the read; `where` and `all` depend on the partition. Every miss in one `atEach` or

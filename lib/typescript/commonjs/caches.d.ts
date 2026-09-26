@@ -108,32 +108,31 @@ type PartsOf<By extends readonly string[]> = {
 };
 /**
  * A {@linkcode byPartition} cache's entries for one partition, as `.for(key)` returns them. A partition is the set of
- * rows one fetch returns and replaces. Entries are keyed by the parts named in the cache's
- * {@linkcode MemoDecl.by | by}, passed in that order, and every entry counts as missing after any write that changes
- * the partition.
+ * rows one fetch returns and replaces. Entries are keyed by the parts the cache's second type argument lists, passed in
+ * that order, and every entry counts as missing after any write that changes the partition.
  *
  * `.for(key)` reads the partition's version when it is called, so call it where the value is needed rather than
  * keeping its result. It is tracked: a read whose {@linkcode ReadDef.select | select} calls it depends on the whole
  * partition, and re-runs after any write that changes it.
  */
-export interface BoundVersionMemo<V, By extends readonly string[]> {
+export interface BoundVersionMemo<V, Parts extends readonly CacheKeyPart[]> {
     /**
      * The value stored for these key parts. On a miss (never computed, or computed before the partition's last write),
      * runs `build`, stores its result, and returns it (or the previous object, if `isEqual` finds them equal).
      */
-    read(...args: [...PartsOf<By>, build: () => V]): V;
+    read(...args: [...Parts, build: () => V]): V;
     /**
      * The value stored for these key parts, without building anything: `{ value }` on a hit, `undefined` on a miss.
      * Wrapped so that a stored `undefined` can be told apart from a miss.
      */
-    peek(...parts: PartsOf<By>): {
+    peek(...parts: Parts): {
         value: V;
     } | undefined;
     /**
      * Stores a value for these key parts (the value comes last), and returns the object to use from now on: the previous
      * value's object if `isEqual` finds the two equal, otherwise the new one.
      */
-    set(...args: [...PartsOf<By>, value: V]): V;
+    set(...args: [...Parts, value: V]): V;
 }
 /**
  * A {@linkcode entityMemo} for one partition, as `.for(key)` returns it: where a {@linkcode byEntity} cache keeps its
@@ -208,23 +207,22 @@ export interface PartitionBinding<Key> {
  * lookup, by the `build` that lookup passes. A read that uses it depends on the whole partition.
  *
  * Use it for a value several reads share, or one a read looks up once per item in a list. A cache keyed exactly like a
- * single read adds nothing, since the read already caches its own value. Called in two steps, so the value type can be
- * given while {@linkcode MemoDecl.by | by} is inferred: `byPartition<Map<string, Player[]>>()({ max: 8 })`.
+ * single read adds nothing, since the read already caches its own value.
+ *
+ * The first type argument is the value; one value per partition is `byPartition<Map<string, Player[]>>({ max: 8 })`.
+ * For values keyed by more than the partition, the second lists the key's other parts, named, in the order a lookup
+ * passes them: `byPartition<RankedRow, [shape: RowShape, playerId: string]>({ max: 16384 })`. A lookup that passes a
+ * part of the wrong type, or the wrong number of them, doesn't compile.
  */
-export declare function byPartition<V>(): <const By extends readonly string[] = readonly []>(spec: {
+export declare function byPartition<V, Parts extends readonly CacheKeyPart[] = []>(spec: {
     /** How many values to keep, across all partitions; beyond that, the least recently used are discarded. */
     max: number;
-    /**
-     * Names for the key's parts beyond the partition, in the order a lookup passes them, such as `['scoring']`. Leave
-     * it out for a cache with one value per partition.
-     */
-    by?: By;
     /**
      * Compares a rebuilt value with the previous one; when they're equal, the previous object is kept, so readers
      * comparing by reference don't re-render.
      */
     isEqual?: (prev: V, next: V) => boolean;
-}) => MemoDecl<BoundVersionMemo<V, By>>;
+}): MemoDecl<BoundVersionMemo<V, Parts>>;
 /**
  * Declares a memo of values built from one entity's rows: where a {@linkcode byEntity} cache keeps its values, which a
  * store declares instead. An entity is the thing a row belongs to, such as one player, named by the table's `entityId`

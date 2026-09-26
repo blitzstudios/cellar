@@ -35,7 +35,7 @@ function store() {
     version,
     key: { fields: ['sport'], where: ({ sport }) => ({ sport }) },
   });
-  const { names } = players.defineCaches({ names: byEntity()({ max: 64, fromRows: ([row]) => row.name }) });
+  const { names } = players.defineCaches({ names: byEntity({ max: 64, fromRows: ([row]) => row.name }) });
   const PlayerNames = players.defineRead<{ sport: string; ids: string[] }, string[]>()({
     varyBy: ['ids'],
     select: ({ ids }, key) => names.atEach(key, ids),

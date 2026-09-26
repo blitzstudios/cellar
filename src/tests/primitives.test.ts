@@ -289,13 +289,13 @@ describe('a memo reporting on itself', () => {
   });
 
   itDev('reports one that has never once answered from its entry', () => {
-    const { deadWeight } = createMemos('test', onePartition, { deadWeight: byPartition<number>()({ max: 4096, by: ['item'] }) });
+    const { deadWeight } = createMemos('test', onePartition, { deadWeight: byPartition<number, [item: string]>({ max: 4096 }) });
 
     for (let key = 0; key < 512; key += 1) deadWeight.for('us').read(`k${key}`, () => key);
 
     expect(warnings).toEqual([expect.stringContaining('memo.never_hit.test.deadWeight')]);
     // The report names the key the way the block declared it, so a reader can find the memo it is about.
-    expect(warnings[0]).toContain('partition + item');
+    expect(warnings[0]).toContain('partition + key parts');
   });
 
   itDev('says nothing about one whose keys come back', () => {
@@ -323,7 +323,7 @@ describe('a memo bound to a partition', () => {
 
   it('derives its own key, so two lookups naming the same thing share an entry', () => {
     const { binding } = bindable();
-    const { values } = createMemos('test', binding, { values: byPartition<number>()({ max: 64, by: ['item'] }) });
+    const { values } = createMemos('test', binding, { values: byPartition<number, [item: string]>({ max: 64 }) });
     let built = 0;
     const build = () => {
       built += 1;
@@ -338,7 +338,7 @@ describe('a memo bound to a partition', () => {
 
   it('keeps two partitions apart, and keeps a part from reading across the separator', () => {
     const { binding } = bindable();
-    const { values } = createMemos('test', binding, { values: byPartition<string>()({ max: 64, by: ['item'] }) });
+    const { values } = createMemos('test', binding, { values: byPartition<string, [item: string]>({ max: 64 }) });
 
     expect(values.for('us').read('p1', () => 'us-p1')).toBe('us-p1');
     expect(values.for('eu').read('p1', () => 'eu-p1')).toBe('eu-p1');
@@ -348,7 +348,7 @@ describe('a memo bound to a partition', () => {
 
   it('looks the version up itself, so a write to the partition drops what it held', () => {
     const { binding, bump } = bindable();
-    const { values } = createMemos('test', binding, { values: byPartition<number>()({ max: 64, by: ['item'] }) });
+    const { values } = createMemos('test', binding, { values: byPartition<number, [item: string]>({ max: 64 }) });
     let built = 0;
     const build = () => {
       built += 1;
@@ -413,7 +413,7 @@ describe('a memo bound to a partition', () => {
 
   it('keys a structured part by its content, so a caller rebuilding one per call still hits', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byPartition<number>()({ max: 64, by: ['shape', 'item'] }) });
+    const { rows } = createMemos('test', binding, { rows: byPartition<number, [shape: Record<string, unknown>, item: string]>({ max: 64 }) });
     let built = 0;
     const build = () => {
       built += 1;
@@ -428,7 +428,7 @@ describe('a memo bound to a partition', () => {
 
   it('keys a part held across calls the same as an equal one built fresh, since the id still comes from the content', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byPartition<number>()({ max: 64, by: ['shape', 'item'] }) });
+    const { rows } = createMemos('test', binding, { rows: byPartition<number, [shape: Record<string, unknown>, item: string]>({ max: 64 }) });
     let built = 0;
     const build = () => {
       built += 1;
@@ -444,7 +444,7 @@ describe('a memo bound to a partition', () => {
 
   it('serializes a structured part once per reference, so a caller re-keying one per row pays for it once', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byPartition<number>()({ max: 64, by: ['shape', 'item'] }) });
+    const { rows } = createMemos('test', binding, { rows: byPartition<number, [shape: Record<string, unknown>, item: string]>({ max: 64 }) });
     let reads = 0;
     // A getter counts what the identity walk touched, which no amount of internal caching can fake.
     const shape = Object.defineProperty({ perEvent: true }, 'orderBy', {
@@ -465,7 +465,7 @@ describe('a memo bound to a partition', () => {
 
   itDev('freezes a structured part, so its content cannot drift from the identity remembered for it', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byPartition<number>()({ max: 64, by: ['shape', 'item'] }) });
+    const { rows } = createMemos('test', binding, { rows: byPartition<number, [shape: Record<string, unknown>, item: string]>({ max: 64 }) });
     const shape = { orderBy: 'pts', nested: { perEvent: true }, tags: ['starters'] };
 
     rows.for('us').read(shape, 'p1', () => 1);
@@ -481,7 +481,7 @@ describe('a memo bound to a partition', () => {
 
   itProd('leaves a part unfrozen in a release build, where the walk buys nothing a test has not already caught', () => {
     const { binding } = bindable();
-    const { rows } = createMemos('test', binding, { rows: byPartition<number>()({ max: 64, by: ['shape', 'item'] }) });
+    const { rows } = createMemos('test', binding, { rows: byPartition<number, [shape: Record<string, unknown>, item: string]>({ max: 64 }) });
     const shape = { orderBy: 'pts' };
 
     rows.for('us').read(shape, 'p1', () => 1);
@@ -491,7 +491,7 @@ describe('a memo bound to a partition', () => {
 
   it('peeks without building, which is what a read consulting it per item does', () => {
     const { binding } = bindable();
-    const { values } = createMemos('test', binding, { values: byPartition<number>()({ max: 64, by: ['item'] }) });
+    const { values } = createMemos('test', binding, { values: byPartition<number, [item: string]>({ max: 64 }) });
 
     expect(values.for('us').peek('p1')).toBeUndefined();
     values.for('us').set('p1', 7);

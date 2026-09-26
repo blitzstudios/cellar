@@ -54,7 +54,7 @@ function harness(over: { table?: RowTable<PlayerRow>; max?: number; fromRows?: (
   });
 
   const fromRows = jest.fn(over.fromRows ?? (([row]: readonly PlayerRow[]): NameVm | undefined => ({ id: row.player_id, label: row.name })));
-  const { name: derived } = players.defineCaches({ name: byEntity()({ max: over.max ?? 64, fromRows }) });
+  const { name: derived } = players.defineCaches({ name: byEntity({ max: over.max ?? 64, fromRows }) });
 
   /** Writes the partition the way an ingest does: the table says what changed, and the bump carries it. */
   const seed = (rows: readonly PlayerRow[]): void => {
@@ -244,7 +244,7 @@ describe('derived values — an entity of several rows', () => {
     const version = createVersionAtom('derived_values_games_test');
     const weeks = definePartitions<GameRow, string>({ name: 'games', table, version, key: { where: (week) => ({ week }) } });
     const fromRows = jest.fn((rows: readonly GameRow[]): TotalVm => ({ id: rows[0].player_id, games: rows.length, pts: rows.reduce((sum, row) => sum + row.pts, 0) }));
-    const { totals } = weeks.defineCaches({ totals: byEntity()({ max: 64, fromRows }) });
+    const { totals } = weeks.defineCaches({ totals: byEntity({ max: 64, fromRows }) });
     const seed = (rows: GameRow[]) => weeks.bump('w1', table.overwrite({ week: 'w1' }, rows).changes);
     return { totals, fromRows, seed };
   }

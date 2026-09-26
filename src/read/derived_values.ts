@@ -108,11 +108,11 @@ export interface EntityCacheDeclaration<Row extends RowShape, V> {
  * use and kept, as the same object, until a write changes that entity's rows. Reads look values up by partition key and
  * entity id through the {@linkcode DerivedValues} methods, such as {@linkcode DerivedValues.at | at}.
  *
- * Called in two steps, like {@linkcode byPartition}: `byEntity()({ max: 2048, fromRows: rowsToTeamGames })`. The row
- * type comes from the store and the value type is what `fromRows` returns, so neither is written.
+ * `byEntity({ max: 2048, fromRows: rowsToTeamGames })`: the row type comes from the store and the value type is what
+ * `fromRows` returns, so neither is written.
  */
-export function byEntity() {
-  return <Row extends RowShape, V>(def: DerivedValuesDef<Row, V>): EntityCacheDeclaration<Row, V> => ({ kind: 'byEntity', def });
+export function byEntity<Row extends RowShape, V>(def: DerivedValuesDef<Row, V>): EntityCacheDeclaration<Row, V> {
+  return { kind: 'byEntity', def };
 }
 
 /** Whether a {@linkcode Partitions.defineCaches | defineCaches} block entry is a {@linkcode byEntity} cache. */

@@ -1,8 +1,8 @@
 # Cellar
 
-`@sleeperhq/cellar` keeps a React Native app's large server data off the JS heap, in SQLite, while components read it
-synchronously and re-render only for what changed. A whole sport's players or a week's stats stay in the database, and
-only what is on screen is ever built in JS, so garbage collection has far less to do.
+`@sleeperhq/react-native-cellar` keeps a React Native app's large server data off the JS heap, in SQLite, while
+components read it synchronously and re-render only for what changed. A whole sport's players or a week's stats stay in
+the database, and only what is on screen is ever built in JS, so garbage collection has far less to do.
 
 Underneath, that is all this is: a reactive wrapper around a SQLite database. You declare a table, how a slice of
 it is fetched, and what each read hands back. Cellar owns the SQL, the conditional fetch, the caching and the
@@ -23,7 +23,7 @@ A store's table is divided into partitions, and each row belongs to an entity.
 | --- | --- |
 | **store** | one SQLite table and the reads and fetches over it, declared with `defineSqliteStore`. On device the table lives in the device's SQLite; on the web and in tests, in sql.js |
 | **partition** | the set of rows one fetch returns and replaces, picked out by column values (`{ group_id: 'g1' }`). Each has its own fetch, ETag and version |
-| **entity** | the thing a row belongs to, named by the schema's `entityId` column: with `entityId: 'item_id'`, one item. In a partition it has every row with that id, which may be several, or none. The entity is how finely change is tracked |
+| **entity** | the rows in a partition that share one `entityId` value, defined in the table's schema, such as one item's rows. It is how finely Cellar tracks change: a write reports the entities it changed, and a read that looked up particular entities re-runs only when a row of one of them changes. An entity can be read before it has any rows, and wakes its readers when they arrive |
 | **change set** | what a write changed: the entity id of every row it added, changed or removed. The write replaces those entities' rows, then bumps the partition's version and the version of each changed entity |
 | **read** | a query declared on a store, used as a hook or a getter. It fetches its partition if needed, and recomputes when what it depends on changes: a read that asks for particular entities (through a `byEntity` cache) depends on those entities; one that looks at the whole partition depends on the partition. The component re-renders only if the recomputed value differs |
 | **shred** | turning a JSON response into rows: in C++ from a `NativeShredSpec`, so no JS object is built per row, or in JS with each column's `js` builder |
@@ -48,7 +48,10 @@ same engine compiled to WebAssembly, through `./sqljs`. Tests use sql.js too, th
 
 ```jsonc
 // package.json
-"@sleeperhq/cellar": "blitzstudios/cellar.git#cellar-v1.0.0-gitpkg"
+"@sleeperhq/react-native-cellar": "blitzstudios/react-native-cellar.git#react-native-cellar-v1.0.0-gitpkg",
+// On device, the SQLite driver `./nitro` opens databases with: 1.1.4 or later, and 1.1.5 or later for an in-memory
+// fallback that needs no file. An app that runs Cellar only on the web or in tests leaves it out.
+"react-native-nitro-sqlite": "blitzstudios/react-native-nitro-sqlite.git#react-native-nitro-sqlite-v1.1.5-gitpkg"
 ```
 
 ## Quick start
@@ -62,7 +65,7 @@ One entry per persisted column. The row type and the `CREATE TABLE` are both gen
 field means adding a column here and nothing else.
 
 ```ts
-import { defineShredColumns, RowOf, RowTableSchema, ShredColumn } from '@sleeperhq/cellar';
+import { defineShredColumns, RowOf, RowTableSchema, ShredColumn } from '@sleeperhq/react-native-cellar';
 
 type RawItem = { id: string; name?: string; rank?: number };
 /** Values that belong to the slice rather than to the payload. */
@@ -98,7 +101,7 @@ presence, what a fetch replaces, where the ETag goes, what a write bumps. `read`
 whatever the screen actually wants. Both live in the store's `build`, which is the store over one row table.
 
 ```ts
-import { definePartitions, defineSqliteStore, rowsOf } from '@sleeperhq/cellar';
+import { definePartitions, defineSqliteStore, rowsOf } from '@sleeperhq/react-native-cellar';
 
 export type ItemKey = { groupId: string };
 export type ItemVM = { id: string; name: string };
@@ -194,7 +197,7 @@ reasonable size when the read was written and grew since.
 everything else. A read declares which args it waits on, so the pair stays inert until a caller has them.
 
 ```ts
-import { pairRead } from '@sleeperhq/cellar';
+import { pairRead } from '@sleeperhq/react-native-cellar';
 
 export const GroupItems = pairRead(() => itemStore.reads.GroupItems);
 ```
@@ -215,9 +218,9 @@ Calling it with no `groupId` is fine: the read addresses nothing, fetches nothin
 The host installs two services, and binds each store to its platform's SQLite.
 
 ```ts
-import { configureCellar } from '@sleeperhq/cellar';
+import { configureCellar } from '@sleeperhq/react-native-cellar';
 import { AppState } from 'react-native';
-import { bindSqliteStore, retrySqliteStores } from '@sleeperhq/cellar/nitro';
+import { bindSqliteStore, retrySqliteStores } from '@sleeperhq/react-native-cellar/nitro';
 
 configureCellar({
   errors: { captureException, captureMessage },
@@ -236,7 +239,7 @@ On the web, the app loads sql.js and binds each store to a database of its own, 
 
 ```ts
 import initSqlJs from 'sql.js';
-import { bindSqlJsStore } from '@sleeperhq/cellar/sqljs';
+import { bindSqlJsStore } from '@sleeperhq/react-native-cellar/sqljs';
 
 initSqlJs({ locateFile: (file) => `/static/${file}` }).then((SQL) => bindSqlJsStore('items', SQL, itemStore));
 ```
@@ -370,7 +373,7 @@ with nothing to compare against, its rows go straight in and every entity counts
 
 | entry | holds |
 | --- | --- |
-| `@sleeperhq/cellar` | everything above: what a store, a service or a screen writes against |
+| `@sleeperhq/react-native-cellar` | everything above: what a store, a service or a screen writes against |
 | `…/nitro` | `openNitroConnection`, `bindSqliteStore` and `retrySqliteStores`, over `react-native-nitro-sqlite` — the only part that touches native code |
 | `…/sqljs` | `bindSqlJsStore` and `openSqlJsConnection`, over a sql.js module the app loads — what the web runs on |
 | `…/testing` | sql.js off-device (`createTestRowTable`, `createSqlJsConnection`), an in-process version atom, the host services as spies, and the internals only a test reaches for |

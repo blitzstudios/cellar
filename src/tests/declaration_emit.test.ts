@@ -6,7 +6,7 @@
  * `tsc --noEmit` and every bundler pass.
  *
  * The consumer here sees the package as the app does: Cellar's declarations are emitted to a temporary
- * `node_modules/@sleeperhq/cellar`, and the consumer imports it by package name, so no relative path can
+ * `node_modules/@sleeperhq/react-native-cellar`, and the consumer imports it by package name, so no relative path can
  * reach a type the entry point doesn't export.
  */
 
@@ -33,7 +33,7 @@ import {
   type RowOf,
   type RowTableSchema,
   type ShredColumn,
-} from '@sleeperhq/cellar';
+} from '@sleeperhq/react-native-cellar';
 
 type Item = { id: string; team?: string; points?: number };
 type Ctx = { league: string };
@@ -77,8 +77,8 @@ export const itemStore = defineSqliteStore({
       key: { fields: ['league'], where: (key) => ({ league: key.league }) },
     });
     const { card, byTeam } = items.defineCaches({
-      card: byEntity()({ max: 64, fromRows: ([row]) => ({ id: row.id }) }),
-      byTeam: byPartition<Map<string, ItemRow[]>>()({ max: 4 }),
+      card: byEntity({ max: 64, fromRows: ([row]) => ({ id: row.id }) }),
+      byTeam: byPartition<Map<string, ItemRow[]>>({ max: 4 }),
     });
     const push = createPushIngest<Item, ItemRow, LeagueKey>({
       name: 'item',
@@ -163,11 +163,11 @@ describe('declaration emit', () => {
     const config = ts.getParsedCommandLineOfConfigFile(join(ROOT, 'tsconfig.build.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
     if (!config) throw new Error('tsconfig.build.json did not parse');
 
-    const packageDir = join(dir, 'node_modules', '@sleeperhq', 'cellar');
+    const packageDir = join(dir, 'node_modules', '@sleeperhq', 'react-native-cellar');
     mkdirSync(packageDir, { recursive: true });
     const kernelErrors = declarationErrors(config.fileNames, { ...config.options, rootDir: join(ROOT, 'src'), declarationMap: false }, packageDir);
     expect(kernelErrors).toEqual([]);
-    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@sleeperhq/cellar', types: 'index.d.ts' }));
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@sleeperhq/react-native-cellar', types: 'index.d.ts' }));
 
     const consumer = join(dir, 'consumer.ts');
     writeFileSync(consumer, CONSUMER);
